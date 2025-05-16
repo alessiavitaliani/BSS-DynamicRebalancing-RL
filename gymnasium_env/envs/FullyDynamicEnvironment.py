@@ -50,6 +50,7 @@ def _detect_self_loops(actions: tuple) -> bool:
         (Actions.PICK_UP_BIKE.value, Actions.DROP_BIKE.value),
         (Actions.DROP_BIKE.value, Actions.PICK_UP_BIKE.value)
     ]
+
     return actions in self_loop_patterns_2
 
 
@@ -625,7 +626,7 @@ class FullyDynamicEnv(gym.Env):
             if event.time > self.env_time + 3600 * 3:
                 break
             if event.is_departure():
-                start_location = event.get_trip().get_start_location(ntia)
+                start_location = event.get_trip().get_start_location()
                 if start_location.get_station_id() != 10000:
                     cell = start_location.get_cell()
                     cell_id = cell.get_id()

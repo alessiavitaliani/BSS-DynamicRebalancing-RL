@@ -95,16 +95,15 @@ You can read the full thesis [(https://hdl.handle.net/20.500.12608/84368)](https
 ## 🚀 Setup Instructions
 
 1. **Install dependencies**: We recommend using Python 3.11+ and a virtual environment.
-```
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
+    ```
+    python -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
 2. **Install the custom gymnasium environment**: Use the following to install it in editable mode (required for imports to work correctly).
-```
-pip install -e .
-```
+    ```
+    pip install -e .
+    ```
 
 ---
 
@@ -143,6 +142,9 @@ python RL-agent/train_model.py
 - `--num_episodes`: Number of training episodes.
 - `--run_id`: ID to identify the experiment run.
 - `--exploration_time`: Number of episodes during which to explore.
+- `--enable_telegram`: Enable Telegram notifications.
+- `--telegram_token`: Telegram bot token.
+- `--telegram_chat_id`: Telegram chat ID.
 
 ---
 
@@ -150,7 +152,6 @@ python RL-agent/train_model.py
 Heuristic rebalancing strategies (e.g., static allocation, naive balancing) are implemented under benchmarks/ for comparison with the RL agent.
 
 Run:
-
 ```
 python benchmarks/benchmark.py
 ```

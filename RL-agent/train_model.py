@@ -65,8 +65,8 @@ reward_params = {
 }
 
 enable_telegram = False
-BOT_TOKEN = '7911945908:AAHkp-x7at3fIadrlmahcTB1G6_ni2awbt4'
-CHAT_ID = '16830298'
+BOT_TOKEN = ''
+CHAT_ID = ''
 
 enable_checkpoint = False
 restore_from_checkpoint = False
@@ -653,6 +653,8 @@ def main():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train the Dueling DQN agent.')
     parser.add_argument('--enable_telegram', action='store_true', help='Enable Telegram notifications.')
+    parser.add_argument('--telegram_token', type=str, help='Telegram bot token.')
+    parser.add_argument('--telegram_chat_id', type=str, help='Telegram chat ID.')
     parser.add_argument('--data_path', type=str, default=data_path, help='Path to the data folder.')
     parser.add_argument('--cuda_device', type=int, default=0, help='CUDA device to use.')
     parser.add_argument('--enable_logging', action='store_true', help='Enable logging.')
