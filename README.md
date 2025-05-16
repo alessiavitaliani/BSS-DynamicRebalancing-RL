@@ -113,7 +113,7 @@ pip install -e .
 - 🛣️ TomTom traffic speed profiles
 - 🌐 Street networks from OpenStreetMap via osmnx
 
-*(Note: Some datasets are not included due to licensing. Instructions for downloading and preprocessing them are in preprocessing/.)*
+*(Note: Some datasets are not included due to licensing. Instructions for downloading and preprocessing them are in `preprocessing/`.)*
 
 Run the preprocessing script to populate the `data` folder with trips and precomputed matrices.
 
