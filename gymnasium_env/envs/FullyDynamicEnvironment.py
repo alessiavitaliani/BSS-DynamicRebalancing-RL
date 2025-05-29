@@ -328,10 +328,10 @@ class FullyDynamicEnv(gym.Env):
             self.logger.log_starting_action('PICK_UP_BIKE', t)
 
         # TURN OFF THIS TO DISABLE BATTERY CHARGE
-        # elif action == Actions.CHARGE_BIKE.value:
-        #     t, distance, bike_picked_up = charge_bike(self.truck, self.stations, self.distance_matrix, mean_truck_velocity,
-        #                                               self.depot_node, self.depot, self.system_bikes)
-        #     self.logger.log_starting_action('CHARGE_BIKE', t)
+        elif action == Actions.CHARGE_BIKE.value:
+            t, distance, bike_picked_up = charge_bike(self.truck, self.stations, self.distance_matrix, mean_truck_velocity,
+                                                      self.depot_node, self.depot, self.system_bikes)
+            self.logger.log_starting_action('CHARGE_BIKE', t)
 
         # Calculate steps and log the state
         steps = math.ceil(t / 30)
@@ -347,8 +347,8 @@ class FullyDynamicEnv(gym.Env):
 
         # Handle specific actions post-environment update
         # TURN OFF THIS TO DISABLE BATTERY CHARGE
-        # if action in {Actions.DROP_BIKE.value, Actions.CHARGE_BIKE.value}:
-        if bike_picked_up or (action == Actions.DROP_BIKE.value and not self.invalid_drop_action):
+        if action in {Actions.DROP_BIKE.value, Actions.CHARGE_BIKE.value}:
+        # if bike_picked_up or (action == Actions.DROP_BIKE.value and not self.invalid_drop_action):
             station = self.stations.get(self.truck.get_position())
             bike = self.truck.unload_bike()
             station.lock_bike(bike)
