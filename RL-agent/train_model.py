@@ -84,8 +84,8 @@ reward_params = {
 }
 
 enable_telegram = False
-BOT_TOKEN = '7963966364:AAFfUAeWj40QrtL8KRYN8BJIXhHD15bnsNU'    # Aquarum2 bot
-CHAT_ID = '671757146'                                           # Alberto Pettena chat
+BOT_TOKEN = ''
+CHAT_ID = ''
 
 enable_checkpoint = False
 restore_from_checkpoint = False
