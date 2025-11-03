@@ -7,6 +7,21 @@ if TYPE_CHECKING:
 class Truck:
     truck_id = 0
     def __init__(self, position: int, cell: "Cell", bikes: dict[int, "Bike"], max_range: float = 300, max_load: int = 30):
+        """
+        Initialize a Truck object.
+
+        Parameters:
+        id (int): Unique identifier for the truck.
+        position (int): The station ID where the truck is located.
+        cell ("cell"): The cell where the truck is located. Or destination Cell.
+        max_range (float): Maximum distance that the truck can cover.
+        range (float): Available distance that the truck can cover. (like fuel)
+        max_load (int): Max num of bikes that can be inside the truck.
+        bikes (dict): Dictionary of bikes loaded on the truck.
+        current_load (int): Num of bikes currently loaded on the truck.
+        leaving_cell ("Cell"): Cell of departure for the next movement.
+        last_charge (int): Normalized value of battery level given to a bike to reach max_battery during charge_bike
+        """
         self.id = Truck.truck_id
         self.position = position
         self.cell = cell

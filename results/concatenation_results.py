@@ -41,4 +41,4 @@ def concatenate_data(training_dir='training'):
 
 
 if __name__ == '__main__':
-    concatenate_data('training_2/data/')
+    concatenate_data('results/training_0/data/')

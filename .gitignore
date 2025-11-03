@@ -16,7 +16,6 @@ data/
 
 gym/
 graph_images/
-simulator/
 plots/
 dummy_file.py
 data_cambridge/
@@ -32,3 +31,4 @@ results/best_training/
 results/best_training_no_recharge/
 results/best_validation/
 results/best_validation_no_recharge/
+/simulator/

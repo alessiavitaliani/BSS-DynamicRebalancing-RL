@@ -9,13 +9,30 @@ from gymnasium_env.simulator.truck import Truck
 from gymnasium_env.simulator.station import Station
 
 # ----------------------------------------------------------------------------------------------------------------------
+"""
+    This description is valid for the methods: move_up, move_down, move_left, move right
+    Moves the truck in the rispective direction and calculates the time and distance costs of this actions.
 
-def move_up(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int]:
+    Parameters:
+        - truck (Truck): The truck to move
+        - distance_matrix (pd.DataFrame): Dictionary of the distance between two stations.
+        - cell_dict (dict): Dictionary of the Cells of the map
+        - mean_velocity (int): Mean velocity of the truck moving to the next cell
+
+    Returns:
+        - time (int): Value of the time to move the destination cell
+        - distance (int): Value of the total distance covered by the truck
+        - border_hit (flag) : Flag to indicate if the truck tried to exit the map
+    """
+def move_up(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int, bool]:
+    """
+        See above description.
+    """
     cell = truck.get_cell()
     up_cell = cell_dict.get(cell.get_adjacent_cells().get('up'))
 
     if up_cell is None:
-        return 0, 0
+        return 0, 0, True
 
     distance = distance_matrix.loc[truck.get_position(), up_cell.get_center_node()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
@@ -24,15 +41,18 @@ def move_up(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Ce
     truck.set_position(up_cell.get_center_node())
     truck.set_cell(up_cell)
 
-    return time, distance
+    return time, distance, False
 
 
-def move_down(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int]:
+def move_down(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int, bool]:
+    """
+        See above description.
+    """
     cell = truck.get_cell()
     down_cell = cell_dict.get(cell.get_adjacent_cells().get('down'))
 
     if down_cell is None:
-        return 0, 0
+        return 0, 0, True
 
     distance = distance_matrix.loc[truck.get_position(), down_cell.get_center_node()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
@@ -41,15 +61,18 @@ def move_down(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, 
     truck.set_position(down_cell.get_center_node())
     truck.set_cell(down_cell)
 
-    return time, distance
+    return time, distance, False
 
 
-def move_left(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int]:
+def move_left(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int, bool]:
+    """
+        See above description.
+    """
     cell = truck.get_cell()
     left_cell = cell_dict.get(cell.get_adjacent_cells().get('left'))
 
     if left_cell is None:
-        return 0, 0
+        return 0, 0, True
 
     distance = distance_matrix.loc[truck.get_position(), left_cell.get_center_node()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
@@ -58,15 +81,18 @@ def move_left(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, 
     truck.set_position(left_cell.get_center_node())
     truck.set_cell(left_cell)
 
-    return time, distance
+    return time, distance, False
 
 
-def move_right(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int]:
+def move_right(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int, Cell], mean_velocity: int) -> tuple[int, int, bool]:
+    """
+        See above description.
+    """
     cell = truck.get_cell()
     right_cell = cell_dict.get(cell.get_adjacent_cells().get('right'))
 
     if right_cell is None:
-        return 0, 0
+        return 0, 0, True
 
     distance = distance_matrix.loc[truck.get_position(), right_cell.get_center_node()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
@@ -75,47 +101,95 @@ def move_right(truck: Truck, distance_matrix: pd.DataFrame, cell_dict: dict[int,
     truck.set_position(right_cell.get_center_node())
     truck.set_cell(right_cell)
 
-    return time, distance
+    return time, distance, False
 
 
 def drop_bike(truck: Truck, distance_matrix: pd.DataFrame, mean_velocity: int, depot_node: int,
               depot: dict, node: int = None) -> tuple[int, int]:
+    """
+    Unloads a bike to the center_node of the cell where the truck is located or a specified station "node".
+    If the truck is empty, go get more bikes at the depot.
+    WARNING: It is assumed that the deepot + truck load is never zero whern performing this funciton.
+    WARNING: This function doesn't actially drop the bike, it just calculates the time and distance to reach the dropping station.
+                This is done to avoid the event handler to assign this bike before the truck has reach the station,
+                i.e. the bike cannot be ready before it's dropped.
+    --> Drop the bike manually in the simulator after time 't' is served and the simulation has advanced.
+
+    Parameters:
+        - truck (Truck): The truck to move
+        - distance_matrix (pd.DataFrame): Dictionary of the distance between two stations.
+        - mean_velocity (int): Mean velocity of the truck moving to the next cell
+        - depot_node (int): Station ID of the depot.
+        - depot (dict): Dictionary of bikes at the depot.
+        - node (int): Station ID for the bike drop. 
+
+    Returns:
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
+    """
     time = 0
     distance = 0
 
     position = truck.get_position()
     target_node = truck.get_cell().get_center_node() if node is None else node
 
+    # check if the truck is empty. If so, go get more bikes.
     if truck.get_load() == 0:
-        distance = distance_matrix.loc[truck.get_position(), depot_node]
+        distance += distance_matrix.loc[truck.get_position(), depot_node]
         velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
         time += int(distance * 3.6 / velocity_kmh)
         if len(depot) > 15:
             bikes = {key: depot.pop(key) for key in list(depot.keys())[:15]}
             truck.set_load(bikes)
+        else:
+            bikes = {key: depot.pop(key) for key in list(depot.keys())}
+            truck.set_load(bikes)
         position = depot_node
 
     if position != target_node:
-        distance = distance_matrix.loc[position, target_node]
+        distance += distance_matrix.loc[position, target_node]
         velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
         time += int(distance * 3.6 / velocity_kmh)
         truck.set_position(target_node)
 
     truck.leaving_cell = truck.get_cell()
 
+    # If you are asking where the "lock_bike" action is,
+    # this can be found in the simulator after the advancing of the simulation time.
+    # This is trivial since a bike cannot be ready at a station before the truck has reach this station.
+    # This is done to avoid the event handler to assign a bike before is dropped down.
+
     return time, distance
 
 
 def pick_up_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix: pd.DataFrame,
                  mean_velocity: int, depot_node: int, depot: dict, system_bikes: dict) -> tuple[int, int, bool]:
+    """
+    Piks up a bike from a station based on the lowest "bike_metric".
+    The "bikes_metric" is a dictionary where the value of each bike is a normalized value proportional to distance and battery value.
+
+    Parameters:
+        - truck (Truck): The truck to move
+        - station_dict (dict): Dictionary of system's stations.
+        - distance_matrix (pd.DataFrame): Dictionary of the distance between two stations.
+        - mean_velocity (int): Mean velocity of the truck moving to the next cell
+        - depot_node (int): Station ID of the depot.
+        - depot (dict): Dictionary of bikes at the depot.
+        - system_bikes (dict): Dictionary of bikes inside the system.
+
+    Returns:
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
+        - bool = True
+    """
     cell = truck.get_cell()
+    # Flag no bikes in the cell, no bike picked up
+    if cell.get_total_bikes() == 0:
+        return 0, 0, True
+    
     bike_dict = {}
     for station_id in cell.get_nodes():
         bike_dict.update(station_dict[station_id].get_bikes())
-
-    # Flag no bike picked up
-    if cell.get_total_bikes() == 0:
-        return 0, 0, False
 
     # Compute the metric for each bike
     max_distance = 0
@@ -141,6 +215,7 @@ def pick_up_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix
     bike_id = min(bikes_metric, key=bikes_metric.get)
     station = bike_dict[bike_id].get_station()
 
+    # Go get the choosen bike to pick up
     distance = distance_matrix.loc[truck.get_position(), station.get_station_id()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
     time = int(distance * 3.6 / velocity_kmh)
@@ -153,11 +228,12 @@ def pick_up_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix
 
     try:
         truck.load_bike(bike)
-    except ValueError:
-        distance = distance_matrix.loc[truck.get_position(), depot_node]
+    except ValueError:  # The truck is full. Go dump some bikes to the depot
+        distance_to_depot = distance_matrix.loc[truck.get_position(), depot_node]
         velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
-        t_reload = 2*int(distance * 3.6 / velocity_kmh)
-        time += t_reload
+        t_to_depot =  int(distance_to_depot * 3.6 / velocity_kmh)
+        distance += 2 * distance_to_depot
+        time += 2 * t_to_depot
         while truck.get_load() > 15:
             bk = truck.unload_bike()
             bk.reset()
@@ -167,25 +243,47 @@ def pick_up_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix
 
     truck.leaving_cell = truck.get_cell()
 
-    return time, distance, True
+    return time, distance, False
 
 
 def charge_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix: pd.DataFrame,
                 mean_velocity: int, depot_node: int, depot: dict, system_bikes: dict) -> tuple[int, int, bool]:
+    """
+    Piks up a bike with lowest battery.
+    WARNING: This function doesn't drop the bike afterwards to avoid the event handler to assign this bike 
+                before the time of the charging is over, i.e. the bike cannot be ready before it's dropped.
+    --> Drop the bike manually from the simulator after time 't' is served and the simulation has advanced.
+
+    Parameters:
+        - truck (Truck): The truck to move
+        - station_dict (dict): Dictionary of system's stations.
+        - distance_matrix (pd.DataFrame): Dictionary of the distance between two stations.
+        - mean_velocity (int): Mean velocity of the truck moving to the next cell
+        - depot_node (int): Station ID of the depot.
+        - depot (int): Number of bikes at the depot.
+        - system_bikes (dict): Dictionary of bikes inside the system.
+
+    Returns:
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
+        - bool = True
+    """
     cell = truck.get_cell()
+    
+    # Flag no bike picked up
+    if cell.get_total_bikes() == 0:
+        return 0, 0, True
+
     bike_dict = {}
     for station_id in cell.get_nodes():
         bike_dict.update(station_dict[station_id].get_bikes())
-
-    # Flag no bike picked up
-    if cell.get_total_bikes() == 0:
-        return 0, 0, False
 
     # Find the lowest metric bike
     bike_charge = {bike_id: bike.get_battery() for bike_id, bike in bike_dict.items()}
     bike_id = min(bike_charge, key=bike_charge.get)
     station = bike_dict[bike_id].get_station()
 
+    # Go get the choosen bike
     distance = distance_matrix.loc[truck.get_position(), station.get_station_id()]
     velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
     time = int(distance * 3.6 / velocity_kmh)
@@ -199,7 +297,7 @@ def charge_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix:
     try:
         truck.load_bike(bike)
     except ValueError:
-        distance = distance_matrix.loc[truck.get_position(), depot_node]
+        distance = 2 * distance_matrix.loc[truck.get_position(), depot_node]
         velocity_kmh = truncated_gaussian(10, 70, mean_velocity, 5)
         t_reload = 2 * int(distance * 3.6 / velocity_kmh)
         time += t_reload
@@ -209,20 +307,37 @@ def charge_bike(truck: Truck, station_dict: dict[int, Station], distance_matrix:
             depot[bk.get_bike_id()] = bk
         truck.load_bike(bike)
     truck.set_position(station.get_station_id())
-
+    
     truck.leaving_cell = truck.get_cell()
 
-    # return pick_up_bike(truck, station_dict, distance_matrix, mean_velocity, depot_node, depot, system_bikes)
-    return time, distance, True
+    # If you are asking where the "lock_bike" action is,
+    # this can be found in the simulator after the advancing of the simulation time.
+    # This is trivial since a bike cannot be ready at a station before the truck has reach this station.
+    # This is done to avoid the event handler to assign a bike before is dropped down.
+
+    return time, distance, False
 
 
 def stay(truck: Truck) -> int:
     truck.leaving_cell = truck.get_cell()
-    return 0
+    return 60
 
 # ----------------------------------------------------------------------------------------------------------------------
 
 def tsp_rebalancing(surplus_nodes: dict, deficit_nodes: dict, starting_node, distance_matrix: pd.DataFrame):
+    """
+    Computes the system rebalancing using the traveling_salesman_problem algorithm to calculate the total time and the total path of the truck.
+
+    Parameters:
+        - surplus_nodes (dict): Dictionary of the nodes with eccess bikes
+        - deficit_nodes (dict): Dictionary of the nodes with deficit bikes
+        - starting_node (int): Station ID to be the first station visited
+        - distance_matrix (dict): Dictionary of the distance between two stations.
+
+    Returns:
+        - total_distance (int): Value of the total distance covered by the truck for the rebalancing
+        - final_route (dict): Ordered dictionary of the stations to visit
+    """
     all_nodes = list(surplus_nodes.keys()) + list(deficit_nodes.keys())
     tsp_graph = nx.Graph()
 
@@ -230,6 +345,7 @@ def tsp_rebalancing(surplus_nodes: dict, deficit_nodes: dict, starting_node, dis
     if not all_nodes:
         raise ValueError("No valid surplus or deficit nodes to rebalance.")
 
+    # Distance calculation and all edges connections(between nodes in all_nodes)
     for i in range(len(all_nodes)):
         for j in range(i + 1, len(all_nodes)):
             node_i, node_j = all_nodes[i], all_nodes[j]

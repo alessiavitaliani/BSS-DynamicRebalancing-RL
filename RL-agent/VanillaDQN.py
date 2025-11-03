@@ -104,9 +104,9 @@ class DQNv2(nn.Module):
 
         # First GAT layer:  3 input features -> 64 features, heads=4 -> 64 * 4 = 256 if concat=True
         self.gat1 = GATv2Conv(
-            # TURN OFF THIS TO DISABLE BATTERY CHARGE
+            # # MODIFY THE FIRST PARAMETER wrt THE DIMENTION OF THE GRAPH OBSERVATION SPACE
             in_channels=4,
-            # in_channels=3,
+
             out_channels=64,
             heads=4,
             edge_dim=1,
@@ -156,9 +156,9 @@ class DQNv2(nn.Module):
         # 4) MLP for Agent State
         # ------------------------------------------------------------------------------
         self.agent_fc = nn.Sequential(
-            # TURN OFF THIS TO DISABLE BATTERY CHARGE
-            nn.Linear(68, 256),
-            # nn.Linear(67, 256),
+            # MODIFY THE FIRST PARAMETER wrt THE DIMENTION OF THE TRUCK OBSERVATION SPACE
+            nn.Linear(70, 256),
+
             nn.ReLU(),
             nn.Linear(256, 256),
             nn.ReLU(),

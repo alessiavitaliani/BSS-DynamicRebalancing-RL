@@ -29,6 +29,7 @@ params = {
 days2num = {'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3, 'friday': 4, 'saturday': 5, 'sunday': 6}
 num2days = {0: 'monday', 1: 'tuesday', 2: 'wednesday', 3: 'thursday', 4: 'friday', 5: 'saturday', 6: 'sunday'}
 
+
 # ----------------------------------------------------------------------------------------------------------------------
 
 class StaticEnv(gym.Env):
@@ -75,35 +76,37 @@ class StaticEnv(gym.Env):
 
         # Initialize simulation state variables
         self.pmf_matrix, self.global_rate, self.global_rate_dict = None, None, None
-        self.system_bikes, self.outside_system_bikes, self.maximum_number_of_bikes = None, None, 0
+        self.system_bikes, self.outside_system_bikes = None, None
+        self.maximum_number_of_bikes, self.fixed_rebal_bikes_per_cell = 0, 5
         self.env_time, self.timeslot, self.day = 0, 0, 'monday'
-        self.timeslots_completed, self.days_completed, self.total_timeslots = 0, 0, 0
+        self.timeslots_completed, self.days_completed, self.total_timeslots = 0, 0, 56
         self.depot, self.depot_node = None, None
         self.stations = None
-        self.event_buffer =[]
+        self.event_buffer = []
         self.cell_subgraph = None
         self.next_bike_id = 0
 
-        self.num_rebalancing_events, self.rebalancing_hours = 0, []
-
+        self.num_rebalancing_events = 1
+        self.rebalancing_hours = 0, []
 
     def reset(self, seed=None, options=None) -> tuple[np.array, dict]:
         # Call parent class reset
         super().reset(seed=seed)
 
-        # Day and time slot options
-        self.day = options.get('day', 'monday') if options else 'monday'
-        self.timeslot = options.get('timeslot', 0) if options else 0
-        self.total_timeslots = options.get('total_timeslots', 56) if options else 56
-        self.num_rebalancing_events = options.get('num_rebalancing_events', 1) if options else 1
-
-        # Bike options
         if options:
+            # Day and time slot options
+            self.day = options.get('day', 'monday')
+            self.timeslot = options.get('timeslot', 0)
+            self.total_timeslots = options.get('total_timeslots', 56)
+            self.num_rebalancing_events = options.get('num_rebalancing_events', 1)
+
+            # Bike options
             self.maximum_number_of_bikes = options.get('maximum_number_of_bikes', self.maximum_number_of_bikes)
+            self.fixed_rebal_bikes_per_cell = options.get('fixed_rebal_bikes_per_cell', self.fixed_rebal_bikes_per_cell)
 
         # Set rebalancing hours
         if self.num_rebalancing_events > 0:
-            self.rebalancing_hours = [(i+3)%24 for i in range(0, 24, 24 // self.num_rebalancing_events)]
+            self.rebalancing_hours = [(i + 3) % 24 for i in range(0, 24, 24 // self.num_rebalancing_events)]
             self.rebalancing_hours = sorted(self.rebalancing_hours)
         self.timeslots_completed = 0
         self.days_completed = 0
@@ -117,6 +120,11 @@ class StaticEnv(gym.Env):
         self.next_bike_id = 0
         self.depot_node = self.cells.get(options.get('depot_id', 491) if options else 491).get_center_node()
         self.depot, self.next_bike_id = initialize_bikes(n=self.maximum_number_of_bikes, next_bike_id=self.next_bike_id)
+        """
+        A bit counter intuitive...
+        self.depot_node := is a Station object, is the center node of the cell with the designation depot_id (default = 491)
+        self.depot      := is a list of bike IDs, these bikes have 'None' as designated station because no station parameter is passed during initialization.
+        """
 
         # Create stations dictionary
         from gymnasium_env.simulator.station import Station
@@ -133,6 +141,7 @@ class StaticEnv(gym.Env):
             for node in cell.nodes:
                 self.stations[node].set_cell(cell)
 
+        # Check for 'cell=None' assigned stations
         for station in self.stations.values():
             if station.get_cell() is None and station.get_station_id() != 10000:
                 raise ValueError(f"Station {station} is not assigned to a cell.")
@@ -143,9 +152,11 @@ class StaticEnv(gym.Env):
         # Compute net flow per cell
         net_flow_per_cell = self._compute_net_flow()
 
-        # Assign bikes to cells based on net flow
-        bikes_per_cell = {cell_id: 5 for cell_id in self.cells.keys()}
-        left_bikes = self.maximum_number_of_bikes - 5 * len(self.cells)
+        # Assign self.fixed_rebal_bikes_per_cell bikes per cells
+        bikes_per_cell = {cell_id: self.fixed_rebal_bikes_per_cell for cell_id in self.cells.keys()}
+        left_bikes = self.maximum_number_of_bikes - self.fixed_rebal_bikes_per_cell * len(self.cells)
+
+        # Assign more bikes to cells with negative flow
         total_negative_flow = sum(flow for flow in net_flow_per_cell.values() if flow < 0)
         bike_positioned = 0
         for cell_id, flow in net_flow_per_cell.items():
@@ -154,7 +165,7 @@ class StaticEnv(gym.Env):
                 bikes_per_cell[cell_id] += num_of_bikes
                 bike_positioned += num_of_bikes
 
-        # Assign the remaining bikes to cells with negative flow randomly
+        # Assign the last remaining bikes to cells with negative flow randomly
         if bike_positioned < left_bikes:
             cell_ids = [cell_key for cell_key, flow in net_flow_per_cell.items() if flow < 0]
             random.shuffle(cell_ids)
@@ -180,7 +191,6 @@ class StaticEnv(gym.Env):
 
         return {}, {}
 
-
     def step(self, action) -> tuple[np.array, float, bool, bool, dict]:
         terminated = False
         total_failures = 0
@@ -191,7 +201,6 @@ class StaticEnv(gym.Env):
 
             # Process all events that occurred before the updated environment time
             while self.event_buffer and self.event_buffer[0].time < self.env_time:
-                # print("Entering in while")
                 event = self.event_buffer.pop(0)
                 failure, self.next_bike_id = event_handler(
                     event=event,
@@ -204,16 +213,27 @@ class StaticEnv(gym.Env):
                 )
                 total_failures += failure
 
+            # Update env_hour. Is it time to rebalance? and how much time_to_rebalance?
             if self.env_time % 3600 == 0:
                 hour = ((self.env_time // 3600) + 1) % 24
                 if hour in self.rebalancing_hours:
-                    time_to_rebalance = self._rebalance_system()
+                    num_bikes_per_cell = self.fixed_rebal_bikes_per_cell
+                    time_to_rebalance = -1
+                    while time_to_rebalance == -1:
+                        try:
+                            # print(f"bike per cell: {num_bikes_per_cell}")
+                            time_to_rebalance = self._rebalance_system(num_bikes_per_cell)
+                        except ValueError:
+                            num_bikes_per_cell -= 1
+
                     rebalance_time.append(time_to_rebalance)
 
-            if self.env_time >= 3600*3*(self.timeslot + 1):
+                    # Update timeslot and day
+            if self.env_time >= 3600 * 3 * (self.timeslot + 1):
                 self.timeslot = (self.timeslot + 1) % 8
                 failures_per_timeslot.append(total_failures)
                 total_failures = 0
+                # Update day and initialize_day
                 if self.timeslot == 0:
                     self.day = num2days[(days2num[self.day] + 1) % 7]
                     self.days_completed += 1
@@ -233,11 +253,9 @@ class StaticEnv(gym.Env):
 
         return {}, 0, done, terminated, info
 
-
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
-
 
     def _initialize_day(self):
         # Load PMF matrix and global rate for the current day and time slot
@@ -261,12 +279,12 @@ class StaticEnv(gym.Env):
                 event.time += 3600 * 3 * timeslot
             total_events.extend(events)
 
+        # Insort the new events in the global event_buffer, which doesn't get reset when the method is called again
         for event in total_events:
             bisect.insort(self.event_buffer, event, key=lambda x: x.time)
 
         # Initialize environment time
         self.env_time = 0
-
 
     def _load_pmf_matrix_global_rate(self, day: str, timeslot: int) -> tuple[pd.DataFrame, float]:
         # Load the PMF matrix and global rate for a given day and time slot
@@ -286,8 +304,7 @@ class StaticEnv(gym.Env):
 
         return pmf_matrix, global_rate
 
-
-    def _rebalance_system(self) -> int:
+    def _rebalance_system(self, num_bikes_per_cell: int) -> int:
         # Add bikes back to the system
         while len(self.system_bikes) < self.maximum_number_of_bikes:
             bike = self.outside_system_bikes.pop(next(iter(self.outside_system_bikes)))
@@ -297,9 +314,14 @@ class StaticEnv(gym.Env):
         net_flow_per_cell = self._compute_net_flow()
 
         # Assign bikes to cells based on the net flow
-        bikes_per_cell = {cell_id: 5 for cell_id in self.cells.keys()}
+
+        bikes_per_cell = {cell_id: num_bikes_per_cell for cell_id in self.cells.keys()}
         available_bikes = sum([1 for bike in self.system_bikes.values() if bike.available])
-        left_bikes = available_bikes - 5*len(self.cells)
+        left_bikes = available_bikes - num_bikes_per_cell * len(self.cells)
+        # Chech if there are too few bikes
+        if left_bikes < 0:
+            raise ValueError(
+                "Low on bikes!! \nThe maximum number of bikes set in params is too low to fullfill a minimum bike rebalancing \nTry to raise the value of maximum_number_of_bikes")
         total_negative_flow = sum(flow for flow in net_flow_per_cell.values() if flow < 0)
         used_bikes = 0
         for cell_id, flow in net_flow_per_cell.items():
@@ -355,7 +377,6 @@ class StaticEnv(gym.Env):
             bike.set_battery(bike.get_max_battery())
 
         return time
-
 
     def _compute_net_flow(self, upper_bound: int = None) -> dict:
         # Compute the net flow per cell

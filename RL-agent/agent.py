@@ -82,7 +82,7 @@ class DQNAgent:
 
     def get_q_values(self, state, key=None):
         """
-        Returns the Q-values for the given state.
+        Returns the Q-values of the train model (not the targhet model) for the given state.
         """
         with torch.no_grad():
             return self.train_model(state, key)
@@ -143,14 +143,15 @@ class DQNAgent:
         # Sample a batch from the replay buffer
         batch = self.replay_buffer.sample(batch_size).to(self.device)
 
+        # Compute the train values Q(S, a)
         train_q_values = self.train_model(batch, 's').gather(1, batch.actions)
-        # train_q_values = self.train_model(batch, 's')
 
-        # Compute target Q-values
         with torch.no_grad():
+            # Compute the target values of next step Q(S', pi(S'))
             next_actions = self.train_model(batch, 't').argmax(dim=1, keepdim=True)
             next_q_values = self.target_model(batch, 't').gather(1, next_actions)
 
+            # Compute the Bellman equation to calculate the targhet Qt(S,a)
             discount = self.gamma ** batch.steps
             target_q_values = batch.reward + discount * next_q_values * (1 - batch.done.float())
 
@@ -170,7 +171,7 @@ class DQNAgent:
         torch.nn.utils.clip_grad_norm_(self.train_model.parameters(), max_norm=10.0)
         self.optimizer.step()
 
-        self.soft_update_target_network(tau=self.tau)
+        # self.soft_update_target_network(tau=self.tau)
 
         return loss.item()
 

@@ -25,13 +25,12 @@ if TYPE_CHECKING:
 
 class Actions(Enum):
     STAY = 0
-    RIGHT = 1
-    UP = 2
+    UP = 1
+    DOWN = 2
     LEFT = 3
-    DOWN = 4
+    RIGHT = 4
     DROP_BIKE = 5
     PICK_UP_BIKE = 6
-    # TURN OFF THIS TO DISABLE BATTERY CHARGE
     CHARGE_BIKE = 7
 
 
@@ -50,55 +49,69 @@ class ActionHistoryEncoder(nn.Module):
 
 class Logger:
     def __init__(self, log_file: str, is_logging: bool = False):
-        if is_logging:
-            logging.basicConfig(filename=log_file, level=logging.INFO, filemode='w')
-            self.logger = logging.getLogger('env_logger')
-            self.is_logging = is_logging
-        else:
-            self.logger = None
-            self.is_logging = False
+        logging.basicConfig(filename=log_file, level=logging.INFO, filemode='w')
+        self.logger = logging.getLogger('env_logger')   
+        self.is_logging = is_logging
 
-    def new_log_line(self):
-        if self.is_logging:
-            self.logger.info("--------------------------------------------------------")
+    def set_logging(self, is_logging: bool):
+        self.is_logging = is_logging
 
-    def log_starting_action(self, action: str, t: int):
+    def new_log_line(self, timeslot=None, time=None, day=None):
         if self.is_logging:
-            self.logger.info(f'START ACTION: '
-                             f'\n - {action}'
-                             f'\n - Time: {t}'
-                             f'\n - Steps needed: {int(math.ceil(t / 30))}')
+            log = ("--------------------------------------------------------")
+            if timeslot is not None:
+                log += (f" Timeslot = {timeslot}")
+            self.logger.info(log)
 
-    def log_ending_action(self, time: str):
+    def log_starting_action(self, action: str, t: int, cell_id: int, invalid:bool):
         if self.is_logging:
-            self.logger.info(f'Action completed successfully - Time: {time}')
+            invalid = 'INVALID' if invalid else ''
+            self.logger.info(f'ACTION: {action} on cell {cell_id} {invalid} --> Time to complete: {t}s - Steps needed: {int(math.ceil(t / 30))}')
+
+    def log_ending_action(self,invalid: bool , time: str):
+        if self.is_logging:
+            if invalid:
+                self.logger.info(f'### ACTION IS INVALID ### - Time: {time}')
+            else:
+                self.logger.info(f'Action completed successfully - Time: {time}')
 
     def log_state(self, step: int, time: str):
         if self.is_logging:
             self.logger.info(f'State S_{step} - Time: {time}')
 
-    def log_truck(self, truck: "Truck"):
+    def log_truck(self, truck: "Truck", depot_bikes: int):
         if self.is_logging:
-            self.logger.info(f"\nTRUCK:"
-                             f"\n - CELL: {truck.cell.get_id()} - {truck.cell.get_center_node()}"
-                             f"\n - POSITION: {truck.position}"
-                             f"\n - LOAD: {truck.current_load} bikes")
+            self.logger.info(f"TRUCK in CELL: {truck.cell.get_id()} (center_node = {truck.cell.get_center_node()}, cell_bikes = {truck.cell.get_total_bikes()}, critic_score = {truck.cell.get_critic_score()})"
+                             f" - POSITION: {truck.position} - LOAD: {truck.current_load}-{depot_bikes}")
 
-    def log_no_available_bikes(self, start_station: int, end_station: int):
+    def log_no_available_bikes(self, start_station: "Station", end_station: "Station"):
         if self.is_logging:
-            self.logger.warning(f"No bike available from station {start_station} to station {end_station}")
+            self.logger.warning(f"TRIP FAILED: No bikes from station {start_station.get_station_id()} (cell: {start_station.get_cell().get_id()})"
+                                f" to station {end_station.get_station_id()} (cell: {end_station.get_cell().get_id()})")
 
     def log_trip(self, trip: "Trip"):
         if self.is_logging:
-            self.logger.info("Trip scheduled %s", trip)
+            self.logger.info("Trip: %s", trip)
+    
+    def log_terminated(self, time: str):
+        if self.is_logging:
+            self.logger.info('#################################################'
+                            f'###### Slot TERMINATED - Time: {time} '
+                             '#################################################')
+
+    def log_done(self, time: str):
+        if self.is_logging:
+            self.logger.info('#################################################'
+                            f'###### THE EPISODE IS DONE - Time: {time} '
+                             '#################################################')
 
     def log(self, message: str):
         if self.is_logging:
-            self.logger.info(f"\n{message}\n")
+            self.logger.info(f"{message}")
 
-    def set_logging(self, is_logging: bool):
-        self.is_logging = is_logging
-
+    def warning(self, message: str):
+        if self.is_logging:
+            self.logger.warning(f"{message}")
 # ----------------------------------------------------------------------------------------------------------------------
 
 def kahan_sum(arr):
@@ -159,6 +172,18 @@ def convert_seconds_to_hours_minutes(seconds) -> str:
 
 
 def truncated_gaussian(lower=5, upper=25, mean=15, std_dev=5):
+    """
+    Samples one point from a truncated gaussian.
+
+    Parameters:
+        - lower (int): The lower bound of the truncation.
+        - upper (int): The upper bound of the truncation.
+        - mean (int): The mean value of the gaussian.
+        - std_dev (int): The standard deviation of the gaussian.
+
+    Returns:
+        - speed (int): The sampled value form the truncated gaussian
+    """
     a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
     truncated_normal = truncnorm(a, b, loc=mean, scale=std_dev)
     speed = truncated_normal.rvs()
@@ -189,6 +214,15 @@ def load_cells_from_csv(filename) -> dict[int, "Cell"]:
 
 
 def initialize_graph(graph_path: str = None) -> nx.MultiDiGraph:
+    """
+    Initialize a road graph from a saved file.
+
+    Parameters:
+        - graph_path (str):  the file directory
+
+    Returns:
+        - nx.Graph: The graph representing the road network.
+    """
     if os.path.isfile(graph_path):
         print("Network file already exists. Loading the network data: ", end="")
         graph = ox.load_graphml(graph_path)
@@ -202,16 +236,20 @@ def initialize_graph(graph_path: str = None) -> nx.MultiDiGraph:
 
 def initialize_bikes(station: "Station" = None, n: int = 0, next_bike_id: int = 0) -> tuple[dict[int, "Bike"], int]:
     """
-    Initialize a list of bikes at a station.
+    Initialize a list of bikes at a station starting from a specified bike_id.
 
     Parameters:
-        - stn (Station): The station where the bikes are located.
+        - station (Station): The station where the bikes are going to be initialized.
         - n (int): The number of bikes to initialize. Default is 0.
+        - next_bike_id (int): The starting bike_id. Default is 0. 
 
     Returns:
-        - dict: A dictionary containing the bikes at the station.
+        - dict: A dictionary containing:
+            - dict of bikes at the station
+            - the next available bike_id
     """
     from gymnasium_env.simulator.bike import Bike
+
     next_id = next_bike_id
     bikes = {}
     for i in range(n):
@@ -228,10 +266,15 @@ def initialize_stations(stations: dict, depot: dict, bikes_per_station: dict, ne
     Initialize a list of stations based on the nodes of the graph.
 
     Parameters:
-        - G (nx.MultiDiGraph): The graph representing the road network.
+        - stations (dict): Dictionary containing all the stations of the network plus the outside station with station.id=10000 .
+        - depot (dict): Dictionary of all initialized bikes of the system.
+        - bikes_per_station (dict): Dictionary that specifies ho many bikes are to be assigned to each station.
+        - next_bike_id (int): The next available bike_id
 
     Returns:
-        - dict: A dictionary containing the stations in the network.
+        - dict: A dictionary containing the bikes in the network, each assigned to a station.
+        - dict: A dictionary containing the bikes outside of the network, with bike.station=10000.
+        - int: next_bike_id if more bikes where initialized.
     """
     system_bikes = {}
 
@@ -256,9 +299,10 @@ def initialize_cells_subgraph(cells: dict[int, "Cell"], nodes_dict: dict[int, tu
     Initialize a subgraph of the road network based on the cells.
 
     Parameters:
-        - graph (nx.MultiDiGraph): The road network graph.
         - cells (dict): A dictionary of cells in the network.
         - nodes_dict (dict): A dictionary of nodes and their coordinates.
+        - distance_matrix (pd.DataFrame): Dictionary of station to station distances.
+        - node_feature (dict): Features of each node.
 
     Returns:
         - nx.Graph: A subgraph of the road network containing the center nodes of the cells.
@@ -278,7 +322,7 @@ def initialize_cells_subgraph(cells: dict[int, "Cell"], nodes_dict: dict[int, tu
         "demand_rate": 0.0,
         "arrival_rate": 0.0,
         "bike_load": 0.0,
-        "visits": 0.0,
+        "si": 0.0,
         "critic_score": 0.0,
     }
 
