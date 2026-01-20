@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bss-rl-training"
+version = "1.0.0"
+description = "RL Training module for BSS Dynamic Rebalancing project"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "torch",
+    "torch-geometric",
+    "gymnasium",
+    "tqdm",
+    "matplotlib",
+    "requests",
+    "psutil",
+    "networkx",
+    "osmnx",
+    "geopandas",
+    "pandas",
+]
+
+[project.optional-dependencies]
+telegram = ["tqdm[telegram]"]
+dev = ["pytest", "black", "isort"]
+
+[project.scripts]
+bss-train = "rl_training.train:main"
+bss-validate = "rl_training.validate:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120

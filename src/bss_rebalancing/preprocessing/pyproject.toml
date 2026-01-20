@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bss-preprocessing"
+version = "0.1.0"
+description = "Preprocessing pipeline for BSS Dynamic Rebalancing RL project"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "osmnx",
+    "networkx",
+    "geopandas",
+    "matplotlib",
+    "geopy",
+    "shapely",
+    "tqdm",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+]
+
+[project.scripts]
+bss-preprocess = "preprocessing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 120
+
+[tool.isort]
+profile = "black"
+line_length = 120

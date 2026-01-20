@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bss-benchmark"
+version = "1.1.0"
+description = "Benchmark module for BSS Dynamic Rebalancing RL project"
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+    "torch",
+    "gymnasium",
+    "numpy",
+    "matplotlib",
+    "requests",
+    "networkx",
+    "osmnx",
+    "geopandas",
+    "torch_geometric"
+]
+
+[project.scripts]
+bss-benchmark = "benchmark.run:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["benchmark*"]
+
+[tool.black]
+line-length = 88
+
+[tool.isort]
+profile = "black"
+line_length = 88
