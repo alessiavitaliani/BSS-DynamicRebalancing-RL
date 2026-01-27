@@ -250,11 +250,17 @@ def load_concatenated_step_data(run_dir: Path, mode: str, metric: str) -> pd.Ser
                 # Handle different data types
                 if metric == 'q_values':
                     # Q-values are per timeslot, compute mean
-                    all_data.extend([np.mean(q) if len(q) > 0 else 0 for q in data])
+                    processed = [np.mean(q) if len(q) > 0 else 0 for q in data]
+                    all_data.extend(processed)
                 elif metric == 'losses':
                     # Filter out None values
-                    all_data.extend([l for l in data if l is not None])
+                    processed = [l for l in data if l is not None]
+                    all_data.extend(processed)
+                elif metric == 'global_critic_scores':
+                    # Direct values
+                    all_data.extend(data)
                 else:
                     all_data.extend(data)
 
     return pd.Series(all_data)
+

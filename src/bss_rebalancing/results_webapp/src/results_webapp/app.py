@@ -65,6 +65,7 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
         dbc.Tabs([
             # Overview Tab
             dbc.Tab(label='📊 Overview', children=[
+                # Row 1: Failures and Rewards
                 dbc.Row([
                     dbc.Col([
                         dcc.Graph(id='failures-plot', config=PLOT_CONFIG)
@@ -74,13 +75,31 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                     ], width=6),
                 ], className='mt-3'),
 
+                # Row 2: Epsilon and Deployed Bikes
                 dbc.Row([
                     dbc.Col([
                         dcc.Graph(id='epsilon-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
-                        dcc.Graph(id='comparison-plot', config=PLOT_CONFIG)
+                        dcc.Graph(id='deployed-bikes-overview-plot', config=PLOT_CONFIG)
                     ], width=6),
+                ], className='mt-3'),
+
+                # Row 3: Q-values and Global Critic (only for training)
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='qvalues-overview-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        dcc.Graph(id='global-critic-overview-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                # Row 4: Training Loss (only for training mode)
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='loss-overview-plot', config=PLOT_CONFIG)
+                    ], width=12),
                 ], className='mt-3'),
             ]),
 
@@ -107,27 +126,6 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                     ], width=6),
                     dbc.Col([
                         dcc.Graph(id='reward-tracking-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-            ]),
-
-            # Training Dynamics Tab
-            dbc.Tab(label='📈 Training Dynamics', children=[
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='loss-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='qvalues-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='global-critic-scores-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='deployed-bikes-plot', config=PLOT_CONFIG)
                     ], width=6),
                 ], className='mt-3'),
             ]),

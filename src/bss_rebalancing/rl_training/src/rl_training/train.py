@@ -591,7 +591,7 @@ def main():
     results_manager.save_hyperparameters(params, reward_params)
 
     # Create the environment
-    env = gym.make('gymnasium_env/FullyDynamicEnv-v0', data_path=data_path, results_path=str(results_manager.training_path))
+    env = gym.make('gymnasium_env/FullyDynamicEnv-v0', data_path=data_path, results_path=f"{str(results_manager.training_path)}/")
     env.unwrapped.seed(seed)
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
@@ -626,7 +626,7 @@ def main():
             dynamic_ncols=True
         )
 
-        logger = setup_logger('training_logger', str(results_manager.training_path) + 'training.log', level=logging.INFO)
+        logger = setup_logger('training_logger', str(results_manager.training_path) + '/training.log', level=logging.INFO)
 
         logger.info(f"Training started with the following parameters: {params}")
 
