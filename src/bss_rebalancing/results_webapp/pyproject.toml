@@ -25,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-bss-results = "results_webapp.app:main"
+bss-results-webapp = "results_webapp.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -17,10 +17,10 @@ pip install -e .
 import gymnasium as gym
 
 # Create the fully dynamic environment
-env = gym.make("gymnasium_env/FullyDynamicEnv-v0", data_path="../data/", results_path="../results/")
+env = gym.make("gymnasium_env/FullyDynamicEnv-v0", data_path="data/", results_path="../results/")
 
 # Create the static environment
-env = gym.make("gymnasium_env/StaticEnv-v0", data_path="../data/")
+env = gym.make("gymnasium_env/StaticEnv-v0", data_path="data/")
 
 # Reset the environment
 obs, info = env.reset(options={

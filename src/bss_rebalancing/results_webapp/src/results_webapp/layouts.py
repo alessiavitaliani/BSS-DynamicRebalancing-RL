@@ -41,7 +41,9 @@ def create_controls():
                             {'label': ' Validation', 'value': 'validation'}
                         ],
                         value='training',
-                        inline=True
+                        inline=True,
+                        inputStyle={'margin-right': '8px'},  # Space between radio and label
+                        labelStyle={'margin-right': '20px'}
                     )
                 ])
             ])

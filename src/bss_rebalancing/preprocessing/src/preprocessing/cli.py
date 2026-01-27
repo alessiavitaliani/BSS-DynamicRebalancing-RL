@@ -18,30 +18,30 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # Run full preprocessing pipeline
-  bss-preprocess --data-path ../data/
+  bss-preprocess --data-path data/
 
   # Run specific steps only
-  bss-preprocess --data-path ../data/ --steps download,preprocess,interpolate
+  bss-preprocess --data-path data/ --steps download,preprocess,interpolate
 
   # Skip certain steps
-  bss-preprocess --data-path ../data/ --skip download
+  bss-preprocess --data-path data/ --skip download
 
   # Plot the graph only (no preprocessing)
-  bss-preprocess --data-path ../data/ --plot graph
+  bss-preprocess --data-path data/ --plot graph
 
   # Plot graph with cell grid
-  bss-preprocess --data-path ../data/ --plot grid
+  bss-preprocess --data-path data/ --plot grid
 
   # Plot graph with cell grid and cell numbers
-  bss-preprocess --data-path ../data/ --plot grid-numbered
+  bss-preprocess --data-path data/ --plot grid-numbered
         """,
     )
 
     parser.add_argument(
         "--data-path",
         type=str,
-        default="../data/",
-        help="Path to the data directory (default: ../data/)",
+        default="data/",
+        help="Path to the data directory (default: data/)",
     )
 
     parser.add_argument(

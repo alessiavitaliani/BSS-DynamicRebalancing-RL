@@ -12,13 +12,13 @@ from gymnasium.envs.registration import register
 register(
     id="gymnasium_env/FullyDynamicEnv-v0",
     entry_point="gymnasium_env.envs:FullyDynamicEnv",
-    kwargs={'data_path': '../data/', 'results_path': '../results/'},
+    kwargs={'data_path': 'data/', 'results_path': 'results/'},
 )
 
 register(
     id="gymnasium_env/StaticEnv-v0",
     entry_point="gymnasium_env.envs:StaticEnv",
-    kwargs={'data_path': '../data/'},
+    kwargs={'data_path': 'data/'},
 )
 
 from gymnasium_env.envs import FullyDynamicEnv, StaticEnv

@@ -45,7 +45,7 @@ class BenchmarkDefaults:
     RANDOM_SEED = 32
 
     # Paths
-    DEFAULT_DATA_PATH = "../../../data/"
+    DEFAULT_DATA_PATH = "data/"
     DEFAULT_RESULTS_PATH = "./"
     BENCHMARK_SUBFOLDER = "benchmark"
 
@@ -233,7 +233,29 @@ def parse_arguments() -> dict:
         Dictionary containing configuration parameters.
     """
     parser = argparse.ArgumentParser(
-        description='Run static environment benchmark simulation'
+        description="BSS Benchmark Runner for Static Environment",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+            Examples:
+            
+                # Run benchmark with default settings
+                python -m benchmark.run
+                
+                # Specify custom data and results paths
+                python -m benchmark.run --data-path data/ --results-path results/
+                
+                # Customize simulation parameters
+                python -m benchmark.run --num-episodes 5 --total-timeslots 56
+                
+                # Adjust fleet parameters
+                python -m benchmark.run --maximum-number-of-bikes 400 --fixed-rebal-bikes-per-cell 10
+                
+                # Set a unique run identifier
+                python -m benchmark.run --run-id 42
+                
+                # Combine multiple options
+                python -m benchmark.run --data-path data/ --results-path results/ --num-episodes 3 --maximum-number-of-bikes 350 --run-id 7     
+            """,
     )
 
     # Path configuration

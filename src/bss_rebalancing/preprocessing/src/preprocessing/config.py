@@ -15,7 +15,7 @@ class PreprocessingConfig:
     network_type: str = "bike"
 
     # Path settings
-    data_path: str = "../data/"
+    data_path: str = "data/"
     graph_file: str = "utils/cambridge_network.graphml"
     cell_data_path: str = "utils/cell_data.pkl"
     global_rates_path: str = "utils/global_rates.pkl"

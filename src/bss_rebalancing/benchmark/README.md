@@ -117,10 +117,10 @@ pip install -e ".[all]"
 
 ```bash
 # Use the installed CLI command
-bss-benchmark --data_path ../../../data/ --results_path ./results --run_id 1
+bss-benchmark --data_path data/ --results_path ./results --run_id 1
 
 # Or run directly as module
-python -m benchmark.run --data_path ../../../data/
+python -m benchmark.run --data_path data/
 ```
 
 ### Python API
@@ -132,7 +132,7 @@ from benchmark.utils import convert_seconds_to_hours_minutes
 
 # Run benchmark
 config = {
-    'data_path': '../../../data/',
+    'data_path': 'data/',
     'results_path': './results',
     'run_id': 0,
     'num_episodes': 1,

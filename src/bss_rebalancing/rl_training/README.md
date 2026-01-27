@@ -22,11 +22,11 @@ pip install -e ".[telegram]"
 
 ```bash
 # Basic training
-bss-train --data_path ../data/ --results_path results/
+bss-train --data_path data/ --results_path results/
 
 # With options
 bss-train \
-    --data_path ../data/ \
+    --data_path data/ \
     --results_path results/ \
     --num_episodes 140 \
     --num_bikes 500 \
@@ -41,7 +41,7 @@ bss-train \
 # Validate a trained model
 bss-validate \
     --model_path results/validation_1/trained_models/139/trained_agent.pt \
-    --data_path ../data/ \
+    --data_path data/ \
     --results_path results/ \
     --epsilon 0.05
 ```

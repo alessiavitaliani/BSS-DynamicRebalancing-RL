@@ -1,4 +1,5 @@
-# 🚲 Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning
+# 🚲 BSS Dynamic Rebalancing with Deep Reinforcement Learning
+
 ### Last-mile mobility. Real-time simulation. Adaptive rebalancing.
 
 This repository accompanies the thesis project *Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning*. It presents a novel framework for dynamically rebalancing bikes in a dockless **Bike Sharing System (BSS)** using a **Double Deep Q-Network (DDQN)** trained in a realistic, event-driven simulation environment.
@@ -12,177 +13,338 @@ Cities are increasingly adopting sustainable transport solutions to address cong
 This thesis tackles the challenge with a **fully dynamic rebalancing framework** driven by **Reinforcement Learning**, where decisions are made in real time based on real-world demand patterns and traffic conditions.
 
 ### 🎯 Highlights
-- 🧠 A **DDQN agent** learns to make rebalancing decisions under uncertainty.
-- 🧪 **Event-driven simulation** using real **Cambridge, MA** demand data and **TomTom traffic profiles**.
-- 🛠️ Baseline comparisons, reward design exploration, and scalability considerations.
+- 🧠 A **DDQN agent** learns to make rebalancing decisions under uncertainty
+- 🧪 **Event-driven simulation** using real **Cambridge, MA** demand data and **TomTom traffic profiles**
+- 🛠️ Modular architecture with separate packages for preprocessing, training, validation, and benchmarking
+- 📊 Real-time visualization dashboard for monitoring training progress
+- 🔧 CLI tools for streamlined workflows
 
 ---
 
 ## 📄 Thesis
 
-You can read the full thesis [(https://hdl.handle.net/20.500.12608/84368)](https://hdl.handle.net/20.500.12608/84368).
+You can read the full thesis at [https://hdl.handle.net/20.500.12608/84368](https://hdl.handle.net/20.500.12608/84368)
 
 ---
 
 ## 📁 Project Structure
 
+This is a **monorepo** containing five independent Python packages:
+
 ```
-├── README.md
-├── RL-agent
-│   ├── DuelingDQN.py
-│   ├── VanillaDQN.py
-│   ├── agent.py
-│   ├── dummy_file.py
-│   ├── replay_memory.py
-│   ├── train_model.py
-│   ├── utils.py
-│   └── validate_model.py
-├── benchmarks
-│   ├── benchmark.py
-│   ├── results
-│   │   ├── rebalance_time.pkl
-│   │   └── total_failures.pkl
-│   └── utils.py
-├── data
-│   └── utils
-│       ├── ev_consumption_matrix.csv
-│       ├── ev_velocity_matrix.csv
-│       └── filtered_stations.csv
-├── gymnasium_env
-│   ├── __init__.py
-│   ├── envs
-│   │   ├── FullyDynamicEnvironment.py
-│   │   ├── StaticEnvironment.py
-│   │   └── __init__.py
-│   ├── register_env.py
-│   └── simulator
-│       ├── __init__.py
-│       ├── bike.py
-│       ├── bike_simulator.py
-│       ├── cell.py
-│       ├── event.py
-│       ├── station.py
-│       ├── trip.py
-│       ├── truck.py
-│       ├── truck_simulator.py
-│       └── utils.py
-├── preprocessing
-│   ├── preprocessing.py
-│   └── utils
-│       ├── __init__.py
-│       ├── download_trips_data.py
-│       ├── interpolate_data.py
-│       ├── preprocess_data.py
-│       ├── preprocess_distance_matrix.py
-│       ├── preprocess_global_rates.py
-│       ├── preprocess_nodes_dictionary.py
-│       ├── preprocess_truck_grid.py
-│       └── utils.py
-├── pyproject.toml
-├── requirements.txt
-├── results
-│   ├── concatenation_results.py
-│   ├── process_results.py
-│   ├── results_webserver.py
-│   ├── total_failures_baseline.pkl
-│   ├── total_failures_baseline.png
-│   └── utils.py
-└── setup.py
+bss-rebalancing/
+├── README.md                          # This file
+├── pyproject.toml                     # Root build configuration
+├── LICENSE                            # CC BY-NC 4.0 License
+└── src/
+    └── bss_rebalancing/
+        ├── preprocessing/             # Data preprocessing pipeline
+        │   ├── README.md
+        │   ├── pyproject.toml
+        │   └── src/preprocessing/
+        │       ├── cli.py            # CLI entry point (bss-preprocess)
+        │       ├── core/             # Graph, grid, plotting utilities
+        │       └── steps/            # Individual preprocessing steps
+        │
+        ├── gymnasium_env/             # Custom Gymnasium environment
+        │   ├── README.md
+        │   ├── pyproject.toml
+        │   └── src/gymnasium_env/
+        │       ├── envs/             # Environment implementations
+        │       └── simulator/        # Event-driven simulation engine
+        │
+        ├── rl_training/               # RL agent training and validation
+        │   ├── README.md
+        │   ├── pyproject.toml
+        │   └── src/rl_training/
+        │       ├── agents/           # DQN agent implementation
+        │       ├── networks/         # Neural network architectures
+        │       ├── memory/           # Replay buffer
+        │       ├── train.py          # Training script (bss-train)
+        │       └── validate.py       # Validation script (bss-validate)
+        │
+        ├── benchmark/                 # Baseline comparisons
+        │   ├── README.md
+        │   ├── pyproject.toml
+        │   └── src/benchmark/
+        │       └── run.py            # Benchmark runner (bss-benchmark)
+        │
+        └── results_webapp/            # Training visualization dashboard
+            ├── README.md
+            ├── pyproject.toml
+            └── src/results_webapp/
+                ├── app.py            # Dash application (bss-results-webapp)
+                ├── callbacks.py      # Interactive callbacks
+                ├── data_loader.py    # Results data loader
+                └── plotting.py       # Plotting utilities
 ```
 
 ---
 
 ## 🚀 Setup Instructions
 
-1. **Install dependencies**: We recommend using Python 3.11+ and a virtual environment.
-    ```
-    python -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
-2. **Install the custom gymnasium environment**: Use the following to install it in editable mode (required for imports to work correctly).
-    ```
-    pip install -e .
-    ```
+### Prerequisites
+- Python 3.11+
+- pip
+- Virtual environment (recommended)
+
+### Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/edos08/BSS-DynamicRebalancing-RL
+   cd BSS-DynamicRebalancing-RL
+   ```
+
+2. **Create and activate virtual environment**:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+
+3. **Install the project** (automatically installs all subpackages):
+   ```bash
+   pip install -e .
+   ```
+
+   This single command installs all five packages and their CLI tools in development mode.
+
+4. **Verify installation**:
+   ```bash
+   bss-preprocess --help
+   bss-train --help
+   bss-validate --help
+   bss-benchmark --help
+   bss-results-webapp --help
+   ```
 
 ---
 
 ## 📂 Data Sources
-- 🚲 BlueBikes trip data (Cambridge, MA)
-- 🛣️ TomTom traffic speed profiles
-- 🌐 Street networks from OpenStreetMap via osmnx
 
-*(Note: Some datasets are not included due to licensing. Instructions for downloading and preprocessing them are in `preprocessing/`.)*
+- 🚲 **BlueBikes trip data** (Cambridge, MA) - Real demand patterns
+- 🛣️ **TomTom traffic speed profiles** - Time-dependent travel times
+- 🌐 **OpenStreetMap** via osmnx - Street network topology
 
-Run the preprocessing script to populate the `data` folder with trips and precomputed matrices.
-
-```
-python preprocessing/preprocessing.py
-```
-
-**Arguments**:
-- `--data_path`: The directory where data will be saved (default: `../data/`). It's preferable to leave it as default.
+*(Note: Datasets are not included due to licensing restrictions. Download is automatic and instructions are provided in the preprocessing module.)*
 
 ---
 
-## 🧠 Training the DQN Agent
+## 🔧 Usage Workflow
 
-Run:
+### 1. Preprocess Data
 
+Download and preprocess trip data, create spatial grid, and compute distance matrices:
+
+```bash
+# Full pipeline
+bss-preprocess --data-path data/
+
+# Specific steps only
+bss-preprocess --data-path data/ --steps download,preprocess,grid
+
+# Skip certain steps
+bss-preprocess --data-path data/ --skip download
+
+# Visualize the grid
+bss-preprocess --data-path data/ --plot grid-numbered
 ```
-python RL-agent/train_model.py
+
+**Key arguments**:
+- `--data-path`: Data directory (default: `data/`)
+- `--year`: Year to process (default: 2022)
+- `--months`: Comma-separated months (default: `9,10`)
+- `--cell-size`: Grid cell size in meters (default: 300)
+- `--steps`: Run specific steps only
+- `--plot`: Visualization mode (`graph`, `grid`, `grid-numbered`)
+
+See `bss-preprocess --help` for all options.
+
+### 2. Train the RL Agent
+
+Train a DDQN agent with the fully dynamic environment:
+
+```bash
+# Basic training
+bss-train --data-path data/ --results-path results/
+
+# Advanced configuration
+bss-train \
+    --data-path data/ \
+    --results-path results/ \
+    --run-id 1 \
+    --num-episodes 150 \
+    --num-bikes 400 \
+    --exploration-time 0.7 \
+    --device cuda:0 \
+    --seed 42
 ```
 
-**Arguments**:
-- `--data_path`: Path to the data folder.
-- `--cuda_device`: CUDA device to use (default: 0).
-- `--enable_logging`: Enable logging.
-- `--enable_checkpoint`: Enable model checkpointing.
-- `--restore_from_checkpoint`: Restore training from the last checkpoint.
-- `--num_episodes`: Number of training episodes.
-- `--run_id`: ID to identify the experiment run.
-- `--exploration_time`: Number of episodes during which to explore.
-- `--enable_telegram`: Enable Telegram notifications.
-- `--telegram_token`: Telegram bot token.
-- `--telegram_chat_id`: Telegram chat ID.
+**Key arguments**:
+- `--run-id`: Experiment identifier (default: 0)
+- `--num-episodes`: Training episodes (default: 140)
+- `--num-bikes`: Fleet size (default: 500)
+- `--exploration-time`: Fraction of episodes for exploration (default: 0.6)
+- `--device`: Hardware device (`cpu`, `cuda:0`, `mps`)
+- `--seed`: Random seed for reproducibility (default: 42)
+- `--one-validation`: Validate only at the end
+
+### 3. Validate the Model
+
+Test a trained model on validation data:
+
+```bash
+bss-validate \
+    --model-path results/run_000/models/best_model.pt \
+    --data-path data/ \
+    --epsilon 0.05 \
+    --total-timeslots 56
+```
+
+**Key arguments**:
+- `--model-path`: Path to trained model (required)
+- `--epsilon`: Exploration rate for validation (default: 0.05)
+- `--total-timeslots`: Episode length (default: 56 = 1 week)
+- `--run-id`: Validation run identifier (default: 999)
+
+### 4. Run Benchmarks
+
+Compare against baseline strategies:
+
+```bash
+# Basic benchmark
+bss-benchmark --data-path data/
+
+# With custom parameters
+bss-benchmark \
+    --data-path data/ \
+    --results-path results/ \
+    --num-episodes 5 \
+    --maximum-number-of-bikes 400
+```
+
+**Key arguments**:
+- `--data-path`: Path to data folder (required)
+- `--results-path`: Where to save results (default: current directory)
+- `--num-episodes`: Number of episodes to simulate (default: 1)
+- `--maximum-number-of-bikes`: Fleet size (default: 300)
+
+### 5. Visualize Training Progress
+
+Launch the interactive dashboard to monitor training in real-time:
+
+```bash
+bss-results-webapp --results-path results/ --port 8050
+```
+
+Then open http://localhost:8050 in your browser.
+
+**Features**:
+- 📊 Real-time metrics (failures, rewards, epsilon decay)
+- 📈 Episode-level detailed analysis
+- 🔍 Training dynamics (loss, Q-values, critic scores)
+- 🗺️ Spatial failure patterns
+- 🔄 Auto-refresh during training
 
 ---
 
-## 🧪 Benchmarks and Baselines
-Heuristic rebalancing strategies (e.g., static allocation, naive balancing) are implemented under benchmarks/ for comparison with the RL agent.
+## 📦 Package Details
 
-Run:
-```
-python benchmarks/benchmark.py
-```
+### `preprocessing`
+Handles data download, cleaning, interpolation, grid creation, and distance matrix computation.
+- **CLI**: `bss-preprocess`
+- **Key modules**: `download_trips`, `preprocess_data`, `preprocess_truck_grid`
 
-**Arguments**:
+### `gymnasium_env`
+Custom Gymnasium environment implementing the fully dynamic BSS rebalancing problem.
+- **Environments**: `FullyDynamicEnv-v0`, `StaticEnv-v0`
+- **Simulator**: Event-driven bike and truck simulators
 
-- `--data_path`: Path to the data folder (default: `../data/`).
+### `rl_training`
+DDQN agent implementation with training and validation pipelines.
+- **CLI**: `bss-train`, `bss-validate`
+- **Key modules**: `DQNAgent`, `ReplayBuffer`, `DuelingDQN`
+
+### `benchmark`
+Baseline comparison tools for evaluating RL performance.
+- **CLI**: `bss-benchmark`
+- **Strategies**: Static, naive, demand-based rebalancing
+
+### `results_webapp`
+Interactive Dash web application for training visualization.
+- **CLI**: `bss-results-webapp`
+- **Features**: Real-time monitoring, episode analysis, spatial visualization
 
 ---
 
 ## 📈 Results Summary
 
-The DDQN agent demonstrated the ability to:
-- Adapt to real-time, location-specific demand fluctuations.
-- Reduce service failures compared to static and heuristic strategies.
-- Operate under fully dynamic, non-simplified simulation conditions.
+The DDQN agent demonstrated:
+- ✅ Adaptation to real-time, location-specific demand fluctuations
+- ✅ Reduction in service failures compared to static strategies
+- ✅ Feasibility of deep RL for real-time bike rebalancing at scale
+- ⚠️ Importance of careful reward design and hyperparameter tuning
 
-While not always outperforming all baselines, the agent proved the feasibility of deep RL for real-time bike rebalancing at scale and underscored the importance of careful reward design.
+While not always outperforming all baselines, the agent proved the viability of RL-based rebalancing and highlighted key challenges in dynamic urban mobility systems.
+
+---
+
+## 🧪 Example: Complete Workflow
+
+```bash
+# 1. Preprocess data
+bss-preprocess --data-path data/ --year 2022 --months 9,10
+
+# 2. Train agent
+bss-train \
+    --data-path data/ \
+    --results-path results/ \
+    --run-id 0 \
+    --num-episodes 100 \
+    --device cuda:0
+
+# 3. Monitor training (in another terminal)
+bss-results-webapp --results-path results/ --port 8050
+
+# 4. Validate best model
+bss-validate \
+    --model-path results/run_000/models/best_model.pt \
+    --data-path data/
+
+# 5. Compare with baselines
+bss-benchmark --data-path data/
+```
+
+---
+
+## 🛠️ Development
+
+Each subpackage is independently installable and testable. To modify a package:
+
+1. Navigate to the package directory
+2. Make changes
+3. Test locally (the `-e` flag ensures changes are immediately reflected)
+
+```bash
+cd src/bss_rebalancing/rl_training
+# Make changes to src/rl_training/train.py
+bss-train --help  # Changes are live!
+```
 
 ---
 
 ## 📚 Citation
 
-If you use this work in your own research, please cite:
-```
-@thesis{edoardoscarpel2025bss,
-  title={Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning},
-  author={Edoardo Scarpel},
-  year={2025},
-  school={Università of Padua},
-  url={https://hdl.handle.net/20.500.12608/84368}
+If you use this work in your research, please cite:
+
+```bibtex
+@mastersthesis{scarpel2025bss,
+  title   = {Fully Dynamic Rebalancing of Dockless Bike Sharing Systems 
+             using Deep Reinforcement Learning},
+  author  = {Scarpel, Edoardo},
+  year    = {2025},
+  school  = {Università degli Studi di Padova},
+  url     = {https://hdl.handle.net/20.500.12608/84368}
 }
 ```
 
@@ -190,5 +352,32 @@ If you use this work in your own research, please cite:
 
 ## 📬 Contact
 
-For any issues or questions, feel free to reach out or open an issue.
-- GitHub: @edos08
+For questions, issues, or collaboration:
+- **GitHub**: [@edos08](https://github.com/edos08)
+- **Issues**: [Create an issue](https://github.com/edos08/BSS-DynamicRebalancing-RL/issues)
+- **Email**: edoardo.scarpel@phd.unipd.it
+
+---
+
+## 📝 License
+
+This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
+
+### ✅ You are free to:
+- **Share** — copy and redistribute the material
+- **Adapt** — remix, transform, and build upon the material
+- **Use for research and education** — perfect for academic purposes
+
+### ❌ Under the following restrictions:
+- **NonCommercial** — You may NOT use this work for commercial purposes
+- **Attribution** — You must give appropriate credit and link to the license
+
+### 💼 Commercial Use
+If you wish to use this work commercially, please contact: edoardo.scarpel@phd.unipd.it
+
+See the [LICENSE](LICENSE) file for details, or visit: https://creativecommons.org/licenses/by-nc/4.0/
+
+---
+
+**Built with ❤️ for sustainable urban mobility**  
+**For academic research and education only**
