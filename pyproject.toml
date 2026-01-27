@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "CC-BY-NC-4.0"}
 authors = [
-    {name = "Edoardo Scarpel", email = "edoardo.scarpel@studenti.unipd.it"}
+    {name = "Edoardo Scarpel", email = "edoardo.scarpel@phd.unipd.it"}
 ]
 keywords = [
     "bike-sharing",

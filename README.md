@@ -361,23 +361,16 @@ For questions, issues, or collaboration:
 
 ## 📝 License
 
-This project is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
-### ✅ You are free to:
-- **Share** — copy and redistribute the material
-- **Adapt** — remix, transform, and build upon the material
-- **Use for research and education** — perfect for academic purposes
+This means you are free to:
+- ✅ Use the code commercially
+- ✅ Modify and distribute
+- ✅ Use privately
+- ✅ Sublicense
 
-### ❌ Under the following restrictions:
-- **NonCommercial** — You may NOT use this work for commercial purposes
-- **Attribution** — You must give appropriate credit and link to the license
-
-### 💼 Commercial Use
-If you wish to use this work commercially, please contact: edoardo.scarpel@phd.unipd.it
-
-See the [LICENSE](LICENSE) file for details, or visit: https://creativecommons.org/licenses/by-nc/4.0/
+Under the condition that you include the original copyright and license notice.
 
 ---
 
-**Built with ❤️ for sustainable urban mobility**  
-**For academic research and education only**
+**Built with ❤️ for sustainable urban mobility**
