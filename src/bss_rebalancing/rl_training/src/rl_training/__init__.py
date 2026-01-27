@@ -10,14 +10,15 @@ __author__ = "Edoardo Scarpel"
 from rl_training.agents import DQNAgent
 from rl_training.memory import ReplayBuffer, PairData
 from rl_training.networks import DQN
+from rl_training.results import EpisodeResults, ResultsManager
 from rl_training.utils import (
-    Actions,
     convert_graph_to_data,
     convert_seconds_to_hours_minutes,
     plot_data_online,
     plot_graph_with_truck_path,
     send_telegram_message,
     memory_usage,
+    set_seed,
 )
 
 __all__ = [
@@ -25,11 +26,13 @@ __all__ = [
     "ReplayBuffer",
     "PairData",
     "DQN",
-    "Actions",
+    "EpisodeResults",
+    "ResultsManager",
     "convert_graph_to_data",
     "convert_seconds_to_hours_minutes",
     "plot_data_online",
     "plot_graph_with_truck_path",
     "send_telegram_message",
     "memory_usage",
+    "set_seed",
 ]

@@ -159,7 +159,7 @@ class FullyDynamicEnv(gym.Env):
     # Initialization
     # -------------------------------------------------------------------------
 
-    def __init__(self, data_path: str, results_path: str):
+    def __init__(self, data_path: str, results_path: str = None):
         """
         Initialize the bike-sharing environment.
 
@@ -174,7 +174,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Store paths and initialize logger
         self._data_path = data_path
-        self._logger = Logger(results_path + 'env_output.log')
+        self._logger = Logger(results_path + 'env_output.log') # TODO: FIX LOGGER FOR GYM ENV
 
         # Load and initialize network components
         self._initialize_network()
@@ -812,6 +812,8 @@ class FullyDynamicEnv(gym.Env):
             'number_of_system_bikes': len(self._system_bikes),
             'steps': steps,
             'global_critic_score':self._global_critic_score,
+            'total_trips': self._total_trips,
+            'total_invalid':self._total_invalid_actions,
         }
 
     def _log_current_state(self):

@@ -6,7 +6,7 @@ import osmnx as ox
 import numpy as np
 import geopandas as gpd
 import psutil, os
-import pandas as pd
+import random
 
 from torch_geometric.utils import from_networkx
 from matplotlib import pyplot as plt
@@ -20,15 +20,18 @@ if is_ipython:
 
 plt.ion()
 
-class Actions(Enum):
-    STAY = 0
-    UP = 1
-    DOWN = 2
-    LEFT = 3
-    RIGHT = 4
-    DROP_BIKE = 5
-    PICK_UP_BIKE = 6
-    CHARGE_BIKE = 7
+def set_seed(seed):
+    print(f"Setting seed: {seed}")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    # torch.use_deterministic_algorithms(True)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    # torch.geometric.seed(seed)
 
 
 def convert_graph_to_data(graph: nx.MultiDiGraph, node_features: list = None) -> Data:
