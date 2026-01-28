@@ -35,7 +35,7 @@ This is a **monorepo** containing five independent Python packages:
 bss-rebalancing/
 ├── README.md                          # This file
 ├── pyproject.toml                     # Root build configuration
-├── LICENSE                            # CC BY-NC 4.0 License
+├── LICENSE                            # MIT License
 └── src/
     └── bss_rebalancing/
         ├── preprocessing/             # Data preprocessing pipeline
@@ -58,7 +58,7 @@ bss-rebalancing/
         │   ├── pyproject.toml
         │   └── src/rl_training/
         │       ├── agents/           # DQN agent implementation
-        │       ├── networks/         # Neural network architectures
+        │       ├── networks/         # Neural Network architectures
         │       ├── memory/           # Replay buffer
         │       ├── train.py          # Training script (bss-train)
         │       └── validate.py       # Validation script (bss-validate)
