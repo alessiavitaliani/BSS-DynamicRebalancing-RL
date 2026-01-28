@@ -361,6 +361,7 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
     rewards_per_timeslot = []
     failures_per_timeslot = []
     deployed_bikes = []
+    epsilon_per_timeslot = []
 
     # Per-step metrics
     action_per_step = []
@@ -459,6 +460,7 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
             rewards_per_timeslot.append(total_reward / 360)
             failures_per_timeslot.append(total_failures)
             deployed_bikes.append(info['number_of_system_bikes'])
+            epsilon_per_timeslot.append(agent.epsilon)
 
             # Reset accumulators
             total_reward = 0.0
@@ -512,9 +514,9 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         "reward_tracking": reward_tracking,
         "deployed_bikes": deployed_bikes,
         "cell_subgraph": cell_graph,
+        'epsilon_per_timeslot': epsilon_per_timeslot,
         # Validation doesn't track these (return empty for consistency)
         "q_values_per_timeslot": [],
-        "epsilon_per_timeslot": [],
         "losses": [],
         "global_critic_scores": [],
     }
