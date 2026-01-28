@@ -42,41 +42,41 @@ bss-rebalancing/
         │   ├── README.md
         │   ├── pyproject.toml
         │   └── src/preprocessing/
-        │       ├── cli.py            # CLI entry point (bss-preprocess)
-        │       ├── core/             # Graph, grid, plotting utilities
-        │       └── steps/            # Individual preprocessing steps
+        │       ├── cli.py             # CLI entry point (bss-preprocess)
+        │       ├── core/              # Graph, grid, plotting utilities
+        │       └── steps/             # Individual preprocessing steps
         │
         ├── gymnasium_env/             # Custom Gymnasium environment
         │   ├── README.md
         │   ├── pyproject.toml
         │   └── src/gymnasium_env/
-        │       ├── envs/             # Environment implementations
-        │       └── simulator/        # Event-driven simulation engine
+        │       ├── envs/              # Environment implementations
+        │       └── simulator/         # Event-driven simulation engine
         │
         ├── rl_training/               # RL agent training and validation
         │   ├── README.md
         │   ├── pyproject.toml
         │   └── src/rl_training/
-        │       ├── agents/           # DQN agent implementation
-        │       ├── networks/         # Neural Network architectures
-        │       ├── memory/           # Replay buffer
-        │       ├── train.py          # Training script (bss-train)
-        │       └── validate.py       # Validation script (bss-validate)
+        │       ├── agents/            # DQN agent implementation
+        │       ├── networks/          # Neural Network architectures
+        │       ├── memory/            # Replay buffer
+        │       ├── train.py           # Training script (bss-train)
+        │       └── validate.py        # Validation script (bss-validate)
         │
         ├── benchmark/                 # Baseline comparisons
         │   ├── README.md
         │   ├── pyproject.toml
         │   └── src/benchmark/
-        │       └── run.py            # Benchmark runner (bss-benchmark)
+        │       └── run.py             # Benchmark runner (bss-benchmark)
         │
         └── results_webapp/            # Training visualization dashboard
             ├── README.md
             ├── pyproject.toml
             └── src/results_webapp/
-                ├── app.py            # Dash application (bss-results-webapp)
-                ├── callbacks.py      # Interactive callbacks
-                ├── data_loader.py    # Results data loader
-                └── plotting.py       # Plotting utilities
+                ├── app.py             # Dash application (bss-results-webapp)
+                ├── callbacks.py       # Interactive callbacks
+                ├── data_loader.py     # Results data loader
+                └── plotting.py        # Plotting utilities
 ```
 
 ---
