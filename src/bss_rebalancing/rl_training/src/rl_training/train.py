@@ -13,37 +13,33 @@ import numpy as np
 
 from tqdm import tqdm
 from rl_training.agents import DQNAgent
-from rl_training.utils import convert_graph_to_data, convert_seconds_to_hours_minutes, set_seed
+from rl_training.utils import (convert_graph_to_data, convert_seconds_to_hours_minutes,
+                               set_seed, setup_logger, setup_device)
 from rl_training.memory import ReplayBuffer
 from rl_training.results import ResultsManager, EpisodeResults
 from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions, initialize_cells_subgraph
 
 # ----------------------------------------------------------------------------------------------------------------------
+# Default paths and parameters
+# ----------------------------------------------------------------------------------------------------------------------
 
-data_path = "data/"
-results_path = "results/"
-run_id = 0
-seed = 42
-
-# if GPU is to be used
+# Device configuration
 devices = ["cpu"]
-
 if torch.cuda.is_available():
     num_cuda = torch.cuda.device_count()
     for i in range(num_cuda):
         devices.append(f"cuda:{i}")
-
 if torch.backends.mps.is_available():
     devices.append("mps")
 
 print(f"Devices available: {devices}\n")
 
 params = {
+    "seed": 42,                                     # Random seed for reproducibility
     "num_episodes": 140,                            # Total number of training episodes
     "batch_size": 64,                               # Batch size for replay buffer sampling
     "replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
-    # "input_dimentions": 72,
     "gamma": 0.95,                                  # Discount factor
     "epsilon_start": 1.0,                           # Starting exploration rate
     "epsilon_delta": 0.05,                          # Epsilon decay rate
@@ -53,7 +49,6 @@ params = {
     "lr": 1e-4,                                     # Learning rate
     "total_timeslots": 56,                          # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
-    "results_path": results_path,                   # Path to save results
     "soft_update": True,                            # Use soft update for target network
     "tau": 0.005,                                   # Tau parameter for soft update
     "depot_position_id": 103,                       # ID (cell) of the depot position
@@ -68,11 +63,6 @@ reward_params = {
     'W_CHARGE_BIKE': 0.9,
     'W_STAY': 0.7,
 }
-
-enable_logging = False
-one_validation = False
-
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 
 # ----------------------------------------------------------------------------------------------------------------------
 
@@ -109,19 +99,19 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--run-id',
         type=int,
-        default=run_id,
+        default=0,
         help='Run ID for the experiment.'
     )
     parser.add_argument(
         '--data-path',
         type=str,
-        default=data_path,
+        default='data/',
         help='Path to the data folder.'
     )
     parser.add_argument(
         '--results-path',
         type=str,
-        default=results_path,
+        default='results/',
         help='Path to the results folder.'
     )
     parser.add_argument(
@@ -133,7 +123,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--seed',
         type=int,
-        default=seed,
+        default=params["seed"],
         help='Random seed for reproducibility.'
     )
     parser.add_argument(
@@ -170,7 +160,7 @@ def create_parser() -> argparse.ArgumentParser:
 # ----------------------------------------------------------------------------------------------------------------------
 
 def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int,
-              device: torch.device, tbar = None) -> dict:
+              device: torch.device, run_id: int, enable_logging: bool, tbar = None) -> dict:
     # ============================================================================
     # Initialize metrics tracking
     # ============================================================================
@@ -361,7 +351,6 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
     rewards_per_timeslot = []
     failures_per_timeslot = []
     deployed_bikes = []
-    epsilon_per_timeslot = []
 
     # Per-step metrics
     action_per_step = []
@@ -460,7 +449,6 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
             rewards_per_timeslot.append(total_reward / 360)
             failures_per_timeslot.append(total_failures)
             deployed_bikes.append(info['number_of_system_bikes'])
-            epsilon_per_timeslot.append(agent.epsilon)
 
             # Reset accumulators
             total_reward = 0.0
@@ -514,73 +502,39 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         "reward_tracking": reward_tracking,
         "deployed_bikes": deployed_bikes,
         "cell_subgraph": cell_graph,
-        'epsilon_per_timeslot': epsilon_per_timeslot,
         # Validation doesn't track these (return empty for consistency)
         "q_values_per_timeslot": [],
+        "epsilon_per_timeslot": [],
         "losses": [],
         "global_critic_scores": [],
     }
 
-
-# ----------------------------------------------------------------------------------------------------------------------
-
-def setup_logger(name, log_file, level=logging.INFO):
-    """To setup as many loggers as you want"""
-
-    handler = logging.FileHandler(log_file)
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.addHandler(handler)
-
-    return logger
-
-def setup_device(device_str: str) -> torch.device:
-    if device_str not in devices:
-        raise ValueError(
-            f"Invalid device '{device_str}'. Available options: {devices}"
-        )
-
-    device = torch.device(device_str)
-    if device.type == "cuda":
-        gpu_id = device.index
-        gpu_name = torch.cuda.get_device_name(gpu_id)
-        print(f"Using CUDA device {gpu_id}: {gpu_name}")
-    else:
-        print(f"Using device: {device.type}")
-
-    return device
-
 # ----------------------------------------------------------------------------------------------------------------------
 
 def main():
-    global run_id, data_path, results_path, enable_logging, seed, one_validation
-
     warnings.filterwarnings("ignore")
     args = create_parser().parse_args()
 
-    # Ensure the data path exists
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
-
-    device = setup_device(args.device.lower())
+    device = setup_device(args.device.lower(), devices)
 
     # Save parsed arguments to global variables
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
-    seed = args.seed
     enable_logging = args.enable_logging
     one_validation = args.one_validation
 
     # Update params dict with parsed values
+    params['seed'] = args.seed
     params['num_episodes'] = args.num_episodes
     params['maximum_number_of_bikes'] = args.num_bikes
     params['exploration_time'] = args.exploration_time
-    params['results_path'] = results_path
 
-    set_seed(seed)
+    set_seed(params['seed'])
+
+    # Ensure the data path exists
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
     # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
     params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params["total_timeslots"])**2) / np.log(10)
@@ -594,9 +548,9 @@ def main():
 
     # Create the environment
     env = gym.make('gymnasium_env/FullyDynamicEnv-v0', data_path=data_path, results_path=f"{str(results_manager.training_path)}/")
-    env.unwrapped.seed(seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
+    env.unwrapped.seed(params['seed'])
+    env.action_space.seed(params['seed'])
+    env.observation_space.seed(params['seed'])
 
     # Set up replay buffer
     replay_buffer = ReplayBuffer(params["replay_buffer_capacity"])
@@ -636,7 +590,7 @@ def main():
         best_validation_score = 1e4
         for episode in range(starting_episode, params["num_episodes"]):
 
-            training_dict = train_dqn(env, agent, params["batch_size"], episode, device, tbar)
+            training_dict = train_dqn(env, agent, params["batch_size"], episode, device, run_id, enable_logging, tbar)
 
             # Convert to EpisodeResults
             training_results = EpisodeResults(
@@ -661,7 +615,7 @@ def main():
             )
 
             # Save using ResultsManager
-            results_manager.save_episode(training_results)
+            results_manager.save_episode(training_results)  # TODO: parallelize saving
 
             logger.info(
                 f"Episode {episode}: Mean Failures = {training_results.mean_failures:.2f}, "
@@ -671,8 +625,8 @@ def main():
 
             # Save model if the training and validation score is better
             should_validate = (episode%10 == 0 and (agent.epsilon < 0.15 or training_results.mean_failures < 10)
-                               and not one_validation) or episode == (params["num_episodes"]-1)
-            if should_validate:
+                               and not one_validation) or episode == (params["num_episodes"]-1) # TODO: adjust validation frequency
+            if should_validate:     # TODO: parallelize validation and saving
                 enable_val_logging = enable_logging 
                 if episode > params["num_episodes"]*0.9: 
                     enable_val_logging = True
@@ -724,7 +678,7 @@ def main():
                         agent=agent,
                         episode=episode,
                         score=validation_results.total_failures,
-                        model_type='best' if is_best else 'checkpoint',
+                        model_type='best' if is_best else 'checkpoint', # TODO: implement again checkpointing
                         save_best=is_best
                     )
 

@@ -5,38 +5,70 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bss-rl-training"
 version = "1.0.0"
-description = "RL Training module for BSS Dynamic Rebalancing project"
+description = "Deep RL training framework for bike-sharing system dynamic rebalancing"
 readme = "README.md"
-requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Edoardo Scarpel", email = "edoardo.scarpel@phd.unipd.it"}
+]
+requires-python = ">=3.11"
+keywords = [
+    "reinforcement-learning",
+    "deep-q-network",
+    "graph-attention-network",
+    "bike-sharing",
+    "rebalancing",
+    "pytorch"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
 dependencies = [
-    "numpy",
-    "torch",
-    "torch-geometric",
-    "gymnasium",
-    "tqdm",
-    "matplotlib",
-    "requests",
-    "psutil",
-    "networkx",
-    "osmnx",
-    "geopandas",
-    "pandas",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "torch>=2.0.0",
+    "torch-geometric>=2.4.0",
+    "gymnasium>=0.29.0",
+    "tqdm>=4.65.0",
+    "matplotlib>=3.7.0",
+    "requests>=2.31.0",
+    "psutil>=5.9.0",
+    "networkx>=3.1",
+    "osmnx>=1.6.0",
+    "geopandas>=0.14.0",
+    "bss-gymnasium-env>=1.0.0"
 ]
 
 [project.optional-dependencies]
-telegram = ["tqdm[telegram]"]
-dev = ["pytest", "black", "isort"]
+telegram = [
+    "tqdm[telegram]>=4.65.0"
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "jupyter>=1.0.0",
+    "ipython>=8.0.0"
+]
 
 [project.scripts]
 bss-train = "rl_training.train:main"
 bss-validate = "rl_training.validate:main"
 
+[project.urls]s
+Homepage = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Documentation = "https://github.com/edos08/BSS-DynamicRebalancing-RL/tree/main/rl_training"
+Repository = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Issues = "https://github.com/edos08/BSS-DynamicRebalancing-RL/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.black]
-line-length = 120
-
-[tool.isort]
-profile = "black"
-line_length = 120

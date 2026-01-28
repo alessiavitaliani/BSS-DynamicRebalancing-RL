@@ -114,6 +114,9 @@ class ResultsManager:
 
     def save_episode(self, results: EpisodeResults):
         """Save results for a single episode."""
+        # Validate and fix results
+        results = self._validate_episode_results(results)
+
         path = self.training_path if results.mode == 'train' else self.validation_path
         episode_dir = path / f"episode_{results.episode:03d}"
         episode_dir.mkdir(exist_ok=True)
@@ -332,3 +335,53 @@ class ResultsManager:
 
         agent.load_model(str(model_path))
         return model_path
+
+    @staticmethod
+    def _validate_episode_results(results: EpisodeResults) -> EpisodeResults:
+        """
+        Validate and fix EpisodeResults to ensure data consistency.
+
+        Returns a corrected copy of the results.
+        """
+        # Determine expected length from rewards (primary metric)
+        expected_length = len(results.rewards_per_timeslot)
+
+        if expected_length == 0:
+            raise ValueError("Episode results must have at least one timeslot of data")
+
+        # Helper to pad arrays
+        def pad_to_length(data, length, fill_value = 0.0):
+            if len(data) == length:
+                return data
+            elif len(data) < length:
+                print(f"⚠️  Warning: Padding {length - len(data)} missing values")
+                return data + [fill_value] * (length - len(data))
+            else:
+                print(f"⚠️  Warning: Truncating {len(data) - length} extra values")
+                return data[:length]
+
+        # Create corrected copy
+        return EpisodeResults(
+            episode=results.episode,
+            mode=results.mode,
+            total_reward=results.total_reward,
+            mean_failures=results.mean_failures,
+            total_failures=results.total_failures,
+            total_trips=results.total_trips,
+            total_invalid=results.total_invalid,
+            epsilon=results.epsilon,
+
+            # Ensure consistent lengths
+            rewards_per_timeslot=pad_to_length(results.rewards_per_timeslot, expected_length, 0.0),
+            failures_per_timeslot=pad_to_length(results.failures_per_timeslot, expected_length, 0),
+            epsilon_per_timeslot=pad_to_length(results.epsilon_per_timeslot, expected_length, results.epsilon),
+            deployed_bikes=pad_to_length(results.deployed_bikes, expected_length, 0),
+            q_values_per_timeslot=results.q_values_per_timeslot,
+
+            # Step-level data (no length requirements)
+            action_per_step=results.action_per_step,
+            reward_tracking=results.reward_tracking,
+            losses=results.losses,
+            global_critic_scores=results.global_critic_scores,
+            cell_subgraph=results.cell_subgraph,
+        )

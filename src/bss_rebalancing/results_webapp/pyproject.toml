@@ -5,34 +5,60 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bss-results-webapp"
 version = "1.0.0"
-description = "Web dashboard for visualizing BSS RL training results"
+description = "Interactive web dashboard for BSS RL training visualization and monitoring"
 readme = "README.md"
-requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Edoardo Scarpel", email = "edoardo.scarpel@phd.unipd.it"}
+]
+requires-python = ">=3.11"
+keywords = [
+    "dash",
+    "plotly",
+    "visualization",
+    "dashboard",
+    "monitoring",
+    "reinforcement-learning",
+    "bike-sharing"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Framework :: Dash",
+]
+
 dependencies = [
     "dash>=2.14.0",
     "dash-bootstrap-components>=1.5.0",
     "plotly>=5.18.0",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
-    "networkx>=3.0",
+    "networkx>=3.1"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "black",
-    "isort",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
+    "dash[testing]>=2.14.0"
 ]
 
 [project.scripts]
 bss-results-webapp = "results_webapp.app:main"
 
+[project.urls]
+Homepage = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Documentation = "https://github.com/edos08/BSS-DynamicRebalancing-RL/tree/main/results_webapp"
+Repository = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Issues = "https://github.com/edos08/BSS-DynamicRebalancing-RL/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.black]
-line-length = 120
-
-[tool.isort]
-profile = "black"
-line_length = 120

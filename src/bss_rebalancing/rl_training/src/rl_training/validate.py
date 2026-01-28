@@ -14,7 +14,8 @@ import numpy as np
 from tqdm import tqdm
 
 from rl_training.agents import DQNAgent
-from rl_training.utils import convert_graph_to_data, convert_seconds_to_hours_minutes, set_seed
+from rl_training.utils import (convert_graph_to_data, convert_seconds_to_hours_minutes,
+                               set_seed, setup_logger, setup_device)
 from rl_training.memory import ReplayBuffer
 from rl_training.results import ResultsManager, EpisodeResults
 from torch_geometric.data import Data
@@ -23,10 +24,6 @@ from gymnasium_env.simulator.utils import Actions, initialize_cells_subgraph
 # ----------------------------------------------------------------------------------------------------------------------
 # Default paths and parameters
 # ----------------------------------------------------------------------------------------------------------------------
-data_path = "../data"
-results_path = "results"
-run_id = 999  # Default validation run ID
-seed = 42
 
 # Device configuration
 devices = ["cpu"]
@@ -41,13 +38,13 @@ print(f"Devices available: {devices}")
 
 # Validation parameters
 params = {
-    'total_timeslots': 56,  # Total number of time slots (1 week = 7 days * 8 timeslots)
-    'gamma': 0.95,  # Discount factor (needed for environment)
-    'maximum_number_of_bikes': 500,
-    'epsilon': 0.05,  # Validation epsilon (near-greedy)
-    'depot_position_id': 103,
-    'initial_cell_id': 103,
-    'results_path': results_path,
+    'seed': 42,                                     # Random seed for reproducibility
+    'total_timeslots': 56,                          # Total number of time slots (1 week = 7 days * 8 timeslots)
+    'gamma': 0.95,                                  # Discount factor (needed for environment)
+    'maximum_number_of_bikes': 500,                 # Max number of bikes in the system
+    'epsilon': 0.05,                                # Validation epsilon (near-greedy)
+    'depot_position_id': 103,                       # ID (cell) of the depot position
+    'initial_cell_id': 103,                         # Initial cell where the truck starts
 }
 
 reward_params = {
@@ -59,46 +56,15 @@ reward_params = {
     'W_STAY': 0.7,
 }
 
-enable_logging = False
-
 # Logging formatter
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-
-def setup_logger(name, log_file, level=logging.INFO):
-    """Set up logger for validation."""
-    handler = logging.FileHandler(log_file)
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.addHandler(handler)
-
-    return logger
-
-
-def setup_device(device_str: str) -> torch.device:
-    """Set up the computation device."""
-    if device_str not in devices:
-        raise ValueError(f"Invalid device '{device_str}'. Available options: {devices}")
-
-    device = torch.device(device_str)
-
-    if device.type == "cuda":
-        gpu_id = device.index
-        gpu_name = torch.cuda.get_device_name(gpu_id)
-        print(f"Using CUDA device {gpu_id}: {gpu_name}")
-    else:
-        print(f"Using device: {device.type}")
-
-    return device
-
 
 def validate_dqn(
         env: gymnasium.Env,
         agent: DQNAgent,
         episode: int,
         device: torch.device,
+        enable_logging: bool,
         tbar: tqdm = None
 ) -> dict:
     """
@@ -296,15 +262,15 @@ Examples:
 
     parser.add_argument('--model-path', type=str, required=True,
                         help='Path to the trained model file (e.g., trained_agent.pt)')
-    parser.add_argument('--run-id', type=int, default=run_id,
+    parser.add_argument('--run-id', type=int, default=0,
                         help='Run ID for the validation experiment.')
-    parser.add_argument('--data-path', type=str, default=data_path,
+    parser.add_argument('--data-path', type=str, default='data/',
                         help='Path to the data folder.')
-    parser.add_argument('--results-path', type=str, default=results_path,
+    parser.add_argument('--results-path', type=str, default='results/',
                         help='Path to the results folder.')
     parser.add_argument('--device', type=str, default='cpu',
                         help=f'Hardware device to use. Available options: {devices}.')
-    parser.add_argument('--seed', type=int, default=seed,
+    parser.add_argument('--seed', type=int, default=params['seed'],
                         help='Random seed for reproducibility.')
     parser.add_argument('--num-bikes', type=int, default=params['maximum_number_of_bikes'],
                         help='Number of bikes in the system.')
@@ -320,7 +286,6 @@ Examples:
 
 def main():
     """Main validation function."""
-    global run_id, data_path, results_path, enable_logging, seed
 
     warnings.filterwarnings("ignore")
 
@@ -331,17 +296,17 @@ def main():
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
-    seed = args.seed
     enable_logging = args.enable_logging
 
     # Update params dict
+    params['seed'] = args.seed
     params['total_timeslots'] = args.total_timeslots
     params['maximum_number_of_bikes'] = args.num_bikes
     params['epsilon'] = args.epsilon
     params['results_path'] = results_path
 
     # Set random seed
-    set_seed(seed)
+    set_seed(params['seed'])
 
     # Validate paths
     if not os.path.exists(data_path):
@@ -351,7 +316,7 @@ def main():
         raise FileNotFoundError(f"Model file not found: {args.model_path}")
 
     # Set up device
-    device = setup_device(args.device.lower())
+    device = setup_device(args.device.lower(), devices)
 
     # Create results manager
     results_manager = ResultsManager(results_path, run_id)
@@ -379,9 +344,9 @@ def main():
         data_path=data_path,
         results_path=f"{str(results_manager.validation_path)}/"
     )
-    env.unwrapped.seed(seed)
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
+    env.unwrapped.seed(params['seed'])
+    env.action_space.seed(params['seed'])
+    env.observation_space.seed(params['seed'])
 
     # Initialize agent (with dummy replay buffer)
     dummy_replay_buffer = ReplayBuffer(1000)  # Small buffer, won't be used
@@ -415,7 +380,7 @@ def main():
             dynamic_ncols=True
         )
 
-        validation_dict = validate_dqn(env, agent, episode=0, device=device, tbar=tbar)
+        validation_dict = validate_dqn(env, agent, episode=0, device=device, enable_logging=enable_logging, tbar=tbar)
 
         tbar.close()
 

@@ -46,7 +46,7 @@ class BenchmarkDefaults:
 
     # Paths
     DEFAULT_DATA_PATH = "data/"
-    DEFAULT_RESULTS_PATH = "./"
+    DEFAULT_RESULTS_PATH = "results/"
     BENCHMARK_SUBFOLDER = "benchmark"
 
     # Output files
@@ -215,7 +215,7 @@ def run_benchmark(config: dict):
     # Display summary
     print(f"\nTotal Failures: {sum(total_failures)}")
 
-    # Save results
+    # Save results # TODO: save resul
     results = {
         'failures': total_failures,
         'rebalance_time': total_rebalance_time

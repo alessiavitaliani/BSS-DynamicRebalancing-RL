@@ -7,10 +7,10 @@ import numpy as np
 import geopandas as gpd
 import psutil, os
 import random
+import logging
 
 from torch_geometric.utils import from_networkx
 from matplotlib import pyplot as plt
-from enum import Enum
 from torch_geometric.data import Data
 
 # set up matplotlib
@@ -32,6 +32,37 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     # torch.geometric.seed(seed)
+
+
+def setup_logger(name, log_file, level=logging.INFO):
+    """Set up logger for validation."""
+    handler = logging.FileHandler(log_file)
+
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.addHandler(handler)
+
+    return logger
+
+
+def setup_device(device_str: str, devices: list) -> torch.device:
+    """Set up the computation device."""
+    if device_str not in devices:
+        raise ValueError(f"Invalid device '{device_str}'. Available options: {devices}")
+
+    device = torch.device(device_str)
+
+    if device.type == "cuda":
+        gpu_id = device.index
+        gpu_name = torch.cuda.get_device_name(gpu_id)
+        print(f"Using CUDA device {gpu_id}: {gpu_name}")
+    else:
+        print(f"Using device: {device.type}")
+
+    return device
 
 
 def convert_graph_to_data(graph: nx.MultiDiGraph, node_features: list = None) -> Data:

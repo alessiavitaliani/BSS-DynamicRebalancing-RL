@@ -19,6 +19,8 @@ from rl_training.utils import (
     send_telegram_message,
     memory_usage,
     set_seed,
+    setup_device,
+    setup_logger,
 )
 
 __all__ = [
@@ -35,4 +37,6 @@ __all__ = [
     "send_telegram_message",
     "memory_usage",
     "set_seed",
+    "setup_device",
+    "setup_logger",
 ]

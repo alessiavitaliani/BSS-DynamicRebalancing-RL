@@ -1,42 +1,88 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "bss-preprocessing"
-version = "0.1.0"
-description = "Preprocessing pipeline for BSS Dynamic Rebalancing RL project"
+version = "1.0.0"
+description = "Data preprocessing pipeline for BSS Dynamic Rebalancing with Deep RL"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Edoardo Scarpel", email = "edoardo.scarpel@phd.unipd.it"}
+]
+keywords = [
+    "bike-sharing",
+    "preprocessing",
+    "data-pipeline",
+    "urban-mobility",
+    "geospatial",
+    "openstreetmap",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core dependencies
 dependencies = [
-    "numpy",
-    "pandas",
-    "osmnx",
-    "networkx",
-    "geopandas",
-    "matplotlib",
-    "geopy",
-    "shapely",
-    "tqdm",
-    "requests",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "osmnx>=1.6.0",
+    "networkx>=3.0",
+    "geopandas>=0.13.0",
+    "matplotlib>=3.7.0",
+    "geopy>=2.3.0",
+    "shapely>=2.0.0",
+    "tqdm>=4.65.0",
+    "requests>=2.31.0",
+    "scipy>=1.11.0",
 ]
 
 [project.optional-dependencies]
+# Development dependencies
 dev = [
-    "pytest",
-    "black",
-    "isort",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.5.0",
 ]
 
+# Documentation dependencies
+docs = [
+    "sphinx>=7.0.0",
+    "sphinx-rtd-theme>=1.3.0",
+]
+
+# All optional dependencies
+all = [
+    "bss-preprocessing[dev,docs]",
+]
+
+[project.urls]
+Homepage = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Repository = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
+Documentation = "https://github.com/edos08/BSS-DynamicRebalancing-RL/tree/main/src/bss_rebalancing/preprocessing"
+Issues = "https://github.com/edos08/BSS-DynamicRebalancing-RL/issues"
+Thesis = "https://hdl.handle.net/20.500.12608/84368"
+
+# CLI entry points
 [project.scripts]
 bss-preprocess = "preprocessing.cli:main"
 
+# Package discovery
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["preprocessing*"]
+exclude = ["tests*", "docs*"]
 
-[tool.black]
-line-length = 120
-
-[tool.isort]
-profile = "black"
-line_length = 120
+[tool.setuptools.package-data]
+preprocessing = ["*.json", "*.yml", "*.yaml"]

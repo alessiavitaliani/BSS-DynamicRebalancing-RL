@@ -350,7 +350,11 @@ If you use this work in your research, please cite:
 
 ---
 
-## 📬 Contact
+## 📬 Author & Contact
+
+
+**Edoardo Scarpel**  
+Ph.D. Student, University of Padova
 
 For questions, issues, or collaboration:
 - **GitHub**: [@edos08](https://github.com/edos08)

@@ -1,136 +1,58 @@
-# Benchmark Module - Library Structure
+# Benchmark
 
-## Complete Directory Structure
+Baseline evaluation framework for bike-sharing system rebalancing strategies using the static TSP-based environment.
 
-```
-benchmark/                          # Root benchmark module directory
-├── README.md                       # Package documentation
-├── pyproject.toml                  # Package configuration
-└── src/                           # Source code directory
-    ├── bss_benchmark.egg-info/    # Package metadata (auto-generated)
-    │   ├── PKG-INFO
-    │   ├── SOURCES.txt
-    │   ├── dependency_links.txt
-    │   ├── entry_points.txt
-    │   ├── requires.txt
-    │   └── top_level.txt
-    └── benchmark/                  # Main package directory
-        ├── __init__.py            # Package initialization and exports
-        ├── run.py                 # Main benchmark runner (CLI entry point)
-        └── utils.py               # Utility functions
-```
+This package provides benchmarking capabilities for evaluating static rebalancing strategies in bike-sharing systems. It runs simulations using the `StaticEnv` environment, which performs periodic system-wide rebalancing using Traveling Salesman Problem (TSP) optimization.
 
-## File Mapping
+The benchmark serves as a baseline for comparing against reinforcement learning approaches by measuring system performance metrics under deterministic rebalancing schedules.
 
-Copy the refactored files to the new structure:
+---
+
+## Installation
+
+Install in editable mode for development:
 
 ```bash
-# From generated files → To library structure
-
-pyproject_final.toml              → benchmark/pyproject.toml
-README_benchmark.md               → benchmark/README.md
-benchmark_init.py                 → benchmark/src/benchmark/__init__.py
-benchmark_run.py                  → benchmark/src/benchmark/run.py
-benchmark_utils_refactored.py     → benchmark/src/benchmark/utils.py
-```
-
-## Installation Instructions
-
-### 1. Create Directory Structure
-
-```bash
-cd src/bss_rebalancing
-mkdir -p benchmark/src/benchmark
 cd benchmark
-```
-
-### 2. Copy Files
-
-```bash
-# Copy package configuration and documentation
-cp /path/to/pyproject_final.toml pyproject.toml
-cp /path/to/README_benchmark.md README.md
-
-# Copy source files
-cp /path/to/benchmark_init.py src/benchmark/__init__.py
-cp /path/to/benchmark_run.py src/benchmark/run.py
-cp /path/to/benchmark_utils_refactored.py src/benchmark/utils.py
-```
-
-### 3. Install the Package
-
-```bash
-# Development installation (editable mode)
 pip install -e .
-
-# Or with dev dependencies
-pip install -e ".[dev]"
-
-# Or with all optional features
-pip install -e ".[all]"
 ```
 
-## Package Structure Details
-
-### Root Level Files
-
-**pyproject.toml**
-- Package metadata and dependencies
-- Build system configuration
-- Tool configurations (black, isort, pytest, mypy, pylint)
-- Entry point: `bss-benchmark = "benchmark.run:main"`
-
-**README.md**
-- Package documentation
-- Installation instructions
-- Usage examples
-- API reference
-
-### src/benchmark/ Directory
-
-**__init__.py**
-- Package initialization
-- Public API exports
-- Version information
-- Imports from run.py and utils.py
-
-**run.py**
-- Main benchmark execution logic
-- `run_benchmark()`: Main entry point
-- `run_simulation()`: Single episode simulation
-- `save_results()`: Results persistence
-- `parse_arguments()`: CLI argument parsing
-- `main()`: CLI entry point
-
-**utils.py**
-- `convert_seconds_to_hours_minutes()`: Time formatting
-- `convert_graph_to_data()`: Graph conversion for GNN
-- `plot_data_online()`: Training visualization
-- `plot_graph_with_truck_path()`: Network visualization
-- `send_telegram_message()`: Telegram notifications
-- `get_memory_usage()`: Memory monitoring
-- `Actions`: Action enumeration
-
-## Usage After Installation
-
-### Command-Line Interface
+Or install from the root project directory:
 
 ```bash
-# Use the installed CLI command
-bss-benchmark --data_path data/ --results_path ./results --run_id 1
+pip install -e src/bss_rebalancing/benchmark
+```
 
-# Or run directly as module
-python -m benchmark.run --data_path data/
+---
+
+## Quick Start
+
+### Basic Usage
+
+Run a benchmark with default settings:
+
+```bash
+bss-benchmark --data-path data/ --results-path results/
+```
+
+### Custom Configuration
+
+```bash
+bss-benchmark \
+    --data-path data/ \
+    --results-path results/ \
+    --run-id 0 \
+    --num-episodes 1 \
+    --total-timeslots 56 \
+    --maximum-number-of-bikes 300 \
+    --fixed-rebal-bikes-per-cell 5
 ```
 
 ### Python API
 
 ```python
-# Import from installed package
-from benchmark import run_benchmark, run_simulation
-from benchmark.utils import convert_seconds_to_hours_minutes
+from benchmark import run_benchmark
 
-# Run benchmark
 config = {
     'data_path': 'data/',
     'results_path': './results',
@@ -144,202 +66,288 @@ config = {
 run_benchmark(config)
 ```
 
-### Import Structure
+---
 
-```python
-# Top-level imports (from __init__.py)
-from benchmark import (
-    main,
-    run_benchmark,
-    run_simulation,
-    Actions,
-    convert_seconds_to_hours_minutes,
-    get_memory_usage,
-)
+## Package Structure
 
-# Direct module imports
-from benchmark.run import BenchmarkDefaults
-from benchmark.utils import plot_data_online
-```
-
-## Comparison with rl_training Structure
-
-### rl_training/
-```
-rl_training/
-├── README.md
-├── pyproject.toml
-└── src/
-    └── rl_training/
-        ├── __init__.py
-        ├── agents/              # Agent implementations
-        ├── memory/              # Experience replay
-        ├── networks/            # Neural networks
-        ├── train.py             # Main training script
-        ├── utils.py             # Utilities
-        └── validate.py          # Validation
-```
-
-### benchmark/ (New Structure)
 ```
 benchmark/
 ├── README.md
 ├── pyproject.toml
 └── src/
     └── benchmark/
-        ├── __init__.py
-        ├── run.py              # Main benchmark script (like train.py)
-        └── utils.py            # Utilities
+        ├── __init__.py       # Package initialization and exports
+        ├── run.py            # Main benchmark runner (CLI entry point)
+        └── utils.py          # Utility functions
 ```
 
-**Key Similarities:**
-- Same top-level structure (README, pyproject.toml, src/)
-- Source code in `src/{package_name}/`
-- Main execution script (train.py vs run.py)
-- Utilities module
-- Package initialization in __init__.py
+---
 
-**Differences:**
-- Benchmark is simpler (no subdirectories for agents/memory/networks)
-- Single main execution script vs multiple (train/validate)
-- Focused on static environment evaluation
+## CLI Arguments
 
-## Development Workflow
+| Argument | Type | Default      | Description |
+|----------|------|--------------|-------------|
+| `--data-path` | str | `"data/"`    | Path to preprocessed data directory |
+| `--results-path` | str | `"results/"` | Path where results will be saved |
+| `--run-id` | int | `0`          | Unique identifier for this benchmark run |
+| `--num-episodes` | int | `1`          | Number of simulation episodes |
+| `--total-timeslots` | int | `56`         | Total timeslots per episode (8/day × 7 days) |
+| `--maximum-number-of-bikes` | int | `300`        | Total bike fleet size |
+| `--fixed-rebal-bikes-per-cell` | int | `5`          | Base bikes per cell after rebalancing |
 
-### Running Tests
+---
+
+## Configuration
+
+### Default Parameters
+
+```python
+class BenchmarkDefaults:
+    # Simulation parameters
+    NUM_EPISODES = 1
+    TOTAL_TIMESLOTS = 56              # 1 week (8 timeslots/day × 7 days)
+
+    # Fleet parameters
+    MAXIMUM_BIKES = 300
+    BIKES_PER_CELL = 5                # Base allocation per cell
+
+    # Environment setup
+    DEPOT_ID = 103                    # Depot cell ID
+    INITIAL_CELL_ID = 103             # Starting cell ID
+    NUM_REBALANCING_EVENTS = 8        # Rebalancing ops per day
+
+    # Reproducibility
+    RANDOM_SEED = 32
+```
+
+---
+
+## How It Works
+
+### Static Environment
+
+The benchmark uses the `StaticEnv` environment, which:
+
+1. **Distributes bikes** initially based on predicted net flow
+2. **Simulates trips** using Poisson-distributed demand
+3. **Performs periodic rebalancing** at scheduled intervals (e.g., every 12 hours)
+4. **Uses TSP optimization** to determine optimal rebalancing routes
+5. **Records metrics** including failures and rebalancing time
+
+### Rebalancing Strategy
+
+The TSP-based rebalancing:
+- Identifies **surplus cells** (excess bikes) and **deficit cells** (insufficient bikes)
+- Computes an **optimal route** using the Traveling Salesman Problem algorithm
+- **Picks up bikes** from surplus locations
+- **Drops bikes** at deficit locations
+- Returns to depot if truck capacity is reached
+
+### Metrics Collected
+
+**Per Timeslot**:
+- Number of trip failures (bike unavailable)
+- Rebalancing operation duration (seconds)
+
+**Aggregated**:
+- Total failures across all episodes
+- Total rebalancing time
+
+---
+
+## Results Output
+
+Results are saved in a structured directory:
+
+```
+results/
+└── benchmark/
+    └── run_0/
+        ├── total_failures.pkl       # List of failures per timeslot
+        └── rebalance_time.pkl       # List of rebalancing durations
+```
+
+### Loading Results
+
+```python
+import pickle
+
+# Load failures
+with open('results/benchmark/run_0/total_failures.pkl', 'rb') as f:
+    failures = pickle.load(f)
+
+# Load rebalancing times
+with open('results/benchmark/run_0/rebalance_time.pkl', 'rb') as f:
+    rebalance_times = pickle.load(f)
+
+print(f"Total failures: {sum(failures)}")
+print(f"Mean rebalancing time: {np.mean(rebalance_times):.2f} seconds")
+```
+
+---
+
+## Usage Examples
+
+### Single Episode Benchmark
 
 ```bash
-cd benchmark
-pytest
+bss-benchmark \
+    --data-path data/ \
+    --results-path results/ \
+    --run-id 1 \
+    --num-episodes 1 \
+    --maximum-number-of-bikes 300
 ```
 
-### Code Formatting
+### Multi-Episode Benchmark
+
+In this example, we run 5 episodes, each lasting 2 weeks:
+```bash
+bss-benchmark \
+    --data-path data/ \
+    --results-path results/ \
+    --run-id 2 \
+    --num-episodes 5 \
+    --total-timeslots 112  # 2 weeks per episode (default is 1 week)
+```
+
+### Fleet Size Comparison
+
+Run benchmarks with different fleet sizes:
 
 ```bash
-# Format code
-black src/benchmark/
+# Small fleet
+bss-benchmark --run-id 10 --maximum-number-of-bikes 200
 
-# Sort imports
-isort src/benchmark/
+# Medium fleet
+bss-benchmark --run-id 11 --maximum-number-of-bikes 300
+
+# Large fleet
+bss-benchmark --run-id 12 --maximum-number-of-bikes 500
 ```
 
-### Type Checking
+### Rebalancing Frequency Study
+
+Vary bikes per cell:
 
 ```bash
-mypy src/benchmark/
+# Conservative (more bikes per cell)
+bss-benchmark --run-id 20 --fixed-rebal-bikes-per-cell 10
+
+# Moderate
+bss-benchmark --run-id 21 --fixed-rebal-bikes-per-cell 5
+
+# Aggressive (fewer bikes per cell)
+bss-benchmark --run-id 22 --fixed-rebal-bikes-per-cell 2
 ```
 
-### Building Distribution
+---
 
-```bash
-# Build package
-python -m build
+## Comparison with RL Training
 
-# Install from wheel
-pip install dist/bss_benchmark-1.0.0-py3-none-any.whl
-```
+This benchmark provides a baseline for comparing against RL approaches:
 
-## Integration with Main Project
+| Metric | Static Benchmark | RL Training |
+|--------|------------------|-------------|
+| **Decision Making** | Scheduled, deterministic | Learned, adaptive |
+| **Rebalancing** | Periodic TSP-based | Continuous agent control |
+| **Flexibility** | Fixed schedule | Responds to demand patterns |
+| **Computation** | TSP at intervals | Neural network inference per step |
 
-Your complete project structure becomes:
-
-```
-BSS-DynamicRebalancing-RL-new/
-├── data/
-├── src/
-│   └── bss_rebalancing/
-│       ├── gymnasium_env/
-│       │   ├── README.md
-│       │   ├── pyproject.toml
-│       │   └── src/
-│       │       └── gymnasium_env/
-│       ├── preprocessing/
-│       │   ├── README.md
-│       │   ├── pyproject.toml
-│       │   └── src/
-│       │       └── preprocessing/
-│       ├── rl_training/
-│       │   ├── README.md
-│       │   ├── pyproject.toml
-│       │   └── src/
-│       │       └── rl_training/
-│       └── benchmark/              ← NEW
-│           ├── README.md
-│           ├── pyproject.toml
-│           └── src/
-│               └── benchmark/
-│                   ├── __init__.py
-│                   ├── run.py
-│                   └── utils.py
-└── pyproject.toml
-```
-
-## Verification
-
-After installation, verify the structure:
-
-```bash
-cd src/bss_rebalancing/benchmark
-
-# Check package is installed
-pip list | grep bss-benchmark
-
-# Check CLI is available
-which bss-benchmark
-
-# Test import
-python -c "from benchmark import run_benchmark; print('Success!')"
-
-# Check version
-python -c "import benchmark; print(benchmark.__version__)"
-```
+---
 
 ## Troubleshooting
 
 ### Import Errors
 
+**Issue**: `ModuleNotFoundError: No module named 'benchmark'`
+
+**Solution**: Install in editable mode:
 ```bash
-# Reinstall in editable mode
-cd src/bss_rebalancing/benchmark
-pip uninstall bss-benchmark
+cd benchmark
 pip install -e .
 ```
 
-### CLI Not Found
+### Missing Data Files
 
+**Issue**: `FileNotFoundError` when running benchmark
+
+**Solution**: Ensure preprocessing pipeline has been run:
 ```bash
-# Reinstall to register entry point
-pip install --force-reinstall -e .
+cd preprocessing
+bss-preprocess --data-path /path/to/data --steps download preprocess grid
 ```
 
-### Module Not Found
+### Environment Not Found
 
+**Issue**: `gymnasium.error.UnregisteredEnv: StaticEnv-v0 not found`
+
+**Solution**: Install gymnasium_env package:
 ```bash
-# Ensure you're in the right directory
-cd src/bss_rebalancing/benchmark
-python -m benchmark.run --help
+cd gymnasium_env
+pip install -e .
 ```
 
-## Next Steps
+### Slow Execution
 
-1. Create the directory structure
-2. Copy all files to their locations
-3. Install the package: `pip install -e .`
-4. Run tests: `pytest`
-5. Try the CLI: `bss-benchmark --help`
-6. Run your first benchmark!
+**Issue**: Benchmark runs very slowly
 
-## Additional Files to Create
+**Causes**:
+- Large fleet size
+- Many episodes/timeslots
+- Dense spatial grid
 
-You may want to add:
+**Solutions**:
+- Reduce fleet size: `--maximum-number-of-bikes 200`
+- Reduce duration: `--total-timeslots 16` (2 days)
+- Reduce episodes: `--num-episodes 1`
 
+---
+
+## Workflow Integration
+
+This package is part of the larger BSS rebalancing pipeline:
+
+1. **Preprocessing** → Prepares data
+2. **Gymnasium Env** → Uses preprocessed data for simulation
+3. **RL Training** → Trains agent in simulated environment
+4. **Benchmark** (this package) → Compares against baselines
+5. **Results WebApp** → Visualizes training progress
+
+---
+
+## Citation
+
+If you use this preprocessing pipeline, please cite:
+
+```bibtex
+@mastersthesis{scarpel2025bss,
+  title   = {Fully Dynamic Rebalancing of Dockless Bike Sharing Systems 
+             using Deep Reinforcement Learning},
+  author  = {Scarpel, Edoardo},
+  year    = {2025},
+  school  = {Università degli Studi di Padova},
+  url     = {https://hdl.handle.net/20.500.12608/84368}
+}
 ```
-benchmark/
-├── tests/                  # Unit tests
-│   ├── __init__.py
-│   ├── test_run.py
-│   └── test_utils.py
-├── .gitignore             # Git ignore file
-├── LICENSE                # License file
-└── CHANGELOG.md           # Version history
-```
+
+---
+
+## License
+
+See root LICENSE file for details.
+
+---
+
+## Contributing
+
+Part of the BSS Dynamic Rebalancing RL monorepo.  
+See main repository for contribution guidelines.
+
+---
+
+## Author
+
+**Edoardo Scarpel**  
+Ph.D. Student, University of Padova  
+Email: edoardo.scarpel@phd.unipd.it
