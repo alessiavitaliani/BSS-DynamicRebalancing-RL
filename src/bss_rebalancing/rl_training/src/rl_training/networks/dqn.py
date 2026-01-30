@@ -8,6 +8,9 @@ class DQN(nn.Module):
     def __init__(self, num_actions: int):
         super(DQN, self).__init__()
 
+        # Store device (will be set when .to(device) is called)
+        self.device = torch.device('cpu')
+
         # First GAT layer:  3 input features -> 64 features, heads=4 -> 64 * 4 = 256 if concat=True
         self.gat1 = GATv2Conv(
             # # MODIFY THE FIRST PARAMETER wrt THE DIMENTION OF THE GRAPH OBSERVATION SPACE
@@ -62,8 +65,7 @@ class DQN(nn.Module):
         # 4) MLP for Agent State
         # ------------------------------------------------------------------------------
         self.agent_fc = nn.Sequential(
-            # MODIFY THE FIRST PARAMETER wrt THE DIMENTION OF THE TRUCK OBSERVATION SPACE
-            nn.Linear(162, 256),
+            nn.Linear(256, 256),
 
             nn.ReLU(),
             nn.Linear(256, 256),
@@ -137,3 +139,44 @@ class DQN(nn.Module):
         q_values = self.fc_output(fused)
 
         return q_values
+
+    def to(self, device):
+        """Override to() to track device."""
+        self.device = device
+        return super().to(device)
+
+    def cuda(self, device=None):
+        """Override cuda() to track device."""
+        self.device = torch.device('cuda' if device is None else f'cuda:{device}')
+        return super().cuda(device)
+
+    def cpu(self):
+        """Override cpu() to track device."""
+        self.device = torch.device('cpu')
+        return super().cpu()
+
+    def update_agent_fc_input_dim(self, new_input_dim: int):
+        """
+        Update the input dimension of the agent_fc MLP.
+        Keeps the new layers on the same device as the model.
+        """
+
+        self.agent_fc = nn.Sequential(
+            nn.Linear(new_input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64)  # final agent embedding
+        )
+
+        # Move to correct device
+        self.agent_fc = self.agent_fc.to(self.device)
+
+        # Initialize only the new agent_fc weights
+        for layer in self.agent_fc.modules():
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)

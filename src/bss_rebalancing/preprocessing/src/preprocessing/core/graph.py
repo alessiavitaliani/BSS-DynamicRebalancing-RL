@@ -17,7 +17,7 @@ def initialize_graph(
     graph_path: str,
     simplify_network: bool = False,
     remove_isolated_nodes: bool = False,
-    nodes_to_remove: Optional[List[Tuple[float, float]]] = None,
+    nodes_to_remove: List[Tuple[float, float]] = None | List[int],
     bbox: Optional[Tuple[float, float, float, float]] = None,
 ) -> nx.MultiDiGraph:
     """
@@ -55,6 +55,7 @@ def initialize_graph(
             # OSMnx v2 expects: (left, bottom, right, top) = (west, south, east, north)
             north, south, east, west = bbox
             bbox_v2 = (west, south, east, north)
+            print(bbox_v2)
             graph = ox.truncate.truncate_graph_bbox(G=graph, bbox=bbox_v2)
 
         graph = ox.add_edge_speeds(graph)
@@ -81,9 +82,17 @@ def initialize_graph(
 
         # Remove specified nodes
         if nodes_to_remove is not None:
-            for node in nodes_to_remove:
-                nearest_node = ox.distance.nearest_nodes(graph, X=node[1], Y=node[0])
-                graph.remove_node(nearest_node)
+            # check if instance of List[int] or List[Tuple[float, float]]
+            if isinstance(nodes_to_remove[0], int):
+                print("Removing specified nodes by ID...")
+                for node in nodes_to_remove:
+                    if node in graph:
+                        graph.remove_node(node)
+            else:
+                for coord in nodes_to_remove:
+                    nearest_node = ox.distance.nearest_nodes(graph, X=coord[1], Y=coord[0])
+                    if nearest_node in graph:
+                        graph.remove_node(nearest_node)
 
         ox.save_graphml(graph, graph_path)
         print("Network data downloaded and saved successfully.")

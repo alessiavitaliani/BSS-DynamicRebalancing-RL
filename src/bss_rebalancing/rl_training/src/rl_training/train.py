@@ -51,8 +51,8 @@ params = {
     "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
     "soft_update": True,                            # Use soft update for target network
     "tau": 0.005,                                   # Tau parameter for soft update
-    "depot_position_id": 103,                       # ID (cell) of the depot position
-    "initial_cell_id": 103                          # Initial cell where the truck starts
+    "depot_position_id": 18,                       # ID (cell) of the depot position
+    "initial_cell_id": 18                          # Initial cell where the truck starts
 }
 
 reward_params = {
@@ -192,12 +192,16 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         'discount_factor': params["gamma"],
         'logging': enable_logging,
         'depot_id': params['depot_position_id'],
-        'initial_cell': params['initial_cell_id'],
+        # 'initial_cell': params['initial_cell_id'],
         'reward_params': reward_params,
     }
 
     node_features = ['truck_cell', 'critic_score', 'eligibility_score', 'bikes']
     agent_state, info = env.reset(options=reset_options)
+
+    # Update train/target models input dimension
+    agent.train_model.update_agent_fc_input_dim(len(agent_state))
+    agent.target_model.update_agent_fc_input_dim(len(agent_state))
 
     # Initialize state
     state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
@@ -371,12 +375,16 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         'discount_factor': params["gamma"],
         'logging': enable_val_logging,
         'depot_id': params['depot_position_id'],
-        'initial_cell': params['initial_cell_id'],
+        # 'initial_cell': params['initial_cell_id'],
         'reward_params': reward_params,
     }
 
     node_features = ['truck_cell', 'critic_score', 'eligibility_score', 'bikes']
     agent_state, info = env.reset(options=reset_options)
+
+    # Update train/target models input dimension
+    agent.train_model.update_agent_fc_input_dim(len(agent_state))
+    agent.target_model.update_agent_fc_input_dim(len(agent_state))
 
     # Initialize state
     state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)

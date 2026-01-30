@@ -68,7 +68,7 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                 # Row 1: Failures and Rewards
                 dbc.Row([
                     dbc.Col([
-                        dcc.Graph(id='failures-plot', config=PLOT_CONFIG)
+                        dcc.Graph(id='mean-failures-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
                         dcc.Graph(id='rewards-plot', config=PLOT_CONFIG)
@@ -81,7 +81,7 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                         dcc.Graph(id='epsilon-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
-                        dcc.Graph(id='deployed-bikes-overview-plot', config=PLOT_CONFIG)
+                        dcc.Graph(id='total-failures-plot', config=PLOT_CONFIG)
                     ], width=6),
                 ], className='mt-3'),
 
@@ -93,13 +93,6 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                     dbc.Col([
                         dcc.Graph(id='global-critic-overview-plot', config=PLOT_CONFIG)
                     ], width=6),
-                ], className='mt-3'),
-
-                # Row 4: Training Loss (only for training mode)
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='loss-overview-plot', config=PLOT_CONFIG)
-                    ], width=12),
                 ], className='mt-3'),
             ]),
 

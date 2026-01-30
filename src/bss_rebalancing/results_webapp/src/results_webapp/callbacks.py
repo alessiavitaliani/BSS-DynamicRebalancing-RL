@@ -34,16 +34,26 @@ def register_callbacks(app):
     @app.callback(
         Output('run-selector', 'options'),
         Output('run-selector', 'value'),
-        Input('interval-component', 'n_intervals')
+        Input('interval-component', 'n_intervals'),
+        State('run-selector', 'value')  # ← Remember current selection
     )
-    def update_run_options(n):
-        """Discover available runs."""
+    def update_run_options(n, current_run):
+        """Discover available runs and preserve selection."""
         runs = discover_runs(app.results_path)
         options = [{'label': label, 'value': str(path)} for label, path in runs.items()]
 
-        if options:
-            return options, options[0]['value']
-        return [], None
+        if not options:
+            return [], None
+
+        # Check if current selection is still valid
+        run_values = [opt['value'] for opt in options]
+
+        if current_run and current_run in run_values:
+            # Keep the current selection
+            return options, current_run
+
+        # If no current selection or it's invalid, default to first
+        return options, options[0]['value']
 
     # ============================================================================
     # Callback: Update episode options
@@ -116,85 +126,80 @@ def register_callbacks(app):
         ])
 
     # ============================================================================
-    # Callback: Update overview plots (FIXED)
+    # Callback: Update overview plots (OPTIMIZED - USES SUMMARY DATA ONLY)
     # ============================================================================
     @app.callback(
-        Output('failures-plot', 'figure'),
+        Output('mean-failures-plot', 'figure'),
         Output('rewards-plot', 'figure'),
         Output('epsilon-plot', 'figure'),
-        Output('deployed-bikes-overview-plot', 'figure'),
+        Output('total-failures-plot', 'figure'),
         Output('qvalues-overview-plot', 'figure'),
         Output('global-critic-overview-plot', 'figure'),
-        Output('loss-overview-plot', 'figure'),
         Input('run-selector', 'value'),
         Input('mode-selector', 'value'),
         Input('interval-component', 'n_intervals'),
         Input('episode-selector', 'value')
     )
     def update_overview_plots(run_path, mode, n, current_episode):
-        """Update overview plots with concatenated timeslot data."""
+        """Update overview plots using ONLY summary data (fast!)."""
 
         empty_fig = go.Figure()
         empty_fig.update_layout(title='No data available')
 
         if not run_path:
             empty_fig.update_layout(title='No run selected')
-            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
+            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
 
         run_dir = Path(run_path)
 
-        # Load concatenated timeslot data (available for both training and validation)
-        rewards = load_concatenated_timeslot_data(run_dir, mode, 'reward')
-        failures = load_concatenated_timeslot_data(run_dir, mode, 'failures')
-        deployed_bikes = load_concatenated_timeslot_data(run_dir, mode, 'deployed_bikes')
-
-        # Load epsilon from summary (per episode)
+        # Load summary data (FAST - single CSV or build from scalars.json only)
         summary = load_summary_data(run_dir, mode)
 
-        # Check if we have any data at all
-        if len(rewards) == 0 and len(failures) == 0:
+        # Check if we have any data
+        if summary is None or summary.empty:
             empty_fig = go.Figure()
             empty_fig.update_layout(title=f'No {mode} data available yet')
-            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
+            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
 
         # ============================================
-        # Plot 1: Failures (both modes)
+        # Plot 1: Mean Failures per Episode
         # ============================================
-        if len(failures) > 0:
-            failures_fig = create_metric_plot(
-                failures,
-                f'{mode.capitalize()} Failures per Timeslot (All Episodes)',
-                'Failures',
-                show_cumulative=True,
-                color=COLORS['danger']
+        if 'mean_failures' in summary.columns:
+            mean_failures_series = summary.set_index('episode')['mean_failures']
+            mean_failures_fig = create_metric_plot(
+                mean_failures_series,
+                f'{mode.capitalize()} Mean Failures per Episode',
+                'Mean Failures',
+                show_cumulative=False,
+                color=COLORS['primary']
             )
-            failures_fig.update_layout(xaxis_title='Timeslot (Cumulative)')
         else:
-            failures_fig = go.Figure()
-            failures_fig.update_layout(title='No failure data')
+            mean_failures_fig = go.Figure()
+            mean_failures_fig.update_layout(title='No mean failures data')
 
         # ============================================
-        # Plot 2: Rewards (both modes)
+        # Plot 2: Total Rewards per Episode
         # ============================================
-        if len(rewards) > 0:
+        if 'total_reward' in summary.columns:
+            rewards_series = summary.set_index('episode')['total_reward']
             rewards_fig = create_metric_plot(
-                rewards,
-                f'{mode.capitalize()} Rewards per Timeslot (All Episodes)',
-                'Reward',
+                rewards_series,
+                f'{mode.capitalize()} Total Reward per Episode',
+                'Total Reward',
                 show_cumulative=True,
                 color=COLORS['secondary']
             )
-            rewards_fig.update_layout(xaxis_title='Timeslot (Cumulative)')
         else:
             rewards_fig = go.Figure()
             rewards_fig.update_layout(title='No reward data')
 
         # ============================================
-        # Plot 3: Epsilon decay (both modes)
+        # Plot 3: Epsilon Decay
         # ============================================
-        if summary is not None and not summary.empty and 'epsilon' in summary.columns:
+        if 'epsilon' in summary.columns:
+            epsilon_series = summary.set_index('episode')['epsilon']
             epsilon_fig = create_metric_plot(
-                summary.set_index('episode')['epsilon'],
+                epsilon_series,
                 f'{mode.capitalize()} Epsilon Decay',
                 'Epsilon',
                 show_cumulative=False,
@@ -205,133 +210,51 @@ def register_callbacks(app):
             epsilon_fig.update_layout(title='No epsilon data')
 
         # ============================================
-        # Plot 4: Deployed bikes (both modes)
+        # Plot 4: Total Failures per Episode
         # ============================================
-        if len(deployed_bikes) > 0:
-            bikes_fig = create_metric_plot(
-                deployed_bikes,
-                f'{mode.capitalize()} Deployed Bikes per Timeslot (All Episodes)',
-                'Number of Bikes',
-                show_cumulative=False,
-                color=COLORS['primary']
+        if 'total_failures' in summary.columns:
+            failures_series = summary.set_index('episode')['total_failures']
+            failures_fig = create_metric_plot(
+                failures_series,
+                f'{mode.capitalize()} Total Failures per Episode',
+                'Total Failures',
+                show_cumulative=True,
+                color=COLORS['danger']
             )
-            bikes_fig.update_layout(xaxis_title='Timeslot (Cumulative)')
         else:
-            bikes_fig = go.Figure()
-            bikes_fig.update_layout(title='No deployed bikes data')
+            failures_fig = go.Figure()
+            failures_fig.update_layout(title='No failure data')
 
         # ============================================
         # Plots 5-7: Training-only metrics
         # ============================================
         if mode == 'training':
-            # Load training-specific data
-            losses = load_concatenated_step_data(run_dir, mode, 'losses')
-            q_values = load_concatenated_step_data(run_dir, mode, 'q_values')
-            global_critic_scores = load_concatenated_step_data(run_dir, mode, 'global_critic_scores')
+            # These require loading individual episode data
+            # We'll show placeholders for now unless we need them
 
-            # Plot 5: Q-values
-            if len(q_values) > 0:
-                qval_fig = create_metric_plot(
-                    q_values,
-                    'Mean Q-Values per Timeslot (All Episodes)',
-                    'Q-Value',
-                    show_cumulative=False,
-                    color=COLORS['primary']
-                )
-                qval_fig.update_layout(xaxis_title='Timeslot (Cumulative)')
-            else:
-                qval_fig = go.Figure()
-                qval_fig.update_layout(title='No Q-value data')
+            qval_fig = go.Figure()
+            qval_fig.update_layout(
+                title='Q-values: Select specific episode in "Episode Details" tab',
+                annotations=[{
+                    'text': 'Viewing Q-values requires loading individual episodes.<br>Use the "Episode Details" tab for detailed analysis.',
+                    'xref': 'paper',
+                    'yref': 'paper',
+                    'showarrow': False,
+                    'font': {'size': 12, 'color': 'gray'}
+                }]
+            )
 
-            # Plot 6: Global Critic Scores
-            if len(global_critic_scores) > 0:
-                window_size = min(200, len(global_critic_scores) // 20) if len(global_critic_scores) > 20 else 1
-                critic_fig = go.Figure()
-
-                if window_size > 1:
-                    critic_fig.add_trace(go.Scatter(
-                        y=global_critic_scores,
-                        mode='lines',
-                        name='Global Critic',
-                        line=dict(color=COLORS['primary'], width=1),
-                        opacity=0.3
-                    ))
-                    critic_fig.add_trace(go.Scatter(
-                        y=global_critic_scores.rolling(window=window_size).mean(),
-                        mode='lines',
-                        name=f'Moving Avg ({window_size})',
-                        line=dict(color=COLORS['secondary'], width=2)
-                    ))
-                else:
-                    critic_fig.add_trace(go.Scatter(
-                        y=global_critic_scores,
-                        mode='lines',
-                        name='Global Critic',
-                        line=dict(color=COLORS['secondary'], width=2)
-                    ))
-
-                critic_fig.update_layout(
-                    title='Global Critic Score (All Episodes)',
-                    xaxis_title='Step (Cumulative)',
-                    yaxis_title='Score',
-                    hovermode='x unified'
-                )
-            else:
-                critic_fig = go.Figure()
-                critic_fig.update_layout(title='No global critic data')
-
-            # Plot 7: Training Loss
-            if current_episode is not None:
-                episode_data = load_episode_data(run_dir, mode, current_episode)
-
-                if episode_data and 'step_data' in episode_data:
-                    losses = episode_data['step_data'].get('losses', [])
-                    # Filter out None values
-                    losses = [l for l in losses if l is not None]
-
-                    if len(losses) > 0:
-                        losses_series = pd.Series(losses)
-                        window_size = min(100, len(losses_series) // 10) if len(losses_series) > 10 else 1
-                        loss_fig = go.Figure()
-
-                        if window_size > 1:
-                            loss_fig.add_trace(go.Scatter(
-                                y=losses_series,
-                                mode='lines',
-                                name='Loss',
-                                line=dict(color=COLORS['primary'], width=1),
-                                opacity=0.3
-                            ))
-                            loss_fig.add_trace(go.Scatter(
-                                y=losses_series.rolling(window=window_size).mean(),
-                                mode='lines',
-                                name=f'Moving Avg ({window_size})',
-                                line=dict(color=COLORS['danger'], width=2)
-                            ))
-                        else:
-                            loss_fig.add_trace(go.Scatter(
-                                y=losses_series,
-                                mode='lines',
-                                name='Loss',
-                                line=dict(color=COLORS['danger'], width=2)
-                            ))
-
-                        loss_fig.update_layout(
-                            title=f'Training Loss (Episode {current_episode})',
-                            xaxis_title='Step',
-                            yaxis_title='Loss',
-                            hovermode='x unified'
-                        )
-                    else:
-                        loss_fig = go.Figure()
-                        loss_fig.update_layout(title=f'No loss data for episode {current_episode}')
-                else:
-                    loss_fig = go.Figure()
-                    loss_fig.update_layout(title='Select an episode to view loss')
-            else:
-                loss_fig = go.Figure()
-                loss_fig.update_layout(title='Select an episode to view training loss')
-
+            critic_fig = go.Figure()
+            critic_fig.update_layout(
+                title='Global Critic: Select specific episode in "Episode Details" tab',
+                annotations=[{
+                    'text': 'Viewing global critic scores requires loading individual episodes.<br>Use the "Episode Details" tab for detailed analysis.',
+                    'xref': 'paper',
+                    'yref': 'paper',
+                    'showarrow': False,
+                    'font': {'size': 12, 'color': 'gray'}
+                }]
+            )
 
         else:  # validation mode
             # Show message for training-only plots
@@ -359,19 +282,7 @@ def register_callbacks(app):
                 }]
             )
 
-            loss_fig = go.Figure()
-            loss_fig.update_layout(
-                title='Training Loss not available in validation mode',
-                annotations=[{
-                    'text': 'Loss is only computed during training',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'showarrow': False,
-                    'font': {'size': 14, 'color': 'gray'}
-                }]
-            )
-
-        return failures_fig, rewards_fig, epsilon_fig, bikes_fig, qval_fig, critic_fig, loss_fig
+        return mean_failures_fig, rewards_fig, epsilon_fig, failures_fig, qval_fig, critic_fig
 
     # ============================================================================
     # Callback: Update episode detail plots

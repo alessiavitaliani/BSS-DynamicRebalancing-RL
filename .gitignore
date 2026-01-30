@@ -7,7 +7,7 @@ osmnx-examples/
 cache/
 
 # Ignore everything in data/
-data/
+data*/
 # ...except specific files in data/utils/
 !data/utils/
 !data/utils/ev_consumption_matrix.csv

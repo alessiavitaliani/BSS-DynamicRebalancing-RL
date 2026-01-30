@@ -27,7 +27,8 @@ class PreprocessingConfig:
     months: List[int] = field(default_factory=lambda: [9, 10])
 
     # Nodes to remove from graph
-    nodes_to_remove: List[Tuple[float, float]] = field(default_factory=lambda: [(42.365455, -71.14254)])
+    # nodes_to_remove: List[Tuple[float, float]] = field(default_factory=lambda: [(42.365455, -71.14254)])
+    nodes_to_remove: List[int] = field(default_factory=lambda: [330,482,54,256,36,324])
 
     # Days of week to process
     days_of_week: List[str] = field(
