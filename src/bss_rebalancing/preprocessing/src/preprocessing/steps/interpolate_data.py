@@ -20,6 +20,21 @@ from preprocessing.config import DEFAULT_CONFIG, PreprocessingConfig
 from preprocessing.core.graph import load_graph
 from preprocessing.core.utils import nodes_within_radius
 
+def reorder_matrix(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    # Sort rows by node_id
+    df = df.sort(col)
+
+    # Extract numeric column names (excluding node_id)
+    data_cols = df.select(pl.exclude(col)).columns
+
+    # Sort columns numerically (important: cast to int!)
+    sorted_cols = sorted(data_cols, key=lambda x: int(x))
+
+    # Reorder dataframe
+    df = df.select([col] + sorted_cols)
+
+    return df
+
 
 def interpolate_row(
         row_data: np.ndarray,
@@ -276,7 +291,7 @@ def run(config: PreprocessingConfig) -> None:
     graph = load_graph(config.graph_path)
 
     nodes, _ = ox.graph_to_gdfs(graph, nodes=True, edges=True)
-    nodes_dict = {node_id: (row["y"], row["x"]) for node_id, row in nodes.iterrows()}
+    nodes_dict = {node_id: (row["y"], row["x"]) for node_id, row in sorted(nodes.iterrows(), key=lambda item: item[0])}
 
     print(f"Building nearby nodes dictionary with radius {config.interpolation_radius}m")
     tbar = tqdm(nodes_dict, desc="Building Nearby Nodes", dynamic_ncols=True)
@@ -312,6 +327,8 @@ def run(config: PreprocessingConfig) -> None:
             rate_matrix = pl.read_csv(rate_matrix_file)
 
             rate_matrix = rate_matrix.with_columns(pl.col('node_id').cast(pl.Int64))
+
+            rate_matrix = reorder_matrix(rate_matrix, 'node_id')
 
             # Build PMF matrix (handles all 4 stages internally)
             pmf_matrix = build_pmf_matrix(rate_matrix, nearby_nodes_dict, nodes_dict)
