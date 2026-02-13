@@ -97,7 +97,7 @@ Examples:
     parser.add_argument(
         "--bbox",
         type=str,
-        default="[42.370, 42.353, -71.070, -71.117]",
+        default="[42.36889381,42.35248869,-71.07231001,-71.11736849]",
         help="Bounding box for data download in format [north,south,east,west]",
     )
 

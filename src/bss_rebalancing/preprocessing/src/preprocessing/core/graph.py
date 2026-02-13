@@ -12,13 +12,14 @@ from tqdm import tqdm
 
 
 def initialize_graph(
-    places: List[str],
+    places: list[str],
     network_type: str,
     graph_path: str,
     simplify_network: bool = False,
     remove_isolated_nodes: bool = False,
-    nodes_to_remove: List[Tuple[float, float]] = None | List[int],
+    nodes_to_remove: list[tuple[float, float]] | list[int] | None = None,
     bbox: Optional[Tuple[float, float, float, float]] = None,
+    save: bool = True,
 ) -> nx.MultiDiGraph:
     """
     Initialize the graph representing the road network.
@@ -34,6 +35,7 @@ def initialize_graph(
         remove_isolated_nodes: Whether to remove isolated nodes from the network.
         nodes_to_remove: List of (lat, lon) coordinates of nodes to remove.
         bbox: Bounding box as (north, south, east, west) to truncate the graph.
+        save: Whether to save the downloaded graph to the specified path.
 
     Returns:
         The graph representing the road network.
@@ -46,7 +48,8 @@ def initialize_graph(
         print("Network file does not exist. Downloading the network data...")
 
         # Ensure directory exists
-        os.makedirs(os.path.dirname(graph_path), exist_ok=True)
+        if save:
+            os.makedirs(os.path.dirname(graph_path), exist_ok=True)
 
         graph = ox.graph_from_place(places[0], network_type=network_type)
 
@@ -55,7 +58,7 @@ def initialize_graph(
             # OSMnx v2 expects: (left, bottom, right, top) = (west, south, east, north)
             north, south, east, west = bbox
             bbox_v2 = (west, south, east, north)
-            print(bbox_v2)
+            print(f"Truncating graph to bounding box: {bbox_v2}")
             graph = ox.truncate.truncate_graph_bbox(G=graph, bbox=bbox_v2)
 
         graph = ox.add_edge_speeds(graph)
@@ -81,7 +84,7 @@ def initialize_graph(
             graph.remove_nodes_from(list(nx.isolates(graph)))
 
         # Remove specified nodes
-        if nodes_to_remove is not None:
+        if nodes_to_remove is not None and len(nodes_to_remove) > 0:
             # check if instance of List[int] or List[Tuple[float, float]]
             if isinstance(nodes_to_remove[0], int):
                 print("Removing specified nodes by ID...")
@@ -94,8 +97,11 @@ def initialize_graph(
                     if nearest_node in graph:
                         graph.remove_node(nearest_node)
 
-        ox.save_graphml(graph, graph_path)
-        print("Network data downloaded and saved successfully.")
+        if save:
+            ox.save_graphml(graph, graph_path)
+            print("Network data downloaded and saved successfully.")
+        else:
+            print("Network data downloaded successfully.")
 
     return graph
 

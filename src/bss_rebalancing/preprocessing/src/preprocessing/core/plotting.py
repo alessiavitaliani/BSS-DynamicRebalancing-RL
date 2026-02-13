@@ -1,7 +1,7 @@
 """
 Visualization functions for graphs and grids.
 """
-
+import math
 import os
 from typing import Dict, Optional
 
@@ -12,8 +12,6 @@ import numpy as np
 import osmnx as ox
 import pandas as pd
 from matplotlib.colors import Normalize
-
-from preprocessing.core.utils import kahan_sum
 
 
 def plot_graph(graph: nx.MultiDiGraph, save_path: str = "") -> None:
@@ -77,11 +75,11 @@ def plot_graph_with_colored_nodes(
     if axis == 0:
         sum_array = np.zeros(max_index + 1)
         for idx in rate_matrix.index:
-            sum_array[idx] = kahan_sum(rate_matrix.loc[idx].values)
+            sum_array[idx] = math.fsum(rate_matrix.loc[idx].values)
     else:
         sum_array = np.zeros(max_index + 1)
         for idx in rate_matrix.columns:
-            sum_array[int(idx)] = kahan_sum(rate_matrix[idx].values)
+            sum_array[int(idx)] = math.fsum(rate_matrix[idx].values)
 
     min_rate = 0
     max_rate = sum_array.max()
@@ -97,7 +95,7 @@ def plot_graph_with_colored_nodes(
     else:
         if axis == 0:
             node_colors = {
-                node: (0, 0.5, 0, 1) if kahan_sum(rate_matrix.loc[node].values) != 0 else (0.7, 0.7, 0.7, 1)
+                node: (0, 0.5, 0, 1) if math.fsum(rate_matrix.loc[node].values) != 0 else (0.7, 0.7, 0.7, 1)
                 for node in graph.nodes
             }
         else:

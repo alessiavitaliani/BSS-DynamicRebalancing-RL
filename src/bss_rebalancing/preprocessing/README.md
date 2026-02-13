@@ -180,7 +180,6 @@ data/
 │   ├── ev_velocity_matrix.csv              # Travel time matrix
 │   ├── global_rates.pkl                    # Global statistics
 │   ├── nearby_nodes.pkl                    # Node neighborhood data
-│   └── filtered_stations.csv               # Valid stations
 │
 └── plots/                                  # Visualizations
     ├── graph.png

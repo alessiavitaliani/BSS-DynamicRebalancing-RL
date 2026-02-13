@@ -10,7 +10,7 @@ import osmnx as ox
 from shapely.geometry import Point, Polygon
 from tqdm import tqdm
 
-from preprocessing.core.utils import compute_distance
+from haversine import haversine, Unit
 from gymnasium_env.simulator.cell import Cell
 
 
@@ -108,7 +108,7 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
             if adj_cell.id != cell.id:
                 adj_center_coords = adj_cell.boundary.centroid.coords[0]
 
-                if compute_distance(center_coords, adj_center_coords) < 300:
+                if haversine(center_coords, adj_center_coords, unit=Unit.METERS) < 300:
                     lon_diff = center_coords[0] - adj_center_coords[0]
                     lat_diff = center_coords[1] - adj_center_coords[1]
 

@@ -13,7 +13,6 @@ import pandas as pd
 from tqdm import tqdm
 
 from preprocessing.config import DEFAULT_CONFIG, PreprocessingConfig
-from preprocessing.core.utils import kahan_sum
 
 
 def run(config: PreprocessingConfig) -> None:
@@ -44,7 +43,7 @@ def run(config: PreprocessingConfig) -> None:
                 continue
 
             rate_matrix = pd.read_csv(rate_matrix_file, index_col="osmid")
-            global_rate = kahan_sum(rate_matrix.to_numpy().flatten())
+            global_rate = math.fsum(rate_matrix.to_numpy().flatten())
             global_rates[(day.lower(), timeslot)] = global_rate
 
             tbar.update(1)

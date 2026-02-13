@@ -7,10 +7,6 @@ Preprocessing utilities for the BSS Dynamic Rebalancing RL project.
 __version__ = "0.1.0"
 
 from preprocessing.core.utils import (
-    kahan_sum,
-    compute_distance,
-    haversine_distance,
-    count_specific_day,
     nodes_within_radius,
 )
 from preprocessing.core.graph import (
@@ -33,10 +29,6 @@ from preprocessing.core.grid import (
 
 __all__ = [
     # Utils
-    "kahan_sum",
-    "compute_distance",
-    "haversine_distance",
-    "count_specific_day",
     "nodes_within_radius",
     # Graph
     "initialize_graph",

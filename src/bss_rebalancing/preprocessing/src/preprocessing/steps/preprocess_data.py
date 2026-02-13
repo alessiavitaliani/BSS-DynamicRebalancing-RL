@@ -1,5 +1,5 @@
 """
-Preprocess trip data to compute Poisson rates.
+Preprocess trip data to compute Poisson rates using Polars.
 
 This module processes raw trip data and computes Poisson request rates
 for each station pair, organized by day and time slot.
@@ -10,194 +10,313 @@ import os
 from typing import List
 
 import networkx as nx
+import numpy as np
 import osmnx as ox
-import pandas as pd
+import polars as pl
+from haversine import haversine, Unit
 from tqdm import tqdm
 
 from preprocessing.config import DEFAULT_CONFIG, PreprocessingConfig
 from preprocessing.core.graph import initialize_graph
-from preprocessing.core.utils import count_specific_day
+
+
+def filter_and_map_stations(
+    trip_df: pl.DataFrame,
+    graph: nx.MultiDiGraph,
+    bbox: tuple = None,
+    max_distance_meters: float = 100.0
+) -> pl.DataFrame:
+    """
+    Extract unique stations from trips, optionally filter by bbox, and map to graph nodes.
+
+    Parameters:
+        trip_df: Polars DataFrame containing trip data
+        graph: NetworkX graph of the road network
+        bbox: Optional (north, south, east, west) bounding box
+        max_distance_meters: Maximum distance for station-to-node mapping
+
+    Returns:
+        DataFrame with mapped stations (id, name, lat, lon, nearest_node, node_lat, node_lon)
+    """
+    # Extract and merge starting and ending stations
+    starting_stations = (
+        trip_df
+        .select(['start station id', 'start station name',
+                'start station latitude', 'start station longitude'])
+        .unique()
+        .rename({
+            'start station id': 'id',
+            'start station name': 'name',
+            'start station latitude': 'latitude',
+            'start station longitude': 'longitude',
+        })
+    )
+
+    ending_stations = (
+        trip_df
+        .select(['end station id', 'end station name',
+                'end station latitude', 'end station longitude'])
+        .unique()
+        .rename({
+            'end station id': 'id',
+            'end station name': 'name',
+            'end station latitude': 'latitude',
+            'end station longitude': 'longitude',
+        })
+    )
+
+    stations = starting_stations.join(
+        ending_stations,
+        on=['id', 'name', 'latitude', 'longitude'],
+        how="full",
+        coalesce=True
+    )
+
+    # Apply bbox filter if provided
+    if bbox:
+        north, south, east, west = bbox
+        stations = stations.filter(
+            (pl.col('latitude') >= south) &
+            (pl.col('latitude') <= north) &
+            (pl.col('longitude') >= west) &
+            (pl.col('longitude') <= east)
+        )
+
+    # Map stations to nearest graph nodes
+    lons = stations['longitude'].to_list()
+    lats = stations['latitude'].to_list()
+    nearest_node_ids = ox.distance.nearest_nodes(graph, lons, lats)
+
+    # Get node coordinates and calculate distances
+    node_coords = [(graph.nodes[nid]['y'], graph.nodes[nid]['x'])
+                   for nid in nearest_node_ids]
+
+    distances = [
+        haversine((lats[i], lons[i]), node_coords[i], unit=Unit.METERS)
+        for i in range(len(lats))
+    ]
+
+    mapped_stations = stations.with_columns([
+        pl.Series('nearest_node', nearest_node_ids),
+        pl.Series('node_latitude', [nc[0] for nc in node_coords]),
+        pl.Series('node_longitude', [nc[1] for nc in node_coords]),
+        pl.Series('distance_meters', distances)
+    ])
+
+    # Filter by maximum distance
+    mapped_stations = mapped_stations.filter(
+        pl.col('distance_meters') <= max_distance_meters
+    )
+
+    return mapped_stations
+
+
+def filter_trips_and_compute_timeslots(
+    trip_df: pl.DataFrame,
+    valid_station_ids: List[int]
+) -> pl.DataFrame:
+    """
+    Filter trips by valid stations and assign weekday/timeslot labels.
+
+    Timeslot logic: Each day starts at 01:00 AM (not midnight).
+    - Timeslots 0-6: 3-hour periods starting at 01:00, 04:00, ..., 19:00
+    - Timeslot 7: 22:00-23:59 (2 hours)
+    - Timeslot 8: 00:00-00:59 (1 hour, assigned to previous day)
+    - Timeslot 8 is later merged into timeslot 7
+
+    Parameters:
+        trip_df: Raw trip DataFrame
+        valid_station_ids: List of valid station IDs
+
+    Returns:
+        Filtered DataFrame with weekday and timeslot columns
+    """
+    datetime_formats = [
+        "%Y-%m-%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S%.2f",
+        "%Y-%m-%d %H:%M:%S%.3f",
+        "%Y-%m-%d %H:%M:%S%.4f",
+    ]
+
+    filtered_trips = (
+        trip_df
+        .filter(
+            pl.col("start station id").is_in(valid_station_ids) |
+            pl.col("end station id").is_in(valid_station_ids)
+        )
+        .with_columns([
+            # Replace invalid stations with external node marker (10000)
+            pl.when(pl.col("start station id").is_in(valid_station_ids))
+              .then(pl.col("start station id"))
+              .otherwise(10000)
+              .alias("start station id"),
+            pl.when(pl.col("end station id").is_in(valid_station_ids))
+              .then(pl.col("end station id"))
+              .otherwise(10000)
+              .alias("end station id"),
+            # Parse datetime columns
+            pl.coalesce([
+                pl.col("starttime").str.to_datetime(format=fmt, strict=False)
+                for fmt in datetime_formats
+            ]).alias("starttime"),
+            pl.coalesce([
+                pl.col("starttime").str.to_date(format=fmt, strict=False)
+                for fmt in datetime_formats
+            ]).alias("startday"),
+        ])
+        .with_columns([
+            # Shift hour 0 to previous day
+            pl.when(pl.col("starttime").dt.hour() == 0)
+              .then(pl.col("startday") - pl.duration(days=1))
+              .otherwise(pl.col("startday"))
+              .alias("startday"),
+        ])
+        .with_columns([
+            # Assign weekday (ISO: Monday=1, Sunday=7)
+            pl.col("startday").dt.weekday().alias("weekday"),
+            # Assign timeslot
+            pl.when(pl.col("starttime").dt.hour() == 0)
+              .then(8)  # Midnight hour gets timeslot 8 (merged to 7 later)
+              .otherwise((pl.col("starttime").dt.hour() - 1) // 3)
+              .alias("timeslot")
+        ])
+        .with_columns([
+            # Ensure weekday is 1-7 (wrap Sunday=0 to 7)
+            pl.when(pl.col("weekday") == 0)
+              .then(7)
+              .otherwise(pl.col("weekday"))
+              .alias("weekday")
+        ])
+    )
+
+    return filtered_trips
+
+
+def compute_timeslot_counts(trip_df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Compute total hours available for each weekday-timeslot combination.
+
+    Parameters:
+        trip_df: Trip DataFrame with starttime column
+
+    Returns:
+        DataFrame with columns: weekday, timeslot, total_seconds
+    """
+    timeslot_counts = (
+        trip_df
+        .group_by(['weekday', 'timeslot'])
+        .agg(
+            pl.col('startday').n_unique().alias('num_occurrences')
+        )
+        .with_columns(
+            hours_per_timeslot = pl.when(pl.col('timeslot') == 7)
+                .then(2)  # 22:00-23:59 is 2 hours
+                .when(pl.col('timeslot') == 8)
+                .then(1)  # 00:00-00:59 is 1 hour
+                .otherwise(3)  # All others are 3 hours
+        )
+        .with_columns(
+            total_hours = pl.col('num_occurrences') * pl.col('hours_per_timeslot')
+        )
+        .with_columns(
+            # Map timeslot 8 to 7
+            timeslot = pl.when(pl.col('timeslot') == 8)
+                .then(7)
+                .otherwise(pl.col('timeslot'))
+        )
+        .group_by(['weekday', 'timeslot'])
+        .agg(
+            pl.col('total_hours').sum().alias('total_hours')
+        )
+        .sort(['weekday', 'timeslot'], descending=False)
+    )
+
+    return timeslot_counts
 
 
 def compute_poisson_rates(
-    df: pd.DataFrame,
-    year: int,
-    months: List[int],
-    day_of_week: str,
-    time_slot: int,
-) -> pd.DataFrame:
+    filtered_trips: pl.DataFrame,
+    timeslot_counts: pl.DataFrame
+) -> pl.DataFrame:
     """
-    Compute the Poisson request rates for each station pair on a specific day and time slot.
+    Compute Poisson rates (rate = trips / seconds) for each station pair.
 
     Parameters:
-        df: DataFrame containing the trip data.
-        year: The year of the data.
-        months: List of months to process.
-        day_of_week: Day of the week to filter by (e.g., "Monday", "Tuesday").
-        time_slot: Time slot (0-7), each representing a 3-hour interval starting from 1:00 am.
+        filtered_trips: Filtered trips with weekday/timeslot
+        timeslot_counts: Total hours per weekday-timeslot
 
     Returns:
-        DataFrame containing the Poisson request rates for each station pair.
+        DataFrame with columns: start/end station id, weekday, timeslot, rate
     """
-    df = df.copy()
-    df["starttime"] = pd.to_datetime(df["starttime"])
-    df["day_of_week"] = df["starttime"].dt.day_name()
-    df["hour"] = df["starttime"].dt.hour
-
-    # Filter by day of week
-    df_filtered = df[df["day_of_week"] == day_of_week]
-
-    # Define time slot hours
-    start_hour = 1 + time_slot * 3
-    end_hour = start_hour + 3
-
-    # Filter by time slot
-    df_filtered = df_filtered[(df_filtered["hour"] >= start_hour) & (df_filtered["hour"] < end_hour)]
-
-    # Calculate number of days in the time period
-    num_days = sum(count_specific_day(year, month, day_of_week) for month in months)
-
-    # Total time in seconds for this time slot across all days
-    total_time_seconds = num_days * 3 * 3600
-
-    # Group by station pairs
-    grouped_df = (
-        df_filtered.groupby(
-            [
-                "start station id",
-                "start station name",
-                "start station latitude",
-                "start station longitude",
-                "end station id",
-                "end station name",
-                "end station latitude",
-                "end station longitude",
-            ]
+    rates = (
+        filtered_trips
+        .with_columns(
+            # Map timeslot 8 to 7
+            timeslot = pl.when(pl.col('timeslot') == 8)
+                .then(7)
+                .otherwise(pl.col('timeslot'))
         )
-        .size()
-        .reset_index(name="trip_count")
+        .group_by(['start station id', 'end station id', 'weekday', 'timeslot'])
+        .agg(
+            pl.len().alias("total_trips")
+        )
+        .join(timeslot_counts, on=['weekday', 'timeslot'], how='left')
+        .with_columns(
+            rate = pl.col('total_trips') / (pl.col('total_hours') * 3600)
+        )
     )
 
-    # Compute Poisson rate
-    rate_df = grouped_df.copy()
-    rate_df["lambda"] = rate_df["trip_count"] / total_time_seconds
-    rate_df["day_of_week"] = day_of_week
-    rate_df["time_slot"] = time_slot
-
-    return rate_df
+    return rates
 
 
-def map_trip_to_graph_node(
-    G: nx.MultiDiGraph,
-    trip_df: pd.DataFrame,
-    filtered_stations: pd.DataFrame,
-) -> pd.DataFrame:
+def compute_rate_matrix(
+    graph: nx.MultiDiGraph,
+    rate_df: pl.DataFrame,
+    weekday: int,
+    timeslot: int
+) -> np.ndarray:
     """
-    Map the start and end stations of the trips to the nearest nodes in the graph.
+    Create a square rate matrix for a specific weekday-timeslot.
 
     Parameters:
-        G: The graph representing the road network.
-        trip_df: The DataFrame containing the trip data.
-        filtered_stations: DataFrame of stations within the graph area.
+        graph: NetworkX graph
+        rate_df: DataFrame with Poisson rates
+        weekday: Day of week (1-7)
+        timeslot: Time slot (0-7)
 
     Returns:
-        DataFrame with stations mapped to graph nodes.
+        NumPy array indexed by graph node IDs (plus external node 10000)
     """
-    valid_station_ids = set(filtered_stations["start station id"])
+    node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
+    n_nodes = len(node_ids)
+    node_to_idx = {nid: idx for idx, nid in enumerate(node_ids)}
 
-    tbar = tqdm(
-        total=trip_df.shape[0],
-        desc="Mapping Trips to Graph Nodes",
-        leave=False,
-        position=1,
-        dynamic_ncols=True,
+    # Initialize zero matrix
+    rate_matrix = np.zeros((n_nodes, n_nodes))
+
+    # Fill with rates for this specific weekday-timeslot
+    filtered_rates = rate_df.filter(
+        (pl.col('weekday') == weekday) &
+        (pl.col('timeslot') == timeslot)
     )
 
-    rows_to_drop = []
+    for row in filtered_rates.iter_rows(named=True):
+        i = node_to_idx[row['start station id']]
+        j = node_to_idx[row['end station id']]
+        rate_matrix[i, j] = row['rate']
 
-    for index, row in trip_df.iterrows():
-        start_station_id = row["start station id"]
-        end_station_id = row["end station id"]
-
-        start_inside = start_station_id in valid_station_ids
-        end_inside = end_station_id in valid_station_ids
-
-        if start_inside and end_inside:
-            start_node = ox.distance.nearest_nodes(G, Y=row["start station latitude"], X=row["start station longitude"])
-            end_node = ox.distance.nearest_nodes(G, Y=row["end station latitude"], X=row["end station longitude"])
-
-            trip_df.at[index, "start station id"] = start_node
-            trip_df.at[index, "end station id"] = end_node
-            trip_df.at[index, "start station latitude"] = G.nodes[start_node]["y"]
-            trip_df.at[index, "start station longitude"] = G.nodes[start_node]["x"]
-            trip_df.at[index, "end station latitude"] = G.nodes[end_node]["y"]
-            trip_df.at[index, "end station longitude"] = G.nodes[end_node]["x"]
-
-        elif start_inside:
-            start_node = ox.distance.nearest_nodes(G, Y=row["start station latitude"], X=row["start station longitude"])
-            trip_df.at[index, "start station id"] = start_node
-            trip_df.at[index, "end station id"] = 10000  # External node marker
-            trip_df.at[index, "start station latitude"] = G.nodes[start_node]["y"]
-            trip_df.at[index, "start station longitude"] = G.nodes[start_node]["x"]
-            trip_df.at[index, "end station latitude"] = 0.0
-            trip_df.at[index, "end station longitude"] = 0.0
-
-        elif end_inside:
-            end_node = ox.distance.nearest_nodes(G, Y=row["end station latitude"], X=row["end station longitude"])
-            trip_df.at[index, "start station id"] = 10000  # External node marker
-            trip_df.at[index, "end station id"] = end_node
-            trip_df.at[index, "start station latitude"] = 0.0
-            trip_df.at[index, "start station longitude"] = 0.0
-            trip_df.at[index, "end station latitude"] = G.nodes[end_node]["y"]
-            trip_df.at[index, "end station longitude"] = G.nodes[end_node]["x"]
-
-        else:
-            rows_to_drop.append(index)
-
-        tbar.update(1)
-
-    trip_df.drop(rows_to_drop, inplace=True)
-    trip_df.reset_index(drop=True, inplace=True)
-
-    return trip_df
-
-
-def initialize_rate_matrix(G: nx.MultiDiGraph, rate_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Initialize a rate matrix based on the Poisson rates.
-
-    Parameters:
-        G: The graph representing the road network.
-        rate_df: DataFrame containing the Poisson rates for station pairs.
-
-    Returns:
-        Square rate matrix indexed by node IDs.
-    """
-    node_ids = ox.graph_to_gdfs(G, edges=False).index
-    df = pd.DataFrame(index=node_ids, columns=node_ids, dtype="float64")
-
-    # Add external node column/row
-    df.loc[10000] = 0.0
-    df[10000] = 0.0
-    df = df.fillna(0.0)
-
-    for _, row in rate_df.iterrows():
-        i = row["start station id"]
-        j = row["end station id"]
-        rate = row["lambda"]
-        df.at[i, j] = rate
-
-    return df
+    return rate_matrix
 
 
 def run(config: PreprocessingConfig) -> None:
     """
-    Run the preprocess data step.
+    Run the preprocessing pipeline: filter stations, compute rates, save matrices.
 
     Parameters:
-        config: The preprocessing configuration.
+        config: Preprocessing configuration object
     """
-    # Ensure directories exist
     os.makedirs(config.utils_path, exist_ok=True)
 
     print("Initializing the graph...")
@@ -211,82 +330,152 @@ def run(config: PreprocessingConfig) -> None:
         bbox=config.bbox,
     )
 
-    print(f"\nProcessing data for year {config.year} and months {config.months}...")
+    print(f"\nLoading trip data for year {config.year}, months {config.months}...")
 
     # Load trip data
-    trip_df = pd.DataFrame()
+    trip_df = pl.DataFrame()
     for month in config.months:
-        path = os.path.join(config.trips_path, f"{config.year}{str(month).zfill(2)}-bluebikes-tripdata.csv")
+        path = os.path.join(
+            config.trips_path,
+            f"{config.year}{str(month).zfill(2)}-bluebikes-tripdata.csv"
+        )
         if os.path.isfile(path):
-            trip_df = pd.concat([trip_df, pd.read_csv(path)], ignore_index=True)
+            monthly_data = pl.read_csv(path)
+            trip_df = pl.concat([trip_df, monthly_data]) if trip_df.height > 0 else monthly_data
         else:
-            print(f"Trip data file for month {month} does not exist. Skipping...")
+            print(f"Warning: Trip data for month {month} not found. Skipping...")
 
-    if trip_df.empty:
+    if trip_df.height == 0:
         print("No trip data found. Exiting.")
         return
 
-    # Load filtered stations
-    filtered_stations_path = os.path.join(config.utils_path, "filtered_stations.csv")
-    if not os.path.exists(filtered_stations_path):
-        print(f"Warning: {filtered_stations_path} not found. Creating from trip data...")
-        # Create filtered stations from trip data
-        stations = trip_df[["start station id", "start station name", "start station latitude", "start station longitude"]].drop_duplicates()
-        stations.to_csv(filtered_stations_path, index=False)
-
-    filtered_stations = pd.read_csv(filtered_stations_path)
-
-    tbar = tqdm(
-        total=len(config.days_of_week) * config.num_time_slots,
-        desc="Processing Data",
-        position=0,
-        dynamic_ncols=True,
-        leave=True,
+    # Map stations to graph nodes
+    print("Mapping stations to graph nodes...")
+    mapped_stations = filter_and_map_stations(
+        trip_df,
+        graph,
+        bbox=config.bbox,
+        max_distance_meters=100.0
     )
 
-    for day in config.days_of_week:
-        for timeslot in range(config.num_time_slots):
-            # Compute Poisson rates
-            poisson_rates_df = compute_poisson_rates(trip_df, config.year, config.months, day, timeslot)
+    # Save filtered stations
+    filtered_stations_path = os.path.join(config.utils_path, "filtered_stations.csv")
+    mapped_stations.select(['id', 'name', 'latitude', 'longitude']).write_csv(filtered_stations_path)
+    print(f"Saved {mapped_stations.height} filtered stations to {filtered_stations_path}")
 
-            # Map trips to graph nodes
-            poisson_rates_df = map_trip_to_graph_node(graph, poisson_rates_df, filtered_stations)
+    # Filter trips and assign timeslots
+    print("Filtering trips and computing timeslots...")
+    valid_station_ids = mapped_stations.select("id").to_series().to_list()
+    filtered_trips = filter_trips_and_compute_timeslots(trip_df, valid_station_ids)
 
-            # Save Poisson rates
-            rates_path = os.path.join(
-                config.data_path,
-                "rates",
-                config.month_str,
-                str(timeslot).zfill(2),
+    # Compute total seconds per weekday-timeslot
+    print("Computing time coverage for each weekday-timeslot...")
+    timeslot_counts = compute_timeslot_counts(filtered_trips)
+
+    # Compute Poisson rates
+    print("Computing Poisson rates...")
+    rates = compute_poisson_rates(filtered_trips, timeslot_counts)
+
+    # Generate and save rate matrices
+    weekday_names = {1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday',
+                     5: 'Friday', 6: 'Saturday', 7: 'Sunday'}
+
+    print("\nGenerating rate matrices...")
+    pbar = tqdm(
+        total=7 * 8,
+        desc="Saving matrices",
+        dynamic_ncols=True
+    )
+
+    for weekday in range(1, 8):
+        for timeslot in range(8):
+            # Update pbar description with current weekday and timeslot
+            pbar.set_description(f"Generating {weekday_names[weekday]} timeslot {timeslot}")
+
+            day_name = weekday_names[weekday].lower()
+
+            # Create rate matrix
+            rate_matrix = compute_rate_matrix(graph, rates, weekday, timeslot)
+
+            # Convert to Polars DataFrame for saving
+            node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
+            matrix_df = pl.DataFrame(
+                rate_matrix,
+                schema=[str(nid) for nid in node_ids]
+            ).with_columns(
+                pl.Series('node_id', node_ids)
+            ).select(
+                ['node_id'] + [str(nid) for nid in node_ids]
             )
-            os.makedirs(rates_path, exist_ok=True)
-            poisson_rates_df.to_csv(os.path.join(rates_path, f"{day.lower()}-poisson-rates.csv"), index=False)
 
-            # Initialize and save rate matrix
-            rate_matrix = initialize_rate_matrix(graph, poisson_rates_df)
+            # Save matrix
             matrix_path = os.path.join(
                 config.data_path,
                 "matrices",
                 config.month_str,
-                str(timeslot).zfill(2),
+                str(timeslot).zfill(2)
             )
             os.makedirs(matrix_path, exist_ok=True)
-            rate_matrix.to_csv(os.path.join(matrix_path, f"{day.lower()}-rate-matrix.csv"), index=True)
+            matrix_df.write_csv(
+                os.path.join(matrix_path, f"{day_name}-rate-matrix.csv")
+            )
 
-            tbar.update(1)
+            # Also save detailed rates CSV (compatible with old format)
+            rate_detail = rates.filter(
+                (pl.col('weekday') == weekday) &
+                (pl.col('timeslot') == timeslot)
+            )
+
+            rates_path = os.path.join(
+                config.data_path,
+                "rates",
+                config.month_str,
+                str(timeslot).zfill(2)
+            )
+            os.makedirs(rates_path, exist_ok=True)
+            rate_detail.write_csv(
+                os.path.join(rates_path, f"{day_name}-poisson-rates.csv")
+            )
+
+            pbar.update(1)
+
+    pbar.close()
+    print("\nPreprocessing complete!")
 
 
 def main():
-    """CLI entry point for preprocess_data."""
-    parser = argparse.ArgumentParser(description="Preprocess trip data to compute Poisson rates.")
-    parser.add_argument("--data-path", type=str, default=DEFAULT_CONFIG.data_path, help="Path to data directory.")
-    parser.add_argument("--year", type=int, default=DEFAULT_CONFIG.year, help="Year of data to process.")
-    parser.add_argument("--months", type=str, default="9,10", help="Comma-separated months to process.")
+    """CLI entry point for preprocessing."""
+    parser = argparse.ArgumentParser(
+        description="Preprocess trip data to compute Poisson rates using Polars."
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default=DEFAULT_CONFIG.data_path,
+        help="Path to data directory"
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=DEFAULT_CONFIG.year,
+        help="Year of data to process"
+    )
+    parser.add_argument(
+        "--months",
+        type=str,
+        default="9",
+        help="Comma-separated months to process"
+    )
 
     args = parser.parse_args()
     months = [int(m.strip()) for m in args.months.split(",")]
 
-    config = PreprocessingConfig(data_path=args.data_path, year=args.year, months=months)
+    config = PreprocessingConfig(
+        data_path=args.data_path,
+        year=args.year,
+        months=months
+    )
+    
     run(config)
 
 

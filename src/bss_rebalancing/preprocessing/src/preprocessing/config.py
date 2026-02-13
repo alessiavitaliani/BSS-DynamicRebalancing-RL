@@ -1,7 +1,7 @@
 """
 Shared configuration for the preprocessing pipeline.
 """
-
+import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
@@ -28,7 +28,10 @@ class PreprocessingConfig:
 
     # Nodes to remove from graph
     # nodes_to_remove: List[Tuple[float, float]] = field(default_factory=lambda: [(42.365455, -71.14254)])
-    nodes_to_remove: List[int] = field(default_factory=lambda: [330,482,54,256,36,324])
+    # nodes_to_remove: List[int] = field(default_factory=lambda: [330,482,54,256,36,324])
+    nodes_to_remove : List[str] = field(
+        default_factory=lambda: []
+    )
 
     # Days of week to process
     days_of_week: List[str] = field(
@@ -58,17 +61,17 @@ class PreprocessingConfig:
     @property
     def graph_path(self) -> str:
         """Return full path to graph file."""
-        return self.data_path + self.graph_file
+        return os.path.join(self.data_path, self.graph_file)
 
     @property
     def utils_path(self) -> str:
         """Return path to utils directory."""
-        return self.data_path + "utils/"
+        return os.path.join(self.data_path, "utils")
 
     @property
     def trips_path(self) -> str:
         """Return path to trips directory."""
-        return self.data_path + "trips/"
+        return os.path.join(self.data_path, "trips")
 
 
 # Default configuration instance
