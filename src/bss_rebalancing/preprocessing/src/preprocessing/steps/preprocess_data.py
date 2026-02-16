@@ -7,14 +7,17 @@ for each station pair, organized by day and time slot.
 
 import argparse
 import os
-from typing import List
+import math
+import pickle
 
 import networkx as nx
 import numpy as np
 import osmnx as ox
 import polars as pl
+
 from haversine import haversine, Unit
 from tqdm import tqdm
+from typing import List
 
 from preprocessing.config import DEFAULT_CONFIG, PreprocessingConfig
 from preprocessing.core.graph import initialize_graph
@@ -376,9 +379,7 @@ def run(config: PreprocessingConfig) -> None:
     print("Computing Poisson rates...")
     rates = compute_poisson_rates(filtered_trips, timeslot_counts)
 
-    # Generate and save rate matrices
-    weekday_names = {1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday',
-                     5: 'Friday', 6: 'Saturday', 7: 'Sunday'}
+    global_rates = {}
 
     print("\nGenerating rate matrices...")
     pbar = tqdm(
@@ -387,15 +388,19 @@ def run(config: PreprocessingConfig) -> None:
         dynamic_ncols=True
     )
 
-    for weekday in range(1, 8):
-        for timeslot in range(8):
+    for day_idx, day in enumerate(config.days_of_week, start=1):
+        for timeslot in range(config.num_time_slots):
             # Update pbar description with current weekday and timeslot
-            pbar.set_description(f"Generating {weekday_names[weekday]} timeslot {timeslot}")
+            pbar.set_description(f"Generating {day} timeslot {timeslot}")
 
-            day_name = weekday_names[weekday].lower()
+            day_name = day.lower()
 
             # Create rate matrix
-            rate_matrix = compute_rate_matrix(graph, rates, weekday, timeslot)
+            rate_matrix = compute_rate_matrix(graph, rates, day_idx, timeslot)
+
+            # Compute global rate
+            global_rate = math.fsum(rate_matrix.flatten())
+            global_rates[(day_name, timeslot)] = global_rate
 
             # Convert to Polars DataFrame for saving
             node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
@@ -422,7 +427,7 @@ def run(config: PreprocessingConfig) -> None:
 
             # Also save detailed rates CSV (compatible with old format)
             rate_detail = rates.filter(
-                (pl.col('weekday') == weekday) &
+                (pl.col('weekday') == day_idx) &
                 (pl.col('timeslot') == timeslot)
             )
 
@@ -440,6 +445,13 @@ def run(config: PreprocessingConfig) -> None:
             pbar.update(1)
 
     pbar.close()
+
+    # Save global rates at the end
+    global_rates_path = os.path.join(config.data_path, config.global_rates_path)
+    print(f"\nSaving global rates to {global_rates_path}...")
+    with open(global_rates_path, "wb") as f:
+        pickle.dump(global_rates, f)
+
     print("\nPreprocessing complete!")
 
 

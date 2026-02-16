@@ -30,13 +30,13 @@ def run(config: PreprocessingConfig) -> None:
     graph = load_graph(config.graph_path)
 
     # Build nodes dictionary
-    nodes_gdf = ox.graph_to_gdfs(graph, edges=False)
-    nodes_dict = {node_id: (row["y"], row["x"]) for node_id, row in nodes_gdf.iterrows()}
+    nodes = ox.graph_to_gdfs(graph, edges=False)
+    nodes_dict = {node_id: (row["y"], row["x"]) for node_id, row in sorted(nodes.iterrows(), key=lambda item: item[0])}
 
     print(f"Creating nearby nodes dictionary (radius={config.user_radius}m)...")
     nearby_nodes_dict = {
         node_id: nodes_within_radius(node_id, nodes_dict, config.user_radius)
-        for node_id in tqdm(nodes_dict, desc="Nodes")
+        for node_id in tqdm(nodes_dict, desc="Building Nearby Nodes", dynamic_ncols=True)
     }
 
     nearby_nodes_path = os.path.join(config.data_path, config.nearby_nodes_path)

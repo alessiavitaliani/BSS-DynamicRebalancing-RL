@@ -2,9 +2,41 @@
 Shared utility functions for the preprocessing pipeline.
 """
 
-import calendar
+import polars as pl
 from typing import Dict, Tuple, Hashable
 from haversine import haversine, Unit
+
+
+def reorder_df(df: pl.DataFrame, col: str) -> pl.DataFrame:
+    # Sort rows by node_id
+    df = df.sort(col)
+
+    # Extract numeric column names (excluding node_id)
+    data_cols = df.select(pl.exclude(col)).columns
+
+    # Sort columns numerically (important: cast to int!)
+    sorted_cols = sorted(data_cols, key=lambda x: int(x))
+
+    # Reorder dataframe
+    df = df.select([col] + sorted_cols)
+
+    return df
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds into human-readable time string."""
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        return f"{minutes}m {secs:.1f}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours}h {minutes}m {secs:.0f}s"
+
 
 def nodes_within_radius(
     target_node: int | Hashable,

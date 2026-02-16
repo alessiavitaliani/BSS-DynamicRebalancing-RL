@@ -6,8 +6,10 @@ import argparse
 import os
 import pickle
 import sys
+import time
 
 from preprocessing.config import PreprocessingConfig
+from preprocessing.core.utils import format_time
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -48,7 +50,7 @@ Examples:
         "--steps",
         type=str,
         default=None,
-        help="Comma-separated list of steps to run. Options: download, preprocess, interpolate, grid, distance, rates, nodes, ev_matrices",
+        help="Comma-separated list of steps to run. Options: download, preprocess, interpolate, grid, distance, nodes, ev_matrices",
     )
 
     parser.add_argument(
@@ -171,7 +173,6 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
         interpolate_data,
         preprocess_truck_grid,
         preprocess_distance_matrix,
-        preprocess_global_rates,
         preprocess_nodes_dictionary,
     )
 
@@ -181,7 +182,6 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
         "interpolate": ("Interpolating data", interpolate_data.run),
         "grid": ("Preprocessing truck grid", preprocess_truck_grid.run),
         "distance": ("Preprocessing distance matrix", preprocess_distance_matrix.run),
-        "rates": ("Preprocessing global rates", preprocess_global_rates.run),
         "nodes": ("Preprocessing nodes dictionary", preprocess_nodes_dictionary.run),
         "ev_matrices": ("Creating EV matrices", create_ev_matrices.run),
     }
@@ -193,6 +193,10 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
 
     # Ensure utils directory exists
     os.makedirs(config.utils_path, exist_ok=True)
+
+    # Start timing
+    pipeline_start = time.time()
+    step_times = {}
 
     for step_name in steps:
         if step_name not in step_mapping:
@@ -208,6 +212,9 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
         if step_name in step_warnings:
             print(step_warnings[step_name])
 
+        # Time each step
+        step_start = time.time()
+
         try:
             step_func(config)
         except Exception as e:
@@ -218,8 +225,26 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
                 traceback.print_exc()
             sys.exit(1)
 
+        # Record step time
+        step_elapsed = time.time() - step_start
+        step_times[step_name] = step_elapsed
+        print(f"✓ Step completed in {format_time(step_elapsed)}")
+
+    # Calculate total time
+    total_elapsed = time.time() - pipeline_start
+
     print(f"\n{'=' * 60}")
     print("Preprocessing pipeline completed successfully!")
+    print(f"{'=' * 60}")
+
+    # Display timing summary
+    print("\n⏱️  Timing Summary:")
+    print(f"{'=' * 60}")
+    for step_name, elapsed in step_times.items():
+        percentage = (elapsed / total_elapsed) * 100
+        print(f"  {step_name:15} : {format_time(elapsed):>12}  ({percentage:5.1f}%)")
+    print(f"{'=' * 60}")
+    print(f"  {'Total':15} : {format_time(total_elapsed):>12}")
     print(f"{'=' * 60}")
 
 
@@ -250,7 +275,7 @@ def main():
         return
 
     # Determine which steps to run
-    all_steps = ["download", "preprocess", "interpolate", "grid", "distance", "rates", "nodes", "ev_matrices"]
+    all_steps = ["download", "preprocess", "interpolate", "grid", "distance", "nodes", "ev_matrices"]
 
     if args.steps:
         steps = [s.strip() for s in args.steps.split(",")]

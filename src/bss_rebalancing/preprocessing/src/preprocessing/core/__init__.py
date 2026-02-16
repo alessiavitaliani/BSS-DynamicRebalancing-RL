@@ -4,6 +4,8 @@ Core utilities for the preprocessing pipeline.
 
 from preprocessing.core.utils import (
     nodes_within_radius,
+    reorder_df,
+    format_time
 )
 from preprocessing.core.graph import (
     initialize_graph,
@@ -26,6 +28,8 @@ from preprocessing.core.grid import (
 __all__ = [
     # Utils
     "nodes_within_radius",
+    "reorder_df",
+    "format_time",
     # Graph
     "initialize_graph",
     "find_nearby_nodes",

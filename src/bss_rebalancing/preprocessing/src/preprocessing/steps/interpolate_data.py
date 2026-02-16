@@ -8,7 +8,7 @@ mass function (PMF) matrices for trip distribution.
 import argparse
 import os
 import math
-from typing import Dict, Tuple, Hashable
+from typing import Dict, Tuple
 
 import numpy as np
 import osmnx as ox
@@ -18,22 +18,7 @@ from tqdm import tqdm
 
 from preprocessing.config import DEFAULT_CONFIG, PreprocessingConfig
 from preprocessing.core.graph import load_graph
-from preprocessing.core.utils import nodes_within_radius
-
-def reorder_matrix(df: pl.DataFrame, col: str) -> pl.DataFrame:
-    # Sort rows by node_id
-    df = df.sort(col)
-
-    # Extract numeric column names (excluding node_id)
-    data_cols = df.select(pl.exclude(col)).columns
-
-    # Sort columns numerically (important: cast to int!)
-    sorted_cols = sorted(data_cols, key=lambda x: int(x))
-
-    # Reorder dataframe
-    df = df.select([col] + sorted_cols)
-
-    return df
+from preprocessing.core.utils import nodes_within_radius, reorder_df
 
 
 def interpolate_row(
@@ -294,22 +279,23 @@ def run(config: PreprocessingConfig) -> None:
     nodes_dict = {node_id: (row["y"], row["x"]) for node_id, row in sorted(nodes.iterrows(), key=lambda item: item[0])}
 
     print(f"Building nearby nodes dictionary with radius {config.interpolation_radius}m")
-    tbar = tqdm(nodes_dict, desc="Building Nearby Nodes", dynamic_ncols=True)
-    nearby_nodes_dict = {}
-    for node_id in nodes_dict:
-        nearby_nodes_dict[node_id] = nodes_within_radius(node_id, nodes_dict, config.interpolation_radius)
-        tbar.update(1)
-    tbar.close()
+    nearby_nodes_dict = {
+        node_id: nodes_within_radius(node_id, nodes_dict, config.user_radius)
+        for node_id in tqdm(nodes_dict, desc="Building Nearby Nodes", dynamic_ncols=True)
+    }
 
     print("\nBuilding the PMF matrices")
     tbar = tqdm(
         total=len(config.days_of_week) * config.num_time_slots,
-        desc="Processing Data",
+        desc="Interpolating Rate Matrices",
         dynamic_ncols=True,
     )
 
     for day in config.days_of_week:
         for timeslot in range(config.num_time_slots):
+            # Update pbar description with current weekday and timeslot
+            tbar.set_description(f"Interpolating {day} timeslot {timeslot}")
+
             matrix_path = os.path.join(
                 config.data_path,
                 "matrices",
@@ -328,7 +314,7 @@ def run(config: PreprocessingConfig) -> None:
 
             rate_matrix = rate_matrix.with_columns(pl.col('node_id').cast(pl.Int64))
 
-            rate_matrix = reorder_matrix(rate_matrix, 'node_id')
+            rate_matrix = reorder_df(rate_matrix, 'node_id')
 
             # Build PMF matrix (handles all 4 stages internally)
             pmf_matrix = build_pmf_matrix(rate_matrix, nearby_nodes_dict, nodes_dict)
@@ -349,6 +335,8 @@ def run(config: PreprocessingConfig) -> None:
             tbar.update(1)
 
     tbar.close()
+
+    print("\nInterpolation complete!")
 
 
 def main():

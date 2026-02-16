@@ -57,9 +57,6 @@ def run(config: PreprocessingConfig) -> None:
 
     print(f"Created {len(cell_dict)} cells.")
 
-    # Optional: plot the grid
-    # plot_graph_with_grid(graph, cell_dict, plot_number_cells=True)
-
 
 def main():
     """CLI entry point for preprocess_truck_grid."""

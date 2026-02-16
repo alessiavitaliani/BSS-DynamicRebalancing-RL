@@ -9,7 +9,6 @@ from preprocessing.steps import (
     interpolate_data,
     preprocess_data,
     preprocess_distance_matrix,
-    preprocess_global_rates,
     preprocess_nodes_dictionary,
     preprocess_truck_grid,
 )
@@ -20,6 +19,5 @@ __all__ = [
     "interpolate_data",
     "preprocess_truck_grid",
     "preprocess_distance_matrix",
-    "preprocess_global_rates",
     "preprocess_nodes_dictionary",
 ]
