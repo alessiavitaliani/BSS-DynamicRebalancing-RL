@@ -44,7 +44,6 @@ def run(config: PreprocessingConfig) -> None:
     print("Setting up cell properties...")
     for cell in cell_dict.values():
         cell.set_center_node(graph)
-        cell.set_diagonal()
 
     print("Setting adjacent cells...")
     set_adjacent_cells(cell_dict)

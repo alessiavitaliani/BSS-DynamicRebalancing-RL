@@ -157,7 +157,7 @@ def plot_graph_with_grid(
     nodes, edges = ox.graph_to_gdfs(graph, nodes=True, edges=True)
 
     # Convert cell_dict into a GeoDataFrame
-    grid_geoms = [cell.boundary for cell in cell_dict.values()]
+    grid_geoms = [cell.get_boundary() for cell in cell_dict.values()]
     cell_gdf = gpd.GeoDataFrame(geometry=grid_geoms, crs="EPSG:4326")
 
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -170,14 +170,14 @@ def plot_graph_with_grid(
     cell_gdf.plot(ax=ax, linewidth=1.5, edgecolor=(0, 0, 0, 1.0), facecolor=(0, 0, 0, 0.1), zorder=2)
 
     for cell in cell_dict.values():
-        center_node = cell.center_node
+        center_node = cell.get_center_node()
         if center_node != 0:
             node_coords = graph.nodes[center_node]["x"], graph.nodes[center_node]["y"]
 
             # Connect to adjacent cells' center nodes
-            for direction, adjacent_cell in cell.adjacent_cells.items():
+            for direction, adjacent_cell in cell.get_adjacent_cells().items():
                 if adjacent_cell is not None and adjacent_cell in cell_dict:
-                    adjacent_center_node = cell_dict[adjacent_cell].center_node
+                    adjacent_center_node = cell_dict[adjacent_cell].get_center_node()
                     if adjacent_center_node != 0:
                         adj_coords = (
                             graph.nodes[adjacent_center_node]["x"],
@@ -204,11 +204,11 @@ def plot_graph_with_grid(
                 )
 
         if plot_number_cells:
-            center_coords = cell.boundary.centroid.coords[0]
+            center_coords = cell.get_boundary().centroid.coords[0]
             ax.text(
                 center_coords[0]-0.0005,
                 center_coords[1]+0.0005,
-                str(cell.id),
+                str(cell.get_id()),
                 fontsize=15,
                 color="#000000",
                 ha="center",

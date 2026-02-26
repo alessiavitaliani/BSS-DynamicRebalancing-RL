@@ -241,6 +241,10 @@ class FullyDynamicEnv(gym.Env):
             for node in cell.get_nodes():
                 stations[node].set_cell(cell)
 
+        all_stations_have_a_cell = all(stn.get_cell() is not None for stn in stations.values())
+        assert all_stations_have_a_cell, \
+            "Not all stations were assigned a cell. Check cell definitions and station locations."
+
         # Virtual station 10000
         stations[10000] = Station(10000, 0.0, 0.0)
 
@@ -253,8 +257,7 @@ class FullyDynamicEnv(gym.Env):
         self.action_space = spaces.Discrete(len(Actions))
 
         # Observation space
-        num_cells = len(self._cells)
-        obs_dim = 16 + 2 * num_cells
+        obs_dim = 16 + 2 * len(self._cells)
         self.observation_space = spaces.Box(
             low=0.0,
             high=np.inf,
@@ -328,8 +331,6 @@ class FullyDynamicEnv(gym.Env):
         self._total_failures = 0
         self._total_trips = 0
         self._total_invalid_actions = 0
-        self._last_depleted_bikes = 0
-        self._total_low_battery_bikes = 0
 
     # -------------------------------------------------------------------------
     # Environment Reset
@@ -420,8 +421,6 @@ class FullyDynamicEnv(gym.Env):
         self._total_failures = 0
         self._total_trips = 0
         self._total_invalid_actions = 0
-        self._last_depleted_bikes = 0
-        self._total_low_battery_bikes = 0
 
         # Clear event buffers
         self._event_buffer = None
@@ -436,7 +435,7 @@ class FullyDynamicEnv(gym.Env):
 
         truck_cell = self._cells[truck_cell_id]
         self._truck = Truck(
-            position=truck_cell.center_node,
+            position=truck_cell.get_center_node(),
             cell=truck_cell,
             bikes=bikes,
             max_load=max_truck_load
@@ -451,14 +450,14 @@ class FullyDynamicEnv(gym.Env):
         # Distribute bikes based on predicted net flow if enabled, otherwise use base repositioning
         # -------------------------------------------------------------------------
         net_flow_based = options.get('net_flow_based_repositioning', False)
-        self._bikes_per_cell = self._bike_repositioning(
+        bikes_per_cell = self._bike_repositioning(
             net_flow_based=net_flow_based,
             base_repositioning=base_repositioning
         )
 
         # Convert cell-based distribution to station-based
         bikes_per_station = {stn_id: 0 for stn_id in self._stations.keys()}
-        for cell_id, num_of_bikes in self._bikes_per_cell.items():
+        for cell_id, num_of_bikes in bikes_per_cell.items():
             center_node = self._cells[cell_id].get_center_node()
             bikes_per_station[center_node] = num_of_bikes
 
@@ -558,16 +557,14 @@ class FullyDynamicEnv(gym.Env):
                 system_bikes=self._system_bikes
             )
 
-        # Store pre-update state for reward calculation
         truck_cell = self._truck.get_cell()
 
-        old_eligibility_score = truck_cell.get_eligibility_score()
-        old_critic_score = truck_cell.get_critic_score()
+        # Store pre-update state for reward calculation
         old_global_critic_score = self._global_critic_score
 
         self._logger.log(
             message=f"Cell {truck_cell.get_id()} before update has "
-                    f"Eligibility: {old_eligibility_score} Critic: {old_critic_score}"
+                    f"Eligibility: {truck_cell.get_old_eligibility_score()} Critic: {truck_cell.get_old_critic_score()}"
         )
 
         # -------------------------------------------------------------------------
@@ -592,6 +589,7 @@ class FullyDynamicEnv(gym.Env):
         self._total_failures += sum(failures)
 
         # Update cell statistics
+        self._update_cells_metrics()
         truck_cell.set_eligibility_score(1.0)
 
         if not self._invalid_action:
@@ -609,23 +607,16 @@ class FullyDynamicEnv(gym.Env):
         else:
             self._total_invalid_actions += 1
 
-        # Update critic scores across all cells
-        self._update_critic_scores(
-            self._expected_max_departure,
-            self._expected_after_arrival,
-        )
-
         self._last_cell_border_type = sum(self._get_borders())
 
         # Compute outputs
         reward = self._get_reward(
             action,
-            old_eligibility_score,
-            old_critic_score,
+            truck_cell.get_old_eligibility_score(),
+            truck_cell.get_old_critic_score(),
             old_global_critic_score
         )
         observation = self._get_obs(action)
-        self._update_cells_metrics()
 
         # Build info dictionary
         info = {
@@ -765,14 +756,6 @@ class FullyDynamicEnv(gym.Env):
             col_sum = sum(pmf_lookup[orig][str(stn_id)] for orig in pmf_lookup if str(stn_id) in pmf_lookup[orig])
             stn.set_arrival_rate(col_sum * self._global_rate)
 
-        # Update cell request rates
-        for cell in self._cells.values():
-            total_request_rate = sum(
-                self._stations[node].get_request_rate()
-                for node in cell.get_nodes()
-            )
-            cell.set_request_rate(total_request_rate)
-
         # Generate events for current timeslot if needed
         if self._event_buffer is None:
             flattened_pmf = flatten_pmf_matrix(self._pmf_matrix)
@@ -844,6 +827,12 @@ class FullyDynamicEnv(gym.Env):
         self._background_thread = threading.Thread(target=self._precompute_poisson_events)
         self._background_thread.start()
 
+        # Update cell request rates
+        for cell in self._cells.values():
+            nodes = cell.get_nodes()
+            cell.set_demand_rate(sum(self._stations[n].get_demand_rate() for n in nodes))
+            cell.set_arrival_rate(sum(self._stations[n].get_arrival_rate() for n in nodes))
+
         # Reset environment time
         self._env_time = 0
 
@@ -864,14 +853,8 @@ class FullyDynamicEnv(gym.Env):
             self._env_time += EnvDefaults.STEP_DURATION_SECONDS
 
             # Update eligibility scores for all cells
-            for cell_id, cell in self._cells.items():
-                # Use different decay rate for border cells
-                adjacent_cells = cell.get_adjacent_cells()
-                has_all_neighbors = all(adj is not None for adj in adjacent_cells.values())
-
-                # Border cells decay faster to encourage exploration, while fully
-                # surrounded cells decay slower to encourage exploitation
-                if has_all_neighbors:
+            for _, cell in self._cells.items():
+                if cell.has_all_neighbors():
                     cell.update_eligibility_score(self._eligibility_decay)
                 else:
                     cell.update_eligibility_score(self._borders_eligibility_decay)
@@ -1040,7 +1023,7 @@ class FullyDynamicEnv(gym.Env):
         loop_detected = detect_self_loops((action, self._last_move_action))
         was_critical = old_critic_score > 0.0
         was_surplus = old_critic_score <= RewardComponents.SURPLUS_THRESHOLD
-        is_critical = self._truck.get_cell().get_critic_score() > 0.0
+        is_critical = self._truck.get_cell().is_critical()
 
         # Initialize reward components
         drop_reward = 0.0
@@ -1171,37 +1154,6 @@ class FullyDynamicEnv(gym.Env):
             current_max = expected_max.get(cell_id, 0)
             expected_after[cell_id] = current_max - expected_departures[cell_id]
 
-    def _update_critic_scores(self, expected_max_departure: dict, expected_after_arrival: dict):
-        """Apply computed critic scores to all cells."""
-        self._global_critic_score = 0.0
-
-        for cell_id, cell in self._cells.items():
-            available = cell.get_total_bikes()
-            expected = expected_max_departure.get(cell_id, 0) + self._min_bikes_per_cell
-            aft_arrivals = expected_after_arrival.get(cell_id, 0)
-
-            # Compute critic score
-            if expected > 0:
-                # Formula: -1 + e^[(1 + 0.2*arrivals) * (1 - available/expected)]
-                critic_score = -1 + np.exp(
-                    (1 + 0.2 * aft_arrivals) * (1 - (available / expected))
-                )
-            else:
-                critic_score = -available
-
-            cell.set_critic_score(critic_score)
-            cell.set_surplus_bikes(surplus_threshold=0.67)
-
-            # Apply binary critic score threshold
-            if critic_score > 0.0:
-                cell.set_critic_score(1.0)
-                self._global_critic_score += 1
-
-            # Apply continuous critic score to global score
-            # if critic_score > 0.0:
-            #     self._global_critic_score += critic_score
-
-
     # -------------------------------------------------------------------------
     # Reward Computation Utility Methods
     # -------------------------------------------------------------------------
@@ -1218,7 +1170,7 @@ class FullyDynamicEnv(gym.Env):
         if was_critical and not is_critical:
             # Successfully rebalanced a critical cell
             drop_reward = RewardComponents.DROP_REBALANCED_CRITICAL
-            self._truck.get_cell().update_rebalanced_times()
+            self._truck.get_cell().update_rebalanced_times()    # CELL-ACCESS: Can be embedded in the class?
             self._reset_eligibility_scores()
         elif was_critical:
             # Dropped in critical cell but still critical
@@ -1322,52 +1274,22 @@ class FullyDynamicEnv(gym.Env):
 
     def _update_cells_metrics(self):
         """Update the cell subgraph with current regional metrics."""
-        depleted_bikes = 0
 
         for cell_id, cell in self._cells.items():
-            # Aggregate battery levels and rates
-            demand_rate = 0.0
-            arrival_rate = 0.0
-            battery_levels = []
+            expected = self._expected_max_departure.get(cell_id, 0) + self._min_bikes_per_cell
+            aft_arrivals = self._expected_after_arrival.get(cell_id, 0)
+            cell.update_metrics(
+                stations=self._stations,
+                expected=expected,
+                aft_arrivals=aft_arrivals
+            )
+            cell.set_metric('truck_cell', 1.0 if cell.get_id() == self._truck.get_cell().get_id() else 0.0)
 
-            for node in cell.nodes:
-                station = self._stations[node]
-                bikes = station.get_bikes()
-
-                # Collect battery levels
-                battery_levels.extend(
-                    bike.get_battery() / bike.get_max_battery()
-                    for bike in bikes.values()
-                )
-
-                # Aggregate rates
-                demand_rate += station.get_request_rate()
-                arrival_rate += station.get_arrival_rate()
-
-            # Normalize rates
-            demand_rate /= self._global_rate
-            arrival_rate /= self._global_rate
-
-            # Count low battery bikes
-            low_battery_bikes = sum(1 for battery in battery_levels if battery <= 0.2)
-            if low_battery_bikes > 0:
-                depleted_bikes += low_battery_bikes
-
-            # Normalize low battery count
-            num_bikes = len(battery_levels)
-            low_battery_ratio = low_battery_bikes / num_bikes if num_bikes > 0 else 0
-
-            failure_rates = cell.get_failures() / cell.get_total_departures() if cell.get_total_departures() != 0 else 0
-
-            # Update subgraph node attributes
-            cell.update_metric('truck_cell', 1.0 if cell_id == self._truck.get_cell().get_id() else 0.0)
-            cell.update_metric('low_battery_bikes', low_battery_ratio)
-            cell.update_metric('failure_rates', failure_rates)
-
-        # Track battery depletion events
-        if depleted_bikes > self._last_depleted_bikes:
-            self._total_low_battery_bikes += 1
-        self._last_depleted_bikes = depleted_bikes
+            # FOR TEST
+            # Apply binary critic score threshold
+            if cell.get_critic_score() > 0.0:
+                cell.set_critic_score(1.0)
+                self._global_critic_score += 1
 
     # -------------------------------------------------------------------------
     # Utility Methods

@@ -121,7 +121,7 @@ class Station:
     def get_bikes(self) -> dict[int, 'Bike']:
         return self.bikes
 
-    def get_request_rate(self) -> float:
+    def get_demand_rate(self) -> float:
         return self.request_rate
 
     def get_arrival_rate(self) -> float:
