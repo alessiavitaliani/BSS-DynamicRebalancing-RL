@@ -28,7 +28,7 @@ def filter_and_map_stations(
     graph: nx.MultiDiGraph,
     bbox: tuple = None,
     max_distance_meters: float = 100.0
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, dict]:
     """
     Extract unique stations from trips, optionally filter by bbox, and map to graph nodes.
 
@@ -111,7 +111,14 @@ def filter_and_map_stations(
         pl.col('distance_meters') <= max_distance_meters
     )
 
-    return mapped_stations
+    stations_dict = dict(
+        mapped_stations
+        .select(pl.col(["id", "nearest_node"]))
+        .iter_rows()
+    )
+    stations_dict[10000] = 10000
+
+    return mapped_stations, stations_dict
 
 
 def filter_trips_and_compute_timeslots(
@@ -159,7 +166,11 @@ def filter_trips_and_compute_timeslots(
               .then(pl.col("end station id"))
               .otherwise(10000)
               .alias("end station id"),
-            # Parse datetime columns
+            # Parse datetime columns.
+            # Note: both "starttime" and "startday" are derived from the *original*
+            # string column because Polars evaluates all expressions in a single
+            # with_columns() against the input state, so overwriting "starttime"
+            # here does not affect the "startday" coalesce below.
             pl.coalesce([
                 pl.col("starttime").str.to_datetime(format=fmt, strict=False)
                 for fmt in datetime_formats
@@ -205,7 +216,7 @@ def compute_timeslot_counts(trip_df: pl.DataFrame) -> pl.DataFrame:
         trip_df: Trip DataFrame with starttime column
 
     Returns:
-        DataFrame with columns: weekday, timeslot, total_seconds
+        DataFrame with columns: weekday, timeslot, total_hours
     """
     timeslot_counts = (
         trip_df
@@ -274,29 +285,28 @@ def compute_poisson_rates(
     return rates
 
 
-def compute_rate_matrix(
-    graph: nx.MultiDiGraph,
-    rate_df: pl.DataFrame,
-    weekday: int,
-    timeslot: int
+def build_rate_matrix(
+        rate_df: pl.DataFrame,
+        weekday: int,
+        timeslot: int,
+        stations_dict: dict,
+        node_to_idx: dict
 ) -> np.ndarray:
     """
     Create a square rate matrix for a specific weekday-timeslot.
 
     Parameters:
-        graph: NetworkX graph
         rate_df: DataFrame with Poisson rates
         weekday: Day of week (1-7)
         timeslot: Time slot (0-7)
+        stations_dict: Mapping of station IDs to nearest graph nodes
+        node_to_idx: Mapping of graph node IDs to matrix indices
 
     Returns:
         NumPy array indexed by graph node IDs (plus external node 10000)
     """
-    node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
-    n_nodes = len(node_ids)
-    node_to_idx = {nid: idx for idx, nid in enumerate(node_ids)}
-
     # Initialize zero matrix
+    n_nodes = len(node_to_idx)
     rate_matrix = np.zeros((n_nodes, n_nodes))
 
     # Fill with rates for this specific weekday-timeslot
@@ -306,8 +316,8 @@ def compute_rate_matrix(
     )
 
     for row in filtered_rates.iter_rows(named=True):
-        i = node_to_idx[row['start station id']]
-        j = node_to_idx[row['end station id']]
+        i = node_to_idx[stations_dict.get(row['start station id'])]
+        j = node_to_idx[stations_dict.get(row['end station id'])]
         rate_matrix[i, j] = row['rate']
 
     return rate_matrix
@@ -354,7 +364,7 @@ def run(config: PreprocessingConfig) -> None:
 
     # Map stations to graph nodes
     print("Mapping stations to graph nodes...")
-    mapped_stations = filter_and_map_stations(
+    mapped_stations, stations_dict = filter_and_map_stations(
         trip_df,
         graph,
         bbox=config.bbox,
@@ -381,6 +391,9 @@ def run(config: PreprocessingConfig) -> None:
 
     global_rates = {}
 
+    node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
+    node_to_idx = {nid: idx for idx, nid in enumerate(node_ids)}
+
     print("\nGenerating rate matrices...")
     pbar = tqdm(
         total=7 * 8,
@@ -396,14 +409,13 @@ def run(config: PreprocessingConfig) -> None:
             day_name = day.lower()
 
             # Create rate matrix
-            rate_matrix = compute_rate_matrix(graph, rates, day_idx, timeslot)
+            rate_matrix = build_rate_matrix(rates, day_idx, timeslot, stations_dict, node_to_idx)
 
             # Compute global rate
             global_rate = math.fsum(rate_matrix.flatten())
             global_rates[(day_name, timeslot)] = global_rate
 
             # Convert to Polars DataFrame for saving
-            node_ids = list(ox.graph_to_gdfs(graph, edges=False).index) + [10000]
             matrix_df = pl.DataFrame(
                 rate_matrix,
                 schema=[str(nid) for nid in node_ids]
@@ -418,11 +430,11 @@ def run(config: PreprocessingConfig) -> None:
                 config.data_path,
                 "matrices",
                 config.month_str,
-                str(timeslot).zfill(2)
+                day_name
             )
             os.makedirs(matrix_path, exist_ok=True)
             matrix_df.write_csv(
-                os.path.join(matrix_path, f"{day_name}-rate-matrix.csv")
+                os.path.join(matrix_path, f"{str(timeslot).zfill(2)}-rate-matrix.csv")
             )
 
             # Also save detailed rates CSV (compatible with old format)
@@ -435,11 +447,11 @@ def run(config: PreprocessingConfig) -> None:
                 config.data_path,
                 "rates",
                 config.month_str,
-                str(timeslot).zfill(2)
+                day_name
             )
             os.makedirs(rates_path, exist_ok=True)
             rate_detail.write_csv(
-                os.path.join(rates_path, f"{day_name}-poisson-rates.csv")
+                os.path.join(rates_path, f"{str(timeslot).zfill(2)}-extracted-rates.csv")
             )
 
             pbar.update(1)

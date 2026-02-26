@@ -300,9 +300,9 @@ def run(config: PreprocessingConfig) -> None:
                 config.data_path,
                 "matrices",
                 config.month_str,
-                str(timeslot).zfill(2)
+                day.lower()
             )
-            rate_matrix_file = os.path.join(matrix_path, f"{day.lower()}-rate-matrix.csv")
+            rate_matrix_file = os.path.join(matrix_path, f"{str(timeslot).zfill(2)}-rate-matrix.csv")
 
             if not os.path.exists(rate_matrix_file):
                 print(f"Rate matrix not found: {rate_matrix_file}, skipping")
@@ -330,7 +330,7 @@ def run(config: PreprocessingConfig) -> None:
                 ])
 
             # Save PMF matrix
-            pmf_matrix.write_csv(os.path.join(matrix_path, f"{day.lower()}-pmf-matrix.csv"))
+            pmf_matrix.write_csv(os.path.join(matrix_path, f"{str(timeslot).zfill(2)}-pmf-matrix.csv"))
 
             tbar.update(1)
 

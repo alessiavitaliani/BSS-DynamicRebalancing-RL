@@ -32,7 +32,7 @@ classifiers = [
 
 # Core dependencies
 dependencies = [
-    "numpy>=1.24.0",
+    "numpy>=1.24.0,<2.0",
     "pandas>=2.0.0",
     "osmnx>=1.6.0",
     "networkx>=3.0",

@@ -142,18 +142,3 @@ def remove_empty_cells(cell_dict: Dict[int, Cell]) -> Dict[int, Cell]:
         New dictionary with empty cells removed.
     """
     return {cell_id: cell for cell_id, cell in cell_dict.items() if len(cell.nodes) > 0}
-
-
-def save_cells_to_csv(cells: List[Cell], filename: str) -> None:
-    """
-    Save cells to a CSV file.
-
-    Parameters:
-        cells: List of Cell objects.
-        filename: Output filename.
-    """
-    import pandas as pd
-
-    cell_dicts = [cell.to_dict() for cell in cells]
-    df = pd.DataFrame(cell_dicts)
-    df.to_csv(filename, index=False)
