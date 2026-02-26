@@ -14,11 +14,11 @@ import numpy as np
 from tqdm import tqdm
 from rl_training.agents import DQNAgent
 from rl_training.utils import (convert_graph_to_data, convert_seconds_to_hours_minutes,
-                               set_seed, setup_logger, setup_device)
+                               set_seed, setup_logger, setup_device, build_cell_graph_from_cells)
 from rl_training.memory import ReplayBuffer
 from rl_training.results import ResultsManager, EpisodeResults
 from torch_geometric.data import Data
-from gymnasium_env.simulator.utils import Actions, initialize_cells_subgraph
+from gymnasium_env.simulator.utils import Actions
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Default paths and parameters
@@ -47,12 +47,15 @@ params = {
     "epsilon_decay": 1e-5,                          # Epsilon decay constant
     "exploration_time": 0.6,                        # Fraction of total training time for exploration
     "lr": 1e-4,                                     # Learning rate
-    "total_timeslots": 56,                          # Total number of time slots in one episode (1 month)
-    "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
     "soft_update": True,                            # Use soft update for target network
     "tau": 0.005,                                   # Tau parameter for soft update
-    "depot_position_id": 18,                       # ID (cell) of the depot position
-    "initial_cell_id": 18                          # Initial cell where the truck starts
+
+    "total_timeslots": 56,                          # Total number of time slots in one episode (1 month)
+    "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
+    "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
+    "base_repositioning": True,                     # Use base repositioning strategy at the start of each episode
+    "depot_position_id": 18,                        # ID (cell) of the depot position
+    "initial_cell_id": 18                           # Initial cell where the truck starts
 }
 
 reward_params = {
@@ -133,10 +136,22 @@ def create_parser() -> argparse.ArgumentParser:
         help='Number of episodes to train.'
     )
     parser.add_argument(
-        '--num-bikes',
+        '--max-num-bikes',
         type=int,
         default=params['maximum_number_of_bikes'],
         help='Number of bikes of the system.'
+    )
+    parser.add_argument(
+        '--min-num-bikes',
+        type=int,
+        default=params['minimum_number_of_bikes'],
+        help='Minimum number of bikes per cell.'
+    )
+    parser.add_argument(
+        '--base-repositioning',
+        type=bool,
+        default=params['base_repositioning'],
+        help='Use base repositioning strategy at the start of each episode.'
     )
     parser.add_argument(
         '--exploration-time',
@@ -189,37 +204,42 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
     reset_options = {
         'total_timeslots': params["total_timeslots"],
         'maximum_number_of_bikes': params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
+        'base_repositioning': params["base_repositioning"],
         'discount_factor': params["gamma"],
-        'logging': enable_logging,
         'depot_id': params['depot_position_id'],
         # 'initial_cell': params['initial_cell_id'],
         'reward_params': reward_params,
+        'logging': enable_logging,
     }
 
-    node_features = ['truck_cell', 'critic_score', 'eligibility_score', 'bikes']
     agent_state, info = env.reset(options=reset_options)
-
-    # Update train/target models input dimension
-    agent.train_model.update_agent_fc_input_dim(len(agent_state))
-    agent.target_model.update_agent_fc_input_dim(len(agent_state))
-
-    # Initialize state
-    state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
-    state.agent_state = agent_state
-    state.steps = info['steps']
 
     # Extract static environment info
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
-    distance_matrix = info['distance_matrix']
+    distance_lookup = info['distance_lookup']
 
-    # Initialize cell graph for spatial statistics
-    custom_features = {
-        'visits': 0, 'operations': 0, 'rebalanced': 0,
-        'failures': 0, 'failure_rates': 0.0,
-        'critic_score': 0.0, 'num_bikes': 0.0,
-    }
-    cell_graph = initialize_cells_subgraph(cell_dict, nodes_dict, distance_matrix, custom_features)
+    # Build initial graph from cells (reads metrics automatically)
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict,
+        nodes_dict=nodes_dict,
+        distance_lookup=distance_lookup
+    )
+
+    # Define which metrics to use as GNN features: THEY SHOULD MATCH THE FEATURES USED IN THE CELLS
+    gnn_features = [
+        'truck_cell',
+        'critic_score',
+        'eligibility_score',
+        'total_bikes',
+        # 'low_battery_bikes',
+    ]
+
+    # Initialize state
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+    state.agent_state = agent_state
+    state.steps = info['steps']
 
     # ============================================================================
     # Main training loop
@@ -241,8 +261,15 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
+        # Rebuild graph with updated metrics (automatic from Cell.metrics)
+        cell_graph = build_cell_graph_from_cells(
+            cells=cell_dict,
+            nodes_dict=nodes_dict,
+            distance_lookup=distance_lookup
+        )
+
         # Create next state (S')
-        next_state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
+        next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
 
@@ -259,15 +286,6 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         total_failures += sum(info['failures'])
         iterations += 1
 
-        # Update cumulative cell statistics (averaged at episode end)
-        for cell_id, cell in cell_dict.items():
-            center_node = cell.get_center_node()
-            if center_node not in cell_graph:
-                raise ValueError(f"Node {center_node} not found in cell_graph")
-
-            cell_graph.nodes[center_node]['critic_score'] += info['cells_subgraph'].nodes[center_node]['critic_score']
-            cell_graph.nodes[center_node]['num_bikes'] += info['cells_subgraph'].nodes[center_node]['bikes']
-
         # Handle timeslot completion
         if timeslot_terminated:
             timeslots_completed += 1
@@ -283,7 +301,7 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
                 q_values_per_timeslot.append(q_values[0].squeeze().cpu().numpy())
 
             # Record timeslot metrics
-            rewards_per_timeslot.append(total_reward / 360)
+            rewards_per_timeslot.append(total_reward)
             failures_per_timeslot.append(total_failures)
             epsilon_per_timeslot.append(agent.epsilon)
             deployed_bikes.append(info['number_of_system_bikes'])
@@ -304,25 +322,6 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         # Move to next state
         state = next_state
         del single_state
-
-    # ============================================================================
-    # Finalize episode statistics
-    # ============================================================================
-    for cell_id, cell in cell_dict.items():
-        center_node = cell.get_center_node()
-        if center_node not in cell_graph:
-            raise ValueError(f"Node {center_node} not found in cell_graph")
-
-        # Copy final episode values
-        cell_graph.nodes[center_node]['visits'] = info['cells_subgraph'].nodes[center_node]['visits']
-        cell_graph.nodes[center_node]['operations'] = info['cells_subgraph'].nodes[center_node]['operations']
-        cell_graph.nodes[center_node]['rebalanced'] = info['cells_subgraph'].nodes[center_node]['rebalanced']
-        cell_graph.nodes[center_node]['failures'] = info['cells_subgraph'].nodes[center_node]['failures']
-        cell_graph.nodes[center_node]['failure_rates'] = info['cells_subgraph'].nodes[center_node]['failure_rates']
-
-        # Average cumulative values
-        cell_graph.nodes[center_node]['critic_score'] /= iterations
-        cell_graph.nodes[center_node]['num_bikes'] /= iterations
 
     # Cleanup
     env.close()
@@ -372,37 +371,42 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
     reset_options = {
         'total_timeslots': params["total_timeslots"],
         'maximum_number_of_bikes': params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
+        'base_repositioning': params["base_repositioning"],
         'discount_factor': params["gamma"],
-        'logging': enable_val_logging,
         'depot_id': params['depot_position_id'],
         # 'initial_cell': params['initial_cell_id'],
         'reward_params': reward_params,
+        'logging': enable_val_logging,
     }
 
-    node_features = ['truck_cell', 'critic_score', 'eligibility_score', 'bikes']
     agent_state, info = env.reset(options=reset_options)
-
-    # Update train/target models input dimension
-    agent.train_model.update_agent_fc_input_dim(len(agent_state))
-    agent.target_model.update_agent_fc_input_dim(len(agent_state))
-
-    # Initialize state
-    state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
-    state.agent_state = agent_state
-    state.steps = info['steps']
 
     # Extract static environment info
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
-    distance_matrix = info['distance_matrix']
+    distance_lookup = info['distance_lookup']
 
-    # Initialize cell graph for spatial statistics
-    custom_features = {
-        'visits': 0, 'operations': 0, 'rebalanced': 0,
-        'failures': 0, 'failure_rates': 0.0,
-        'critic_score': 0.0, 'num_bikes': 0.0,
-    }
-    cell_graph = initialize_cells_subgraph(cell_dict, nodes_dict, distance_matrix, custom_features)
+    # Build initial graph from cells (reads metrics automatically)
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict,
+        nodes_dict=nodes_dict,
+        distance_lookup=distance_lookup
+    )
+
+    # Define which metrics to use as GNN features
+    gnn_features = [
+        'truck_cell',
+        'critic_score',
+        'eligibility_score',
+        'total_bikes',
+        # 'low_battery_bikes',
+    ]
+
+    # Initialize state
+    state = convert_graph_to_data(info['cells_subgraph'], node_features=gnn_features)
+    state.agent_state = agent_state
+    state.steps = info['steps']
 
     # ============================================================================
     # Temporarily set epsilon for validation (mostly greedy policy)
@@ -429,7 +433,7 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
         # Create next state
-        next_state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
+        next_state = convert_graph_to_data(info['cells_subgraph'], node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
 
@@ -472,25 +476,6 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         # Move to next state
         state = next_state
         del single_state  # Free GPU memory
-
-    # ============================================================================
-    # Finalize episode statistics
-    # ============================================================================
-    for cell_id, cell in cell_dict.items():
-        center_node = cell.get_center_node()
-        if center_node not in cell_graph:
-            raise ValueError(f"Node {center_node} not found in cell_graph")
-
-        # Copy final episode values
-        cell_graph.nodes[center_node]['visits'] = info['cells_subgraph'].nodes[center_node]['visits']
-        cell_graph.nodes[center_node]['operations'] = info['cells_subgraph'].nodes[center_node]['operations']
-        cell_graph.nodes[center_node]['rebalanced'] = info['cells_subgraph'].nodes[center_node]['rebalanced']
-        cell_graph.nodes[center_node]['failures'] = info['cells_subgraph'].nodes[center_node]['failures']
-        cell_graph.nodes[center_node]['failure_rates'] = info['cells_subgraph'].nodes[center_node]['failure_rates']
-
-        # Average cumulative values
-        cell_graph.nodes[center_node]['critic_score'] /= iterations
-        cell_graph.nodes[center_node]['num_bikes'] /= iterations
 
     # Cleanup
     env.close()
@@ -535,7 +520,9 @@ def main():
     # Update params dict with parsed values
     params['seed'] = args.seed
     params['num_episodes'] = args.num_episodes
-    params['maximum_number_of_bikes'] = args.num_bikes
+    params['maximum_number_of_bikes'] = args.max_num_bikes
+    params['minimum_number_of_bikes'] = args.min_num_bikes
+    params['base_repositioning'] = args.base_repositioning
     params['exploration_time'] = args.exploration_time
 
     set_seed(params['seed'])
@@ -567,6 +554,7 @@ def main():
     agent = DQNAgent(
         replay_buffer=replay_buffer,
         num_actions=env.action_space.n,
+        observation_space_len=env.observation_space.shape[0],
         gamma=params["gamma"],
         epsilon_start=params["epsilon_start"],
         epsilon_end=params["epsilon_end"],
@@ -580,6 +568,7 @@ def main():
     # Train the agent using the training loop
     starting_episode = 0
     last_validation_score = None
+    num_days = params["total_timeslots"] // 8
     try:
         tbar = tqdm(
             range(params["total_timeslots"]*params["num_episodes"]),
@@ -605,10 +594,12 @@ def main():
                 episode=episode,
                 mode='train',
                 total_reward=sum(training_dict['rewards_per_timeslot']),
-                mean_failures=sum(training_dict['failures_per_timeslot']) / params["total_timeslots"],
+                mean_failures=sum(training_dict['failures_per_timeslot']) / num_days,
                 total_failures=sum(training_dict['failures_per_timeslot']),
                 total_trips=training_dict['total_trips'],
                 total_invalid=training_dict['total_invalid'],
+                mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
+                mean_loss=sum(training_dict['losses']) / len(training_dict['losses']),
                 epsilon=agent.epsilon,
                 rewards_per_timeslot=training_dict['rewards_per_timeslot'],
                 failures_per_timeslot=training_dict['failures_per_timeslot'],
@@ -634,6 +625,7 @@ def main():
             # Save model if the training and validation score is better
             should_validate = (episode%10 == 0 and (agent.epsilon < 0.15 or training_results.mean_failures < 10)
                                and not one_validation) or episode == (params["num_episodes"]-1) # TODO: adjust validation frequency
+            should_validate = False
             if should_validate:     # TODO: parallelize validation and saving
                 enable_val_logging = enable_logging 
                 if episode > params["num_episodes"]*0.9: 
@@ -645,10 +637,12 @@ def main():
                     episode=episode,
                     mode='validation',
                     total_reward=sum(validation_dict['rewards_per_timeslot']),
-                    mean_failures=sum(validation_dict['failures_per_timeslot']) / params["total_timeslots"],
+                    mean_failures=sum(validation_dict['failures_per_timeslot']) / num_days,
                     total_failures=sum(validation_dict['failures_per_timeslot']),
                     total_trips=validation_dict['total_trips'],
                     total_invalid=validation_dict['total_invalid'],
+                    mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
+                    mean_loss=sum(training_dict['losses']) / len(training_dict['losses']),
                     epsilon=agent.epsilon,
                     rewards_per_timeslot=validation_dict['rewards_per_timeslot'],
                     failures_per_timeslot=validation_dict['failures_per_timeslot'],

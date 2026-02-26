@@ -22,6 +22,8 @@ class EpisodeResults:
     total_failures: int = 0
     total_trips: int = 0
     total_invalid: int = 0
+    mean_q_values: float = 0.0
+    mean_loss: float = 0.0
     epsilon: float = 0.0
 
     # Time-series data (per timeslot)
@@ -354,10 +356,8 @@ class ResultsManager:
             if len(data) == length:
                 return data
             elif len(data) < length:
-                print(f"⚠️  Warning: Padding {length - len(data)} missing values")
                 return data + [fill_value] * (length - len(data))
             else:
-                print(f"⚠️  Warning: Truncating {len(data) - length} extra values")
                 return data[:length]
 
         # Create corrected copy

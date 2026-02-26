@@ -5,7 +5,7 @@ from torch_geometric.nn.glob import GlobalAttention
 import torch.nn.functional as F
 
 class DQN(nn.Module):
-    def __init__(self, num_actions: int):
+    def __init__(self, num_actions: int, observation_space_len = 256):
         super(DQN, self).__init__()
 
         # Store device (will be set when .to(device) is called)
@@ -65,7 +65,7 @@ class DQN(nn.Module):
         # 4) MLP for Agent State
         # ------------------------------------------------------------------------------
         self.agent_fc = nn.Sequential(
-            nn.Linear(256, 256),
+            nn.Linear(observation_space_len, 256),
 
             nn.ReLU(),
             nn.Linear(256, 256),
@@ -94,15 +94,27 @@ class DQN(nn.Module):
     def forward(self, batch, key=None):
         if key == 's':
             x, edge_index, edge_attr, agent_state, pool_batch = (
-                batch.x_s, batch.edge_index_s, batch.edge_attr_s, batch.agent_state, batch.x_s_batch
+                batch.x_s,
+                batch.edge_index_s,
+                batch.edge_attr_s,
+                batch.agent_state,
+                batch.x_s_batch
             )
         elif key == 't':
             x, edge_index, edge_attr, agent_state, pool_batch = (
-                batch.x_t, batch.edge_index_t, batch.edge_attr_t, batch.agent_next_state, batch.x_t_batch
+                batch.x_t,
+                batch.edge_index_t,
+                batch.edge_attr_t,
+                batch.agent_next_state,
+                batch.x_t_batch
             )
         else:
             x, edge_index, edge_attr, agent_state, pool_batch = (
-                batch.x, batch.edge_index, batch.edge_attr, batch.agent_state, batch.batch
+                batch.x,
+                batch.edge_index,
+                batch.edge_attr,
+                batch.agent_state,
+                batch.batch
             )
 
         # -----------------------------

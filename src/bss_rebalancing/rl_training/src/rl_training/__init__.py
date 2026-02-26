@@ -12,15 +12,12 @@ from rl_training.memory import ReplayBuffer, PairData
 from rl_training.networks import DQN
 from rl_training.results import EpisodeResults, ResultsManager
 from rl_training.utils import (
-    convert_graph_to_data,
-    convert_seconds_to_hours_minutes,
-    plot_data_online,
-    plot_graph_with_truck_path,
-    send_telegram_message,
-    memory_usage,
     set_seed,
     setup_device,
     setup_logger,
+    convert_seconds_to_hours_minutes,
+    build_cell_graph_from_cells,
+    convert_graph_to_data,
 )
 
 __all__ = [
@@ -32,10 +29,7 @@ __all__ = [
     "ResultsManager",
     "convert_graph_to_data",
     "convert_seconds_to_hours_minutes",
-    "plot_data_online",
-    "plot_graph_with_truck_path",
-    "send_telegram_message",
-    "memory_usage",
+    "build_cell_graph_from_cells"
     "set_seed",
     "setup_device",
     "setup_logger",

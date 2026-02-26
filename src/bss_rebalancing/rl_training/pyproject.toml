@@ -30,7 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=1.24.0",
+    "numpy>=1.24.0,<2.0",
     "pandas>=2.0.0",
     "torch>=2.0.0",
     "torch-geometric>=2.4.0",
@@ -64,7 +64,7 @@ dev = [
 bss-train = "rl_training.train:main"
 bss-validate = "rl_training.validate:main"
 
-[project.urls]s
+[project.urls]
 Homepage = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
 Documentation = "https://github.com/edos08/BSS-DynamicRebalancing-RL/tree/main/rl_training"
 Repository = "https://github.com/edos08/BSS-DynamicRebalancing-RL"

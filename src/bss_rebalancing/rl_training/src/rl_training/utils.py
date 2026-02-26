@@ -1,10 +1,7 @@
 import torch
-import matplotlib
 import requests
 import networkx as nx
-import osmnx as ox
 import numpy as np
-import geopandas as gpd
 import psutil, os
 import random
 import logging
@@ -12,11 +9,7 @@ import logging
 from torch_geometric.utils import from_networkx
 from matplotlib import pyplot as plt
 from torch_geometric.data import Data
-
-# set up matplotlib
-is_ipython = 'inline' in matplotlib.get_backend()
-if is_ipython:
-    from IPython import display
+from gymnasium_env.simulator.cell import Cell
 
 plt.ion()
 
@@ -65,68 +58,6 @@ def setup_device(device_str: str, devices: list) -> torch.device:
     return device
 
 
-def convert_graph_to_data(graph: nx.MultiDiGraph, node_features: list = None) -> Data:
-    """
-    Converts a NetworkX MultiDiGraph to a PyTorch Geometric Data object.
-
-    Parameters:
-        - graph: The input MultiDiGraph representing the graph.
-        - node_features: list of custom features to use instead of default features.
-
-    Returns:
-        - A PyTorch Geometric Data object with node features, edge attributes, and edge types.
-    """
-    data = from_networkx(graph)
-
-    # Extract node attributes
-    default_node_attrs = [
-        'demand_rate',
-        'arrival_rate',
-        'average_battery_level',
-        'low_battery_ratio',
-        'variance_battery_level',
-        'total_bikes',
-        'bike_load',
-        'visits',
-        'critic_score',
-    ]
-
-    node_attrs = node_features or default_node_attrs
-
-    data.x = torch.cat([
-        torch.tensor(
-            [graph.nodes[n].get(attr, 0) or 0 for n in graph.nodes()],
-            dtype=torch.float
-        ).unsqueeze(dim=-1) for attr in node_attrs
-    ], dim=-1)
-
-    # Extract edge types and attributes
-    edge_types = []
-    edge_attrs = ['distance']
-    edge_attr_list = {attr: [] for attr in edge_attrs}
-    for u, v, k, attr in graph.edges(data=True, keys=True):
-        edge_types.append(k)
-        for edge_attr in edge_attrs:
-            edge_attr_list[edge_attr].append(attr[edge_attr])
-
-    # Map edge types to integers
-    edge_type_mapping = {e_type: i for i, e_type in enumerate(set(edge_types))}
-    edge_type_indices = torch.tensor(
-        [edge_type_mapping[e_type] for e_type in edge_types],
-        dtype=torch.long
-    )
-
-    # Add edge types and attributes to the Data object
-    data.edge_type = edge_type_indices
-    data.edge_attr = torch.cat([
-        torch.tensor(edge_attr_list[attr], dtype=torch.float).unsqueeze(dim=-1)
-        for attr in edge_attrs
-    ], dim=-1)
-    data.edge_index = data.edge_index
-
-    return data
-
-
 def convert_seconds_to_hours_minutes(seconds) -> str:
     """
     Converts seconds to a formatted string of hours, minutes, and seconds.
@@ -143,151 +74,120 @@ def convert_seconds_to_hours_minutes(seconds) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def plot_data_online(data, show_result=False, idx=1, xlabel='Step', ylabel='Reward', show_histogram=False,
-                     bin_labels=None, save_path=None):
+def build_cell_graph_from_cells(
+        cells: dict[int, Cell],
+        nodes_dict: dict[int, tuple[float, float]],
+        distance_lookup: dict[int, dict],
+) -> nx.MultiDiGraph:
     """
-    Plots rewards data online during training or displays final results.
+    Build a NetworkX graph from Cell objects for GNN processing.
+
+    Reads all node features directly from Cell.metrics instead of passing them as parameters.
 
     Parameters:
-        - data: List or NumPy array of rewards data.
-        - show_result: If True, displays the final results (default=False).
-        - idx: Index of the plot figure (default=1).
-        - xlabel: Label for the x-axis (default='Step').
-        - ylabel: Label for the y-axis (default='Reward').
-        - show_histogram: If True, displays a histogram of the data (default=False).
+        cells: Dictionary of Cell objects keyed by cell_id
+        nodes_dict: Dictionary mapping node_id to (lat, lon) coordinates
+        distance_lookup: Dictionary for fast distance lookups between nodes
+
+    Returns:
+        NetworkX MultiDiGraph with nodes representing cells and edges representing adjacency
     """
-    # Convert input data to a PyTorch tensor
-    data = np.array(data)
-    data_t = torch.tensor(data, dtype=torch.float)
+    graph = nx.MultiDiGraph()
+    graph.graph['crs'] = "EPSG:4326"
 
-    plt.figure(idx)
-    plt.clf()
+    max_distance = 0.0
 
-    if show_histogram:
-        plt.title('Data Histogram')
-        plt.xlabel('Value')
-        plt.ylabel('Frequency')
-        bins = len(data)
-        plt.bar(range(bins), data, alpha=0.75, edgecolor='black')
+    # First pass: Add nodes and find max distance
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
+        coords = nodes_dict[center_node]
 
-        # Set custom labels for the x-axis if provided
-        if bin_labels is not None:
-            if len(bin_labels) != bins:
-                raise ValueError("The length of bin_labels must match the number of bins.")
-            plt.xticks(ticks=range(bins), labels=bin_labels, rotation=45, ha='right')
-    else:
-        if show_result:
-            plt.title('Result')
-        else:
-            plt.title('Training...')
+        # Get ALL metrics from the cell
+        node_attrs = {
+            "cell_id": cell_id,
+            "x": coords[1],  # longitude
+            "y": coords[0],  # latitude
+        }
 
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-        plt.plot(data_t.numpy())
+        # Add all cell metrics as node attributes
+        node_attrs.update(cell.get_all_metrics())
 
-        # Compute and plot 100-step moving averages
-        if len(data_t) >= 100:
-            means = data_t.unfold(0, 100, 1).mean(1).view(-1)
-            means = torch.cat((torch.zeros(99), means))
-            plt.plot(means.numpy())
+        graph.add_node(center_node, **node_attrs)
 
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=200)
-    else:
-        plt.pause(0.001)
-        if is_ipython:
-            if not show_result:
-                display.display(plt.gcf())
-                display.clear_output(wait=True)
-            else:
-                display.display(plt.gcf())
+        # Calculate max distance for normalization
+        for adj_cell_id in cell.get_adjacent_cells().values():
+            if adj_cell_id and adj_cell_id in cells:
+                adj_center = cells[adj_cell_id].get_center_node()
+                distance = distance_lookup[center_node][str(adj_center)]
+                max_distance = max(max_distance, distance)
 
-    plt.close()
+    # Second pass: Add edges with normalized distances
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
 
+        for adj_cell_id in cell.get_adjacent_cells().values():
+            if adj_cell_id and adj_cell_id in cells:
+                adj_center = cells[adj_cell_id].get_center_node()
+                distance = distance_lookup[center_node][str(adj_center)]
 
-def plot_graph_with_truck_path(graph: nx.MultiDiGraph, cell_dict: dict, nodes_dict: dict, path: list[tuple[int, int]],
-                               show_result: bool, idx=1, x_lim=None, y_lim=None, save_path=None):
-    plt.figure(idx)
-    plt.clf()
+                # Normalize distance
+                normalized_distance = distance / max_distance if max_distance > 0 else 0.0
 
-    # Extract nodes and edges in WGS84 coordinates (lon, lat)
-    nodes, edges = ox.graph_to_gdfs(graph, nodes=True, edges=True)
+                graph.add_edge(
+                    center_node,
+                    adj_center,
+                    distance=normalized_distance,
+                    raw_distance=distance  # Keep raw distance too
+                )
 
-    # Convert cell_dict into a GeoDataFrame in WGS84 for easy plotting
-    grid_geoms = [cell.boundary for cell in cell_dict.values()]
-    cell_gdf = gpd.GeoDataFrame(geometry=grid_geoms, crs="EPSG:4326")  # WGS84 CRS
-
-    # Plot setup
-    fig, ax = plt.subplots(figsize=(7, 7))
-
-    # Plot the graph edges in geographic coordinates
-    edges.plot(ax=ax, linewidth=0.5, edgecolor="black", alpha=0.5)
-    # Plot the graph nodes
-    nodes.plot(ax=ax, markersize=2, color="blue", alpha=0.5)
-
-    # Overlay the grid cells
-    cell_gdf.plot(ax=ax, linewidth=0.8, edgecolor="red", facecolor="blue", alpha=0.2)
-
-    for cell in cell_dict.values():
-        center_node = cell.center_node
-        if center_node != 0:
-            node_coords = graph.nodes[center_node]['x'], graph.nodes[center_node]['y']
-            ax.plot(node_coords[0], node_coords[1], marker='o', color='yellow', markersize=4,
-                    label=f"Center Node {cell.id}")
-
-    # Plot the truck's path
-    for source, target in path:
-        if source in nodes_dict and target in nodes_dict:
-            source_coords = nodes_dict[source]
-            target_coords = nodes_dict[target]
-            ax.plot([source_coords[1], target_coords[1]],
-                    [source_coords[0], target_coords[0]],
-                    color='yellow', linewidth=2, alpha=0.8)
+    return graph
 
 
-    truck_coords = nodes_dict[path[-1][1]]
-    ax.plot(truck_coords[1], truck_coords[0], marker='o', color='red', markersize=10, label="Truck position")
+def convert_graph_to_data(
+        graph: nx.MultiDiGraph,
+        node_features: list[str] = None
+) -> Data:
+    """
+    Convert NetworkX graph to PyTorch Geometric Data object.
 
-    if x_lim is not None and y_lim is not None:
-        plt.xlim(x_lim)
-        plt.ylim(y_lim)
+    Parameters:
+        graph: NetworkX MultiDiGraph with node attributes from Cell.metrics
+        node_features: List of metric names to use as features. If None, uses defaults.
 
-    if show_result:
-        plt.title('Result')
-    else:
-        plt.title('Training...')
+    Returns:
+        PyTorch Geometric Data object ready for GNN
+    """
+    # Default features if none specified
+    if node_features is None:
+        # throw an error if node_features is not provided, since we rely on Cell metrics
+        raise ValueError("node_features must be provided to specify which Cell metrics to use as features")
 
-    # Configure plot appearance
-    plt.axis('off')
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=200)
-    else:
-        plt.pause(0.001)
-        if is_ipython:
-            if not show_result:
-                display.display(plt.gcf())
-                display.clear_output(wait=True)
-            else:
-                display.display(plt.gcf())
-    plt.close(fig)
+    # Convert to PyG Data
+    data = from_networkx(graph)
 
+    # Extract node features
+    node_feature_tensors = []
+    for attr in node_features:
+        nodes = sorted(graph.nodes())
+        feature_values = [
+            graph.nodes[n].get(attr, 0.0) or 0.0
+            for n in nodes
+        ]
+        node_feature_tensors.append(
+            torch.tensor(feature_values, dtype=torch.float32).unsqueeze(-1)
+        )
 
-# Function to send a Telegram message
-def send_telegram_message(message: str, BOT_TOKEN: str, CHAT_ID: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message}
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            print("Message sent successfully.")
-        else:
-            print(f"Failed to send message. Status code: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to send Telegram message: {e}")
+    data.x = torch.cat(node_feature_tensors, dim=-1)
 
+    # Extract edge attributes
+    edge_distances = []
+    for u, v, k, attr in graph.edges(data=True, keys=True):
+        edge_distances.append(attr.get('distance', 0.0))
 
-def memory_usage():
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / (1024 * 1024)  # MB
+    data.edge_attr = torch.tensor(edge_distances, dtype=torch.float32).unsqueeze(-1)
+
+    # Store feature names for reference
+    data.feature_names = node_features
+
+    return data
+

@@ -7,13 +7,13 @@ from torch.nn import functional as F
 from rl_training.networks import DQN
 
 class DQNAgent:
-    def __init__(self, num_actions, replay_buffer =  None, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01,
+    def __init__(self, num_actions, observation_space_len = 256, replay_buffer =  None, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01,
                  epsilon_decay=500, lr=0.1, device='cpu', tau=0.3, beta=0.01, soft_update=False):
         """
         Initializes the DQNAgent.
         """
-        self.train_model = DQN(num_actions).to(device)
-        self.target_model = DQN(num_actions).to(device)
+        self.train_model = DQN(num_actions, observation_space_len).to(device)
+        self.target_model = DQN(num_actions, observation_space_len).to(device)
         self.target_model.load_state_dict(self.train_model.state_dict())
         self.optimizer = torch.optim.SGD(self.train_model.parameters(), lr=lr)
         # self.optimizer = torch.optim.SGD(self.train_model.parameters(), lr=lr, momentum=0.9)

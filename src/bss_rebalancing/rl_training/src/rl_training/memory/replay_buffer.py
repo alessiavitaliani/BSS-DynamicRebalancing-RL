@@ -48,10 +48,13 @@ class ReplayBuffer:
         """
         # Create a PairData transition
         transition = PairData(
-            x_s=state.x, edge_index_s=state.edge_index,
-            edge_attr_s=state.edge_attr, edge_type_s=state.edge_type,
-            x_t=next_state.x, edge_index_t=next_state.edge_index,
-            edge_attr_t=next_state.edge_attr, edge_type_t=next_state.edge_type
+            x_s=state.x,
+            edge_index_s=state.edge_index,
+            edge_attr_s=state.edge_attr,
+
+            x_t=next_state.x,
+            edge_index_t=next_state.edge_index,
+            edge_attr_t=next_state.edge_attr
         )
 
         # Add additional attributes to the transition
