@@ -1,10 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
+from gymnasium_env.simulator.trip import Trip
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from gymnasium_env.simulator.trip import Trip
 
 class EventType(Enum):
     DEPARTURE = "Departure"
@@ -15,7 +12,7 @@ class EventType(Enum):
 class Event:
     time: int
     event_type: EventType
-    trip: "Trip"
+    trip: Trip
 
     def __post_init__(self):
         if not isinstance(self.event_type, EventType):
@@ -27,5 +24,5 @@ class Event:
     def is_arrival(self) -> bool:
         return self.event_type == EventType.ARRIVAL
 
-    def get_trip(self) -> "Trip":
+    def get_trip(self) -> Trip:
         return self.trip

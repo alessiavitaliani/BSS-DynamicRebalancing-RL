@@ -4,9 +4,10 @@ if TYPE_CHECKING:
     from gymnasium_env.simulator.bike import Bike
     from gymnasium_env.simulator.cell import Cell
 
+
 class Station:
     def __init__(self, station_id: int, lat: float, lon: float, name: str = None, capacity: int = 1000,
-                 bikes: {"Bike"} = None, request_rate: float = 0.0, arrival_rate: float = 0.0, cell: "Cell" = None):
+                 bikes: dict[int, 'Bike'] = None, request_rate: float = 0.0, arrival_rate: float = 0.0, cell: 'Cell' = None):
         """
         Initialize a Station object.
 
@@ -19,7 +20,7 @@ class Station:
         bikes (list): List of Bike objects at the station. Default is an empty list.
         request_rate (float): Rate of bike requests at the station. Default is 0.0.
         arrival_rate (float): Rate of bike arrivals at the station. Default is 0.0.
-        cell ("Cell"): The parent cell of this station. Default is None.
+        cell (Cell): The parent cell of this station. Default is None.
         """
         self.station_id = station_id
         self.name = name if name is not None else f"Station {station_id}"
@@ -41,7 +42,7 @@ class Station:
         """
         return f"Station {self.station_id} (Locked Bikes: {len(self.bikes)})" # Position ({self.lat}, {self.lon}),
 
-    def set_bikes(self, bikes: {"Bike"}):
+    def set_bikes(self, bikes: dict[int, 'Bike']):
         """
         Set the list of bikes at the station and upates the respective flags.
 
@@ -66,7 +67,7 @@ class Station:
     def set_capacity(self, capacity: int):
         self.capacity = capacity
 
-    def set_cell(self, cell: "Cell"):
+    def set_cell(self, cell: 'Cell'):
         """
         Set the cell of the station.
 
@@ -75,7 +76,7 @@ class Station:
         """
         self.cell = cell
 
-    def unlock_bike(self, bike_id: int = None) -> "Bike":
+    def unlock_bike(self, bike_id: int = None) -> 'Bike':
         """
         Unlock a bike from the station and upates the respective flags.
 
@@ -93,7 +94,7 @@ class Station:
         else:
             raise ValueError("Station is empty. Cannot unlock bike.")
 
-    def lock_bike(self, bike: "Bike"):
+    def lock_bike(self, bike: 'Bike'):
         """
         Lock a bike at the station and upates the respective flags.
 
@@ -114,10 +115,10 @@ class Station:
     def get_name(self) -> str:
         return self.name
 
-    def get_coordinates(self) -> (float, float):
+    def get_coordinates(self) -> tuple[float, float]:
         return self.lat, self.lon
 
-    def get_bikes(self) -> {"Bike"}:
+    def get_bikes(self) -> dict[int, 'Bike']:
         return self.bikes
 
     def get_request_rate(self) -> float:
@@ -126,7 +127,7 @@ class Station:
     def get_arrival_rate(self) -> float:
         return self.arrival_rate
 
-    def get_cell(self) -> "Cell":
+    def get_cell(self) -> 'Cell':
         return self.cell
 
     def get_capacity(self) -> int:
@@ -134,3 +135,9 @@ class Station:
 
     def get_number_of_bikes(self) -> int:
         return len(self.bikes)
+
+    def reset(self):
+        self.bikes = {}
+        self.number_of_bikes = 0
+        self.request_rate = 0.0
+        self.arrival_rate = 0.0

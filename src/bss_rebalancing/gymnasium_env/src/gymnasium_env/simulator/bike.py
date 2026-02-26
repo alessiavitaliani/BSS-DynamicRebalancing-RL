@@ -3,20 +3,31 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from gymnasium_env.simulator.station import Station
 
-class Bike:
 
-    def __init__(self, bike_id: int, station: "Station" = None, max_battery: float = 50.0):
+class Bike:
+    # Class variable to track the next available bike_id
+    _next_bike_id = 0
+
+    def __init__(self, station: 'Station' = None, max_battery: float = 50.0, bike_id: int = None):
         """
         Initialize a Bike object.
 
         Parameters:
-        bike_id (int): Unique identifier for the bike.
         station (Station): The station where the bike is located.
         max_battery (int): Maximum battery capacity of the bike. Default is 100 (in km).
+        bike_id (int): Unique identifier for the bike.
         """
-        super().__setattr__('log', [])
 
-        self.bike_id = bike_id
+        # Auto-increment bike_id if not provided
+        if bike_id is None:
+            self.bike_id = Bike._next_bike_id
+            Bike._next_bike_id += 1
+        else:
+            self.bike_id = bike_id
+            # Update the counter if manually assigned ID is higher
+            if bike_id >= Bike._next_bike_id:
+                Bike._next_bike_id = bike_id + 1
+
         self.station = station
         self.max_battery = max_battery
         self.battery = max_battery
@@ -31,15 +42,15 @@ class Bike:
         """
         return f"Bike {self.bike_id} at {self.station} - Battery: {self.battery} km - Available: {self.available}"
 
-    # def __getattribute__(self, name):
-    #     if name != "log":  # Avoid accessing log recursively
-    #         super().__getattribute__('log').append(f"Accessing {name}")
-    #     return super().__getattribute__(name)
-    #
-    # def __setattr__(self, name, value):
-    #     if name != "log":  # Avoid accessing log recursively
-    #         super().__getattribute__('log').append(f"Setting {name} to {value}")
-    #     super().__setattr__(name, value)
+    @classmethod
+    def reset_bike_id_counter(cls, start_id: int = 0):
+        """Reset the bike_id counter to a specific value."""
+        cls._next_bike_id = start_id
+
+    @classmethod
+    def get_next_bike_id(cls) -> int:
+        """Get the next bike_id that will be assigned."""
+        return cls._next_bike_id
 
     def set_availability(self, available: bool):
         """
@@ -50,7 +61,7 @@ class Bike:
         """
         self.available = available
 
-    def set_station(self, station: "Station"):
+    def set_station(self, station: 'Station'):
         """
         Set the station where the bike is located.
 
@@ -68,7 +79,7 @@ class Bike:
         """
         self.battery = battery
 
-    def get_station(self) -> "Station":
+    def get_station(self) -> 'Station':
         """
         Get the station where the bike is located.
 
@@ -113,17 +124,7 @@ class Bike:
         """
         return self.max_battery
 
-
-    def get_log(self) -> list:
-        """
-        Get the log of attribute accesses and settings.
-
-        Returns:
-        list: A list of log entries.
-        """
-        return self.log
-
-    def reset(self, station: "Station" = None, battery: float = None, available: bool = False):
+    def reset(self, station: 'Station' = None, battery: float = None, available: bool = False):
         # Reset the bike to its initial state
         self.battery = self.max_battery if battery is None else battery
         self.available = available

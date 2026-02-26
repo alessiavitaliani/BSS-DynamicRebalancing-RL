@@ -39,7 +39,6 @@ class FilePaths:
     GRAPH_FILE = 'utils/cambridge_network.graphml'
     CELL_FILE = 'utils/cell_data.pkl'
     DISTANCE_MATRIX_FILE = 'utils/distance_matrix.csv'
-    FILTERED_STATIONS_FILE = 'utils/filtered_stations.csv'
     MATRICES_FOLDER = 'matrices/09-10'
     RATES_FOLDER = 'rates/09-10'
     TRIPS_FOLDER = 'trips/'
