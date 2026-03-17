@@ -1,22 +1,24 @@
 """Main Dash application."""
 
 import argparse
-from pathlib import Path
-
+import logging
 import dash
 import dash_bootstrap_components as dbc
+
+from pathlib import Path
 from dash import dcc, html
 
 from results_webapp.callbacks import register_callbacks
 from results_webapp.layouts import create_header, create_controls, PLOT_CONFIG
 
 
-def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 5000):
+def create_app(results_path: str, data_path: str = None, port: int = 8050, update_interval_ms: int = 5000):
     """
     Create and configure the Dash app.
 
     Args:
         results_path: Path to results directory
+        data_path: Path to data directory containing cambridge_network.graphml
         port: Port to run server on
         update_interval_ms: Auto-refresh interval in milliseconds
 
@@ -33,6 +35,7 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
 
     # Store config in app
     app.results_path = Path(results_path)
+    app.data_path = Path(data_path) if data_path else None
     app.port = port
     app.update_interval_ms = update_interval_ms
 
@@ -85,13 +88,13 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                     ], width=6),
                 ], className='mt-3'),
 
-                # Row 3: Q-values and Global Critic (only for training)
+                # Row 3: Benchmark Results
                 dbc.Row([
                     dbc.Col([
-                        dcc.Graph(id='qvalues-overview-plot', config=PLOT_CONFIG)
+                        dcc.Graph(id='bench-failures-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
-                        dcc.Graph(id='global-critic-overview-plot', config=PLOT_CONFIG)
+                        dcc.Graph(id='bench-rebalance-times-plot', config=PLOT_CONFIG)
                     ], width=6),
                 ], className='mt-3'),
             ]),
@@ -121,6 +124,65 @@ def create_app(results_path: str, port: int = 8050, update_interval_ms: int = 50
                         dcc.Graph(id='reward-tracking-plot', config=PLOT_CONFIG)
                     ], width=6),
                 ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='on-road-bikes-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        dcc.Graph(id='depot-load-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='truck-load-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        dcc.Graph(id='inside-system-bikes-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='outside-system-bikes-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        html.Div([
+                            html.Label("Select metric:", style={'font-weight': 'bold'}),
+                            dcc.Dropdown(
+                                id="graph-metric-selector",
+                                options=[
+                                    {"label": "Visits (sum)", "value": "visits_sum"},
+                                    {"label": "Operations (sum)", "value": "ops_sum"},
+                                    {"label": "Failures (sum)", "value": "failure_sum"},
+                                    {"label": "Failure rate", "value": "failure_rate"},
+                                    {"label": "Critic score (mean)", "value": "critic_mean"},
+                                    {"label": "Eligibility (mean)", "value": "eligibility_mean"},
+                                    {"label": "Bikes (mean)", "value": "bikes_mean"},
+                                ],
+                                value="visits_sum",
+                                clearable=False,
+                                style={'width': '40%', 'marginBottom': '10px'}
+                            ),
+                            html.Div(id="graph-heatmap-status",
+                                     style={'color': '#888', 'fontSize': '13px',
+                                            'fontFamily': 'monospace', 'marginBottom': '6px'}),
+                            html.Img(
+                                id="graph-heatmap-plot",
+                                style={
+                                    'width': '100%',
+                                    'display': 'block',
+                                    'border': '1px solid #d3d3d3',
+                                }
+                            ),
+                        ], style={
+                            'padding': '10px',
+                            'box-shadow': '0px 1px 3px rgba(0,0,0,0.2)',
+                            'background-color': 'white'
+                        }),
+                    ], width=6),
+                ], className='mt-3'),
             ]),
         ])
 
@@ -137,6 +199,8 @@ def main():
     parser = argparse.ArgumentParser(description='BSS Results WebApp')
     parser.add_argument('--results-path', type=str, default='../results',
                         help='Path to results directory')
+    parser.add_argument('--data-path', type=str, default=None,
+                        help='Path to data directory (containing utils/cambridge_network.graphml)')
     parser.add_argument('--port', type=int, default=8050,
                         help='Port to run server on')
     parser.add_argument('--update-interval', type=int, default=5000,
@@ -148,12 +212,20 @@ def main():
 
     app = create_app(
         results_path=args.results_path,
+        data_path=args.data_path,
         port=args.port,
         update_interval_ms=args.update_interval
     )
 
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s [%(name)s] %(levelname)s: %(message)s')
+
     print(f"Starting BSS Results WebApp on http://0.0.0.0:{args.port}")
     print(f"Results path: {args.results_path}")
+    if args.data_path:
+        print(f"Data path: {args.data_path}")
 
     app.run(debug=args.debug, host='0.0.0.0', port=args.port)
 

@@ -13,9 +13,9 @@ from results_webapp.data_loader import (
     load_summary_data,
     load_episode_data,
     get_available_episodes,
-    load_concatenated_timeslot_data,
-    load_concatenated_step_data,
-    build_summary_from_episodes
+    build_summary_from_episodes,
+    load_bench_data,
+    load_base_graph
 )
 
 from results_webapp.plotting import (
@@ -33,9 +33,9 @@ __all__ = [
     "load_summary_data",
     "load_episode_data",
     "get_available_episodes",
-    "load_concatenated_timeslot_data",
-    "load_concatenated_step_data",
     "build_summary_from_episodes",
+    "load_bench_data",
+    "load_base_graph",
     # Plotting
     "create_metric_plot",
     "create_timeslot_plot",

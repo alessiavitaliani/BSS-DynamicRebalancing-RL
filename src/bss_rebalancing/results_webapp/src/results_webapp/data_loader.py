@@ -5,8 +5,9 @@ import pickle
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import networkx as nx
+import osmnx as ox
 import pandas as pd
-import numpy as np
 
 
 def discover_runs(base_path: Path) -> Dict[str, Path]:
@@ -88,9 +89,8 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
         episodes_data.append({
             'episode': episode_num,
             'total_reward': scalars.get('total_reward', 0.0),
-            'mean_failures': scalars.get('mean_failures', 0.0),
+            'mean_daily_failures': scalars.get('mean_daily_failures', 0.0),
             'total_failures': scalars.get('total_failures', 0),
-            'total_trips': scalars.get('total_trips', 0),
             'total_invalid': scalars.get('total_invalid', 0),
             'epsilon': scalars.get('epsilon', 0.0),
         })
@@ -156,6 +156,13 @@ def load_episode_data(run_dir: Path, mode: str, episode: int) -> Optional[Dict]:
     timeslot_path = episode_dir / 'timeslot_metrics.csv'
     if timeslot_path.exists():
         data['timeslot_metrics'] = pd.read_csv(timeslot_path)
+        required_cols = ['deployed_bikes', 'truck_load', 'depot_load']
+        if all(col in data['timeslot_metrics'].columns for col in required_cols):
+            data['timeslot_metrics']['inside_system_bikes'] = (
+                    data['timeslot_metrics']['deployed_bikes'] +
+                    data['timeslot_metrics']['truck_load'] +
+                    data['timeslot_metrics']['depot_load']
+            )
 
     # Load step data (pickle)
     step_data_path = episode_dir / 'step_data.pkl.gz'
@@ -194,73 +201,60 @@ def get_available_episodes(run_dir: Path, mode: str) -> List[int]:
         if ep_dir.is_dir() and ep_dir.name.startswith('episode_'):
             try:
                 ep_num = int(ep_dir.name.split('_')[1])
-                episodes.append(ep_num)
             except (IndexError, ValueError):
                 continue
+            # Only include episodes that have completed — scalars.json is
+            # written at save time, so its absence means the episode is
+            # still in progress (only the log folder exists so far)
+            if (ep_dir / 'scalars.json').exists():
+                episodes.append(ep_num)
 
     return sorted(episodes)
 
 
-def load_concatenated_timeslot_data(run_dir: Path, mode: str, metric: str) -> pd.Series:
+def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     """
-    Load and concatenate timeslot data across all episodes.
+    Load the full Cambridge road network graph.
 
     Args:
-        run_dir: Path to run directory
-        mode: 'training' or 'validation'
-        metric: Name of metric column to extract
+        data_path: Path to the data directory (parent of 'utils/')
 
     Returns:
-        Series with concatenated timeslot data
+        NetworkX MultiDiGraph or None if not found
     """
-    episodes = get_available_episodes(run_dir, mode)
-    all_data = []
-
-    for episode in episodes:
-        episode_data = load_episode_data(run_dir, mode, episode)
-        if episode_data and 'timeslot_metrics' in episode_data:
-            timeslot_df = episode_data['timeslot_metrics']
-            if metric in timeslot_df.columns:
-                all_data.extend(timeslot_df[metric].tolist())
-
-    return pd.Series(all_data)
+    graph_path = data_path / 'utils' / 'cambridge_network.graphml'
+    if not graph_path.exists():
+        return None
+    return ox.load_graphml(graph_path)
 
 
-def load_concatenated_step_data(run_dir: Path, mode: str, metric: str) -> pd.Series:
-    """
-    Load and concatenate step-level data across all episodes.
+def load_bench_data(run_dir: Path, mode: str = 'benchmark') -> Optional[tuple[int, dict[str, pd.DataFrame]]]:
+    bench_fail_path = run_dir / mode / 'failures.pkl'
+    bench_rebal_time_path = run_dir / mode / 'rebalance_time.pkl'
 
-    Args:
-        run_dir: Path to run directory
-        mode: 'training' or 'validation'
-        metric: Name of metric in step_data dict
+    if not bench_fail_path.exists() and not bench_rebal_time_path.exists():
+        return None
 
-    Returns:
-        Series with concatenated step data
-    """
-    episodes = get_available_episodes(run_dir, mode)
-    all_data = []
+    dfs = {}
 
-    for episode in episodes:
-        episode_data = load_episode_data(run_dir, mode, episode)
-        if episode_data and 'step_data' in episode_data:
-            step_data = episode_data['step_data']
-            if metric in step_data:
-                data = step_data[metric]
-                # Handle different data types
-                if metric == 'q_values':
-                    # Q-values are per timeslot, compute mean
-                    processed = [np.mean(q) if len(q) > 0 else 0 for q in data]
-                    all_data.extend(processed)
-                elif metric == 'losses':
-                    # Filter out None values
-                    processed = [l for l in data if l is not None]
-                    all_data.extend(processed)
-                elif metric == 'global_critic_scores':
-                    # Direct values
-                    all_data.extend(data)
-                else:
-                    all_data.extend(data)
+    if bench_fail_path.exists():
+        with open(bench_fail_path, 'rb') as f:
+            failures: list = pickle.load(f)
+        dfs['failures'] = pd.DataFrame({
+            'timeslot': list(range(len(failures))),
+            'failures': failures,
+        })
 
-    return pd.Series(all_data)
+    total_failures = sum(failures)
+
+    if bench_rebal_time_path.exists():
+        with open(bench_rebal_time_path, 'rb') as f:
+            rebalance_time: list = pickle.load(f)
+        dfs['rebalance_time'] = pd.DataFrame({
+            'timeslot': list(range(len(rebalance_time))),
+            'rebalance_time': rebalance_time,
+        })
+
+    return total_failures, dfs
+
 

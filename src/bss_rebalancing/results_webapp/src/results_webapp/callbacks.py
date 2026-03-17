@@ -3,10 +3,9 @@
 from pathlib import Path
 
 import dash_bootstrap_components as dbc
-import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-from dash import Input, Output, State, html
+from dash import Input, Output, State, dcc, html
 
 from results_webapp.data_loader import (
     discover_runs,
@@ -14,16 +13,18 @@ from results_webapp.data_loader import (
     load_episode_data,
     load_run_config,
     load_summary_data,
-    load_concatenated_timeslot_data,
-    load_concatenated_step_data
+    load_base_graph,
+    load_bench_data
 )
 from results_webapp.plotting import (
     COLORS,
     create_action_distribution_plot,
+    create_graph_heatmap_plot,
     create_metric_plot,
     create_reward_tracking_plot,
     create_timeslot_plot,
 )
+
 
 def register_callbacks(app):
     """Register all callbacks for the Dash app."""
@@ -133,8 +134,8 @@ def register_callbacks(app):
         Output('rewards-plot', 'figure'),
         Output('epsilon-plot', 'figure'),
         Output('total-failures-plot', 'figure'),
-        Output('qvalues-overview-plot', 'figure'),
-        Output('global-critic-overview-plot', 'figure'),
+        Output('bench-failures-plot', 'figure'),
+        Output('bench-rebalance-times-plot', 'figure'),
         Input('run-selector', 'value'),
         Input('mode-selector', 'value'),
         Input('interval-component', 'n_intervals'),
@@ -154,6 +155,11 @@ def register_callbacks(app):
 
         # Load summary data (FAST - single CSV or build from scalars.json only)
         summary = load_summary_data(run_dir, mode)
+        bench_result = load_bench_data(run_dir)
+        if bench_result is None:
+            bench_total_failures, bench_df = None, None
+        else:
+            bench_total_failures, bench_df = bench_result
 
         # Check if we have any data
         if summary is None or summary.empty:
@@ -164,18 +170,18 @@ def register_callbacks(app):
         # ============================================
         # Plot 1: Mean Failures per Episode
         # ============================================
-        if 'mean_failures' in summary.columns:
-            mean_failures_series = summary.set_index('episode')['mean_failures']
-            mean_failures_fig = create_metric_plot(
-                mean_failures_series,
-                f'{mode.capitalize()} Mean Failures per Episode',
-                'Mean Failures',
+        if 'mean_daily_failures' in summary.columns:
+            mean_daily_failures_series = summary.set_index('episode')['mean_daily_failures']
+            mean_daily_failures_fig = create_metric_plot(
+                mean_daily_failures_series,
+                f'{mode.capitalize()} Mean Daily Failures per Episode',
+                'Mean Daily Failures',
                 show_cumulative=False,
                 color=COLORS['primary']
             )
         else:
-            mean_failures_fig = go.Figure()
-            mean_failures_fig.update_layout(title='No mean failures data')
+            mean_daily_failures_fig = go.Figure()
+            mean_daily_failures_fig.update_layout(title='No mean daily failures data')
 
         # ============================================
         # Plot 2: Total Rewards per Episode
@@ -226,63 +232,35 @@ def register_callbacks(app):
             failures_fig.update_layout(title='No failure data')
 
         # ============================================
-        # Plots 5-7: Training-only metrics
+        # Plot 5: Total Failures Benchmark
         # ============================================
-        if mode == 'training':
-            # These require loading individual episode data
-            # We'll show placeholders for now unless we need them
-
-            qval_fig = go.Figure()
-            qval_fig.update_layout(
-                title='Q-values: Select specific episode in "Episode Details" tab',
-                annotations=[{
-                    'text': 'Viewing Q-values requires loading individual episodes.<br>Use the "Episode Details" tab for detailed analysis.',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'showarrow': False,
-                    'font': {'size': 12, 'color': 'gray'}
-                }]
+        if bench_df is not None:
+            bench_failures_fig = create_timeslot_plot(
+                bench_df['failures'],
+                'failures',
+                f'Benchmark Failures per Timeslot - Total: {bench_total_failures}',
+                'Total Failures',
             )
+        else:
+            bench_failures_fig = go.Figure()
+            bench_failures_fig.update_layout(title='No benchmark failure data')
 
-            critic_fig = go.Figure()
-            critic_fig.update_layout(
-                title='Global Critic: Select specific episode in "Episode Details" tab',
-                annotations=[{
-                    'text': 'Viewing global critic scores requires loading individual episodes.<br>Use the "Episode Details" tab for detailed analysis.',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'showarrow': False,
-                    'font': {'size': 12, 'color': 'gray'}
-                }]
+        # ============================================
+        # Plot 6: Rebalance Time Benchmark
+        # ============================================
+        if bench_df is not None:
+            bench_rebal_time_fig = create_timeslot_plot(
+                bench_df['rebalance_time'],
+                'rebalance_time',
+                f'Benchmark Rebalance Time per Timeslot',
+                'Rebalance Time (min)',
+                scale=1.0/60.0
             )
+        else:
+            bench_rebal_time_fig = go.Figure()
+            bench_rebal_time_fig.update_layout(title='No benchmark rebalance time data')
 
-        else:  # validation mode
-            # Show message for training-only plots
-            qval_fig = go.Figure()
-            qval_fig.update_layout(
-                title='Q-values not available in validation mode',
-                annotations=[{
-                    'text': 'Q-values are only tracked during training',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'showarrow': False,
-                    'font': {'size': 14, 'color': 'gray'}
-                }]
-            )
-
-            critic_fig = go.Figure()
-            critic_fig.update_layout(
-                title='Global Critic not available in validation mode',
-                annotations=[{
-                    'text': 'Global Critic is only tracked during training',
-                    'xref': 'paper',
-                    'yref': 'paper',
-                    'showarrow': False,
-                    'font': {'size': 14, 'color': 'gray'}
-                }]
-            )
-
-        return mean_failures_fig, rewards_fig, epsilon_fig, failures_fig, qval_fig, critic_fig
+        return mean_daily_failures_fig, rewards_fig, epsilon_fig, failures_fig, bench_failures_fig, bench_rebal_time_fig
 
     # ============================================================================
     # Callback: Update episode detail plots
@@ -293,6 +271,11 @@ def register_callbacks(app):
         Output('timeslot-failures-plot', 'figure'),
         Output('action-distribution-plot', 'figure'),
         Output('reward-tracking-plot', 'figure'),
+        Output('inside-system-bikes-plot', 'figure'),
+        Output('depot-load-plot', 'figure'),
+        Output('truck-load-plot', 'figure'),
+        Output('on-road-bikes-plot', 'figure'),
+        Output('outside-system-bikes-plot', 'figure'),
         Input('run-selector', 'value'),
         Input('mode-selector', 'value'),
         Input('episode-selector', 'value')
@@ -303,13 +286,35 @@ def register_callbacks(app):
         empty_fig.update_layout(title='No data available')
 
         if not run_path or episode is None:
-            return html.P('Select an episode'), empty_fig, empty_fig, empty_fig, empty_fig
+            return (
+                html.P('Select an episode'),
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig
+            )
 
         run_dir = Path(run_path)
         episode_data = load_episode_data(run_dir, mode, episode)
 
         if not episode_data:
-            return html.P('Episode data not available'), empty_fig, empty_fig, empty_fig, empty_fig
+            return (
+                html.P('Episode data not available'),
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig,
+                empty_fig
+            )
 
         scalars = episode_data.get('scalars', {})
         timeslot_df = episode_data.get('timeslot_metrics')
@@ -336,7 +341,7 @@ def register_callbacks(app):
             dbc.Col([
                 dbc.Card([
                     dbc.CardBody([
-                        html.H4(f"{scalars.get('mean_failures', 0):.2f}", className='text-warning'),
+                        html.H4(f"{scalars.get('mean_daily_failures', 0):.2f}", className='text-warning'),
                         html.P('Mean Failures', className='text-muted mb-0')
                     ])
                 ])
@@ -359,9 +364,32 @@ def register_callbacks(app):
             failures_plot = create_timeslot_plot(
                 timeslot_df, 'failures', 'Failures per Timeslot', 'Failures'
             )
+            inside_system_bikes_plot = create_timeslot_plot(
+                timeslot_df, 'inside_system_bikes', 'Total Bikes in the Inside System per Timeslot', '# of Bikes in the System'
+            )
+            depot_load_plot = create_timeslot_plot(
+                timeslot_df, 'depot_load', 'Depot Load per Timeslot', 'Depot Load'
+            )
+            truck_load_plot = create_timeslot_plot(
+                timeslot_df, 'truck_load', 'Truck Load per Timeslot', 'Truck Load'
+            )
+            on_road_bikes_plot = create_timeslot_plot(
+                timeslot_df, 'deployed_bikes', 'On-Road Bikes per Timeslot', 'On-Road Bikes'
+            )
+            if 'outside_system_bikes' in timeslot_df.columns:
+                outside_system_bikes_plot = create_timeslot_plot(
+                    timeslot_df, 'outside_system_bikes', 'Bikes Outside the System per Timeslot', 'Bikes Outside the System'
+                )
+            else:
+                outside_system_bikes_plot = empty_fig
         else:
             rewards_plot = empty_fig
             failures_plot = empty_fig
+            inside_system_bikes_plot = empty_fig
+            depot_load_plot = empty_fig
+            truck_load_plot = empty_fig
+            on_road_bikes_plot = empty_fig
+            outside_system_bikes_plot = empty_fig
 
         # Action distribution
         actions = step_data.get('actions', [])
@@ -371,10 +399,92 @@ def register_callbacks(app):
             action_plot = empty_fig
 
         # Reward tracking
-        reward_tracking = step_data.get('reward_tracking', {})
+        reward_tracking = step_data.get('reward_tracking_per_action', {})
         if reward_tracking:
             reward_track_plot = create_reward_tracking_plot(reward_tracking)
         else:
             reward_track_plot = empty_fig
 
-        return stats_cards, rewards_plot, failures_plot, action_plot, reward_track_plot
+        return (
+            stats_cards,
+            rewards_plot,
+            failures_plot,
+            action_plot,
+            reward_track_plot,
+            inside_system_bikes_plot,
+            depot_load_plot,
+            truck_load_plot,
+            on_road_bikes_plot,
+            outside_system_bikes_plot
+        )
+
+
+    # ============================================================================
+    # Callback: Graph heatmap — renders PNG to assets/ dir, serves as static file
+    # ============================================================================
+    @app.callback(
+        Output('graph-heatmap-plot', 'src'),
+        Output('graph-heatmap-status', 'children'),
+        Input('run-selector', 'value'),
+        Input('mode-selector', 'value'),
+        Input('episode-selector', 'value'),
+        Input('graph-metric-selector', 'value'),
+        prevent_initial_call=True,
+    )
+    def update_graph_heatmap(run_path, mode, episode, metric):
+        import time
+        NO_IMG = ('', '')
+
+        if not run_path or episode is None or not metric:
+            return NO_IMG
+
+        try:
+            run_dir       = Path(run_path)
+            episode_data  = load_episode_data(run_dir, mode, episode)
+            cell_subgraph = episode_data.get('cell_subgraph') if episode_data else None
+            base_graph    = _get_base_graph(app)
+
+            if cell_subgraph is None:
+                return ('', f'⚠ No cell_subgraph found for episode {episode}')
+
+            n_boundary = sum(1 for _, d in cell_subgraph.nodes(data=True) if d.get('boundary') is not None)
+
+            if n_boundary == 0:
+                return ('', '⚠ No "boundary" attr on nodes — update build_cell_graph_from_cells')
+
+            # Render to disk in assets/ (Dash serves this directory automatically)
+            assets_dir = Path(__file__).parent / 'assets'
+            assets_dir.mkdir(exist_ok=True)
+            out_path = assets_dir / 'heatmap.png'
+
+            create_graph_heatmap_plot(
+                base_graph=base_graph,
+                cell_subgraph=cell_subgraph,
+                metric=metric,
+                out_path=out_path,
+            )
+
+            # Cache-bust with timestamp so browser reloads the file
+            ts = int(time.time())
+            return (f'/assets/heatmap.png?t={ts}', f'✓ {metric}, episode {episode}')
+
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            return ('', f'✗ {type(exc).__name__}: {exc}')
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_base_graph(app):
+    """Load and cache the base road graph on the app object."""
+    if not hasattr(app, 'data_path') or app.data_path is None:
+        return None
+    if not hasattr(app, '_base_graph_cache'):
+        app._base_graph_cache = {}
+    key = str(app.data_path)
+    if key not in app._base_graph_cache:
+        app._base_graph_cache[key] = load_base_graph(app.data_path)
+        n = app._base_graph_cache[key].number_of_nodes() if app._base_graph_cache[key] else 0
+    return app._base_graph_cache[key]
