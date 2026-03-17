@@ -5,20 +5,28 @@ import argparse
 import gc
 import warnings
 import logging
-
 import gymnasium_env
 
+import multiprocessing as mp
 import gymnasium as gym
 import numpy as np
 
 from tqdm import tqdm
-from rl_training.agents import DQNAgent
-from rl_training.utils import (convert_graph_to_data, convert_seconds_to_hours_minutes,
-                               set_seed, setup_logger, setup_device, build_cell_graph_from_cells)
-from rl_training.memory import ReplayBuffer
-from rl_training.results import ResultsManager, EpisodeResults
 from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions
+
+from rl_training.agents import DQNAgent
+from rl_training.memory import ReplayBuffer
+from rl_training.results import ResultsManager, EpisodeResults
+from rl_training.logging_config import init_logging, LoggingConfig, get_logger
+from rl_training.utils import (
+    convert_graph_to_data,
+    convert_seconds_to_hours_minutes,
+    set_seed,
+    setup_device,
+    build_cell_graph_from_cells,
+    update_cell_graph_features
+)
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Default paths and parameters
@@ -53,7 +61,8 @@ params = {
     "total_timeslots": 56,                          # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
-    "base_repositioning": True,                     # Use base repositioning strategy at the start of each episode
+    "enable_repositioning": False,                  # Use base repositioning strategy at the start of each episode
+    "use_net_flow": False,                          # Use net flow repositioning strategy at the start of each episode
     "depot_position_id": 18,                        # ID (cell) of the depot position
     "initial_cell_id": 18                           # Initial cell where the truck starts
 }
@@ -148,10 +157,14 @@ def create_parser() -> argparse.ArgumentParser:
         help='Minimum number of bikes per cell.'
     )
     parser.add_argument(
-        '--base-repositioning',
-        type=bool,
-        default=params['base_repositioning'],
-        help='Use base repositioning strategy at the start of each episode.'
+        '--enable-repositioning',
+        action='store_true',
+        help='Enable repositioning beyond minimum bikes per cell at the start of each episode.'
+    )
+    parser.add_argument(
+        '--use-net-flow',
+        action='store_true',
+        help='Use net-flow-based repositioning instead of random at the start of each episode.'
     )
     parser.add_argument(
         '--exploration-time',
@@ -160,10 +173,10 @@ def create_parser() -> argparse.ArgumentParser:
         help='Number of episodes to explore.'
     )
     parser.add_argument(
-        '--enable-logging',
+        '--log',
         action='store_true',
         help='Enable logging.'
-    )  # TODO: fix this feature
+    )
     parser.add_argument(
         '--one-validation',
         action='store_true',
@@ -174,27 +187,39 @@ def create_parser() -> argparse.ArgumentParser:
 
 # ----------------------------------------------------------------------------------------------------------------------
 
-def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int,
-              device: torch.device, run_id: int, enable_logging: bool, tbar = None) -> dict:
+def train_dqn(
+    env: gymnasium.Env,
+    agent: DQNAgent,
+    batch_size: int,
+    episode: int,
+    device: torch.device,
+    run_id: int,
+    logging_enabled: bool,
+    tbar=None,
+    episode_results_path: str | None = None,
+) -> dict:
     # ============================================================================
     # Initialize metrics tracking
     # ============================================================================
     # Per-timeslot metrics
-    rewards_per_timeslot = []
-    failures_per_timeslot = []
-    epsilon_per_timeslot = []
-    deployed_bikes = []
-    q_values_per_timeslot = []
+    rewards = []
+    failures = []
+    epsilons = []
+    system_bikes = []
+    truck_load = []
+    depot_load = []
+    outside_system_bikes = []
+    traveling_bikes = []
+    q_values = []
 
     # Per-step metrics
     action_per_step = []
-    losses = []
     global_critic_scores = []
-    reward_tracking = {idx: [] for idx in range(len(Actions))}
+    reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
 
     # Accumulators (reset each timeslot)
-    total_reward = 0.0
-    total_failures = 0
+    total_reward_per_timeslot = 0.0
+    total_failures_per_timeslot = 0
     timeslots_completed = 0
     iterations = 0
 
@@ -205,13 +230,15 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         'total_timeslots': params["total_timeslots"],
         'maximum_number_of_bikes': params["maximum_number_of_bikes"],
         'minimum_number_of_bikes': params["minimum_number_of_bikes"],
-        'base_repositioning': params["base_repositioning"],
+        'enable_repositioning': params["enable_repositioning"],
+        'use_net_flow': params["use_net_flow"],
         'discount_factor': params["gamma"],
         'depot_id': params['depot_position_id'],
         # 'initial_cell': params['initial_cell_id'],
         'reward_params': reward_params,
-        'logging': enable_logging,
     }
+    if episode_results_path is not None:
+        reset_options['results_path'] = episode_results_path
 
     agent_state, info = env.reset(options=reset_options)
 
@@ -233,7 +260,6 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         'critic_score',
         'eligibility_score',
         'total_bikes',
-        # 'low_battery_bikes',
     ]
 
     # Initialize state
@@ -244,6 +270,15 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
     # ============================================================================
     # Main training loop
     # ============================================================================
+    episode_cell_stats = {
+        cell_id: {
+            'critic_sum': 0.0,
+            'eligibility_sum': 0.0,
+            'bikes_sum': 0.0,
+        }
+        for cell_id in cell_dict.keys()  # from initial info after reset
+    }
+
     done = False
     while not done:
         # Prepare state for agent (S)
@@ -261,12 +296,17 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
-        # Rebuild graph with updated metrics (automatic from Cell.metrics)
-        cell_graph = build_cell_graph_from_cells(
-            cells=cell_dict,
-            nodes_dict=nodes_dict,
-            distance_lookup=distance_lookup
-        )
+        # Only update node attributes
+        cell_dict = info['cell_dict'] # <- VERY BIG BUG, IT WAS PREVIOUSLY MISSING
+        update_cell_graph_features(cell_graph, cell_dict)
+
+        # Update cumulative cell statistics (averaged at episode end)
+        for cell_id, cell in cell_dict.items():
+            stats = episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['eligibility_sum'] += cell.get_eligibility_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] = cell.get_dead_bikes()
 
         # Create next state (S')
         next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
@@ -275,15 +315,14 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
 
         # Store transition and train
         agent.replay_buffer.push(state, action, reward, next_state, done)
-        loss = agent.train_step(batch_size)
+        agent.train_step(batch_size)
 
         # Record step metrics
         action_per_step.append(action)
-        reward_tracking[action].append(reward)
-        losses.append(loss if loss is not None else 0.0)
+        reward_tracking_per_action[action].append(reward)
         global_critic_scores.append(info['global_critic_score'])
-        total_reward += reward
-        total_failures += sum(info['failures'])
+        total_reward_per_timeslot += reward
+        total_failures_per_timeslot += sum(info['failures'])
         iterations += 1
 
         # Handle timeslot completion
@@ -297,23 +336,27 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
 
             # Record Q-values (expensive - only once per timeslot)
             with torch.no_grad():
-                q_values = agent.get_q_values(single_state)
-                q_values_per_timeslot.append(q_values[0].squeeze().cpu().numpy())
+                q_val_tensor = agent.get_q_values(single_state)
+                q_values.append(q_val_tensor[0].squeeze().cpu().numpy())
 
             # Record timeslot metrics
-            rewards_per_timeslot.append(total_reward)
-            failures_per_timeslot.append(total_failures)
-            epsilon_per_timeslot.append(agent.epsilon)
-            deployed_bikes.append(info['number_of_system_bikes'])
+            rewards.append(total_reward_per_timeslot)
+            failures.append(total_failures_per_timeslot)
+            epsilons.append(agent.epsilon)
+            system_bikes.append(info['number_of_system_bikes'])
+            truck_load.append(info['truck_bikes'])
+            depot_load.append(info['depot_bikes'])
+            outside_system_bikes.append(info['number_of_outside_bikes'])
+            traveling_bikes.append(info['number_of_traveling_bikes'])
 
             # Reset accumulators
-            total_reward = 0.0
-            total_failures = 0
+            total_reward_per_timeslot = 0.0
+            total_failures_per_timeslot = 0
 
             # Update progress bar
             if tbar is not None:
                 tbar.set_description(
-                    f"Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
+                    f"[TRAIN] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
                     f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
                 )
                 tbar.set_postfix({'eps': agent.epsilon})
@@ -324,61 +367,107 @@ def train_dqn(env: gymnasium.Env, agent: DQNAgent, batch_size: int, episode: int
         del single_state
 
     # Cleanup
-    env.close()
     torch.cuda.empty_cache()
+
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
+            eligibility_mean = stats.get('eligibility_sum', 0.0) / steps_in_episode
+            bikes_mean = stats.get('bikes_sum', 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
+        else:
+            critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+
+        nx_attrs['critic_mean'] = critic_mean
+        nx_attrs['eligibility_mean'] = eligibility_mean
+        nx_attrs['failure_sum'] = cell_dict[cell_id].get_failures()
+        nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
+        nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['bikes_mean'] = bikes_mean
+        nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 
     # ============================================================================
     # Return results
     # ============================================================================
     return {
-        "rewards_per_timeslot": rewards_per_timeslot,
-        "failures_per_timeslot": failures_per_timeslot,
-        "total_trips": info["total_trips"],
-        "total_invalid": info["total_invalid"],
-        "q_values_per_timeslot": q_values_per_timeslot,
+        "rewards_per_timeslot": rewards,
+        "failures_per_timeslot": failures,
+        "total_invalid_actions": info["total_invalid_actions"],
+        "q_values_per_timeslot": q_values,
         "action_per_step": action_per_step,
         "global_critic_scores": global_critic_scores,
-        "losses": losses,
-        "reward_tracking": reward_tracking,
-        "epsilon_per_timeslot": epsilon_per_timeslot,
-        "deployed_bikes": deployed_bikes,
+        "reward_tracking_per_action": reward_tracking_per_action,
+        "epsilon_per_timeslot": epsilons,
+        "deployed_bikes": system_bikes,
+        "truck_load": truck_load,
+        "depot_load": depot_load,
+        "outside_system_bikes": outside_system_bikes,
+        'traveling_bikes': traveling_bikes,
         "cell_subgraph": cell_graph,
     }
 
+# ----------------------------------------------------------------------------------------------------------------------
 
-def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torch.device, tbar: tqdm, enable_val_logging: bool) -> dict:
+def validate_dqn(
+        env: gymnasium.Env,
+        agent: DQNAgent,
+        episode: int,
+        device: torch.device,
+        run_id: int,
+        logging_enabled: bool,
+        tbar=None,
+        episode_results_path: str | None = None,
+        params_snapshot: dict | None = None,
+        reward_params_snapshot: dict | None = None,
+) -> dict:
     # ============================================================================
     # Initialize metrics tracking
     # ============================================================================
     # Per-timeslot metrics
-    rewards_per_timeslot = []
-    failures_per_timeslot = []
-    deployed_bikes = []
+    rewards = []
+    failures = []
+    system_bikes = []
+    truck_load = []
+    depot_load = []
+    outside_system_bikes = []
+    traveling_bikes = []
 
     # Per-step metrics
     action_per_step = []
-    reward_tracking = {idx: [] for idx in range(len(Actions))}
+    global_critic_scores = []
+    reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
 
     # Accumulators (reset each timeslot)
-    total_reward = 0.0
-    total_failures = 0
+    total_reward_per_timeslot = 0.0
+    total_failures_per_timeslot = 0
     timeslots_completed = 0
     iterations = 0
 
     # ============================================================================
     # Environment setup and reset
     # ============================================================================
+    _params = params_snapshot if params_snapshot is not None else params
+    _reward_params = reward_params_snapshot if reward_params_snapshot is not None else reward_params
     reset_options = {
-        'total_timeslots': params["total_timeslots"],
-        'maximum_number_of_bikes': params["maximum_number_of_bikes"],
-        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
-        'base_repositioning': params["base_repositioning"],
-        'discount_factor': params["gamma"],
-        'depot_id': params['depot_position_id'],
-        # 'initial_cell': params['initial_cell_id'],
-        'reward_params': reward_params,
-        'logging': enable_val_logging,
+        'total_timeslots': _params["total_timeslots"],
+        'maximum_number_of_bikes': _params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': _params["minimum_number_of_bikes"],
+        'enable_repositioning': _params["enable_repositioning"],
+        'use_net_flow': _params["use_net_flow"],
+        'discount_factor': _params["gamma"],
+        'depot_id': _params['depot_position_id'],
+        'reward_params': _reward_params,
     }
+    if episode_results_path is not None:
+        reset_options['results_path'] = episode_results_path
 
     agent_state, info = env.reset(options=reset_options)
 
@@ -400,11 +489,10 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
         'critic_score',
         'eligibility_score',
         'total_bikes',
-        # 'low_battery_bikes',
     ]
 
     # Initialize state
-    state = convert_graph_to_data(info['cells_subgraph'], node_features=gnn_features)
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
     state.agent_state = agent_state
     state.steps = info['steps']
 
@@ -417,6 +505,15 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
     # ============================================================================
     # Main validation loop
     # ============================================================================
+    episode_cell_stats = {
+        cell_id: {
+            'critic_sum': 0.0,
+            'eligibility_sum': 0.0,
+            'bikes_sum': 0.0,
+        }
+        for cell_id in cell_dict.keys()
+    }
+
     done = False
     while not done:
         # Prepare state for agent
@@ -428,83 +525,313 @@ def validate_dqn(env: gymnasium.Env, agent: DQNAgent, episode: int, device: torc
             batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
         )
 
-        # Select action (epsilon=0.05, mostly greedy)
+        # Select action and step environment (A) (epsilon=0.05, mostly greedy)
         action = agent.select_action(single_state, epsilon_greedy=True)
+
+        # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
-        # Create next state
-        next_state = convert_graph_to_data(info['cells_subgraph'], node_features=gnn_features)
+        # Only update node attributes
+        cell_dict = info['cell_dict'] # <- VERY BIG BUG, IT WAS PREVIOUSLY MISSING
+        update_cell_graph_features(cell_graph, cell_dict)
+
+        # Update cumulative cell statistics (averaged at episode end)
+        for cell_id, cell in cell_dict.items():
+            stats = episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['eligibility_sum'] += cell.get_eligibility_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] = cell.get_dead_bikes()
+
+        # Create next state (S')
+        next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
 
         # Record step metrics (no training in validation)
         action_per_step.append(action)
-        reward_tracking[action].append(reward)
-        total_reward += reward
-        total_failures += sum(info['failures'])
+        reward_tracking_per_action[action].append(reward)
+        global_critic_scores.append(info['global_critic_score'])
+        total_reward_per_timeslot += reward
+        total_failures_per_timeslot += sum(info['failures'])
         iterations += 1
-
-        # Update cumulative cell statistics (averaged at episode end)
-        for cell_id, cell in cell_dict.items():
-            center_node = cell.get_center_node()
-            if center_node not in cell_graph:
-                raise ValueError(f"Node {center_node} not found in cell_graph")
-
-            cell_graph.nodes[center_node]['critic_score'] += info['cells_subgraph'].nodes[center_node]['critic_score']
-            cell_graph.nodes[center_node]['num_bikes'] += info['cells_subgraph'].nodes[center_node]['bikes']
 
         # Handle timeslot completion
         if timeslot_terminated:
             timeslots_completed += 1
 
             # Record timeslot metrics
-            rewards_per_timeslot.append(total_reward / 360)
-            failures_per_timeslot.append(total_failures)
-            deployed_bikes.append(info['number_of_system_bikes'])
+            rewards.append(total_reward_per_timeslot)
+            failures.append(total_failures_per_timeslot)
+            system_bikes.append(info['number_of_system_bikes'])
+            truck_load.append(info['truck_bikes'])
+            depot_load.append(info['depot_bikes'])
+            outside_system_bikes.append(info['number_of_outside_bikes'])
+            traveling_bikes.append(info['number_of_traveling_bikes'])
 
             # Reset accumulators
-            total_reward = 0.0
-            total_failures = 0
+            total_reward_per_timeslot = 0.0
+            total_failures_per_timeslot = 0
 
             # Update progress bar
-            tbar.set_description(
-                f"Validating Episode {episode}, Week {info['week'] % 52}, "
-                f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
-            )
-            tbar.set_postfix({'eps': agent.epsilon})
+            if tbar is not None:
+                tbar.set_description(
+                    f"[VALIDATION] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
+                    f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
+                )
+                tbar.set_postfix({'eps': agent.epsilon})
+                tbar.update(1)
 
         # Move to next state
         state = next_state
         del single_state  # Free GPU memory
 
     # Cleanup
-    env.close()
+    torch.cuda.empty_cache()
 
     # Restore original epsilon
     agent.epsilon = previous_epsilon
+
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
+            eligibility_mean = stats.get('eligibility_sum', 0.0) / steps_in_episode
+            bikes_mean = stats.get('bikes_sum', 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
+        else:
+            critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+
+        nx_attrs['critic_mean'] = critic_mean
+        nx_attrs['eligibility_mean'] = eligibility_mean
+        nx_attrs['failure_sum'] = cell_dict[cell_id].get_failures()
+        nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
+        nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['bikes_mean'] = bikes_mean
+        nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 
     # ============================================================================
     # Return results (no losses, q_values, epsilon tracking in validation)
     # ============================================================================
     return {
-        "rewards_per_timeslot": rewards_per_timeslot,
-        "failures_per_timeslot": failures_per_timeslot,
-        "total_trips": info["total_trips"],
-        "total_invalid": info["total_invalid"],
+        "rewards_per_timeslot": rewards,
+        "failures_per_timeslot": failures,
+        "total_invalid_actions": info["total_invalid_actions"],
         "action_per_step": action_per_step,
-        "reward_tracking": reward_tracking,
-        "deployed_bikes": deployed_bikes,
+        "global_critic_scores": global_critic_scores,
+        "reward_tracking_per_action": reward_tracking_per_action,
+        "deployed_bikes": system_bikes,
+        "truck_load": truck_load,
+        "depot_load": depot_load,
+        "outside_system_bikes": outside_system_bikes,
+        'traveling_bikes': traveling_bikes,
         "cell_subgraph": cell_graph,
         # Validation doesn't track these (return empty for consistency)
         "q_values_per_timeslot": [],
         "epsilon_per_timeslot": [],
-        "losses": [],
-        "global_critic_scores": [],
     }
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Parallel validation worker
+# ----------------------------------------------------------------------------------------------------------------------
+
+def _validation_worker(
+        state_dict: dict,
+        num_actions: int,
+        observation_space_len: int,
+        data_path: str,
+        episode_results_path: str,
+        episode: int,
+        run_id: int,
+        logging_enabled: bool,
+        params_snapshot: dict,
+        reward_params_snapshot: dict,
+        device_str: str,
+        result_queue: mp.Queue,
+) -> None:
+    """
+    Fully isolated validation process. Reconstructs its own agent (frozen, no
+    replay buffer) and its own gym environment on the specified device.
+    Sends ('success', result_dict) or ('error', error_str) back via result_queue.
+    """
+    val_env = None
+    val_tbar = None
+
+    try:
+        val_device = torch.device(device_str)
+
+        # ------------------------------------------------------------------
+        # Reconstruct frozen agent from the weight snapshot — no replay buffer
+        # ------------------------------------------------------------------
+        val_agent = DQNAgent(
+            num_actions=num_actions,
+            observation_space_len=observation_space_len,
+            gamma=params_snapshot["gamma"],
+            epsilon_start=0.01,
+            epsilon_end=0.01,
+            epsilon_decay=1,
+            lr=params_snapshot["lr"],
+            device=val_device,
+            tau=params_snapshot["tau"],
+            soft_update=False,
+            replay_buffer=None,
+        )
+        val_agent.train_model.load_state_dict(
+            {k: v.to(val_device) for k, v in state_dict.items()}
+        )
+        val_agent.train_model.eval()
+
+        # ------------------------------------------------------------------
+        # Own environment instance
+        # ------------------------------------------------------------------
+        val_env = gym.make(
+            'gymnasium_env/FullyDynamicEnv-v0',
+            data_path=data_path,
+            results_path=f"{episode_results_path}/",
+            seed=params_snapshot['seed'],
+            logging_enabled=logging_enabled,
+        )
+
+        # ------------------------------------------------------------------
+        # Own tqdm bar at position=1, disappears when done (leave=False)
+        # ------------------------------------------------------------------
+        val_tbar = tqdm(
+            total=params_snapshot["total_timeslots"],
+            desc=f"[VAL] Epis {episode}",
+            position=1,
+            leave=False,
+            dynamic_ncols=True,
+        )
+
+        result = validate_dqn(
+            env=val_env,
+            agent=val_agent,
+            episode=episode,
+            device=val_device,
+            run_id=run_id,
+            logging_enabled=logging_enabled,
+            tbar=val_tbar,
+            episode_results_path=episode_results_path,
+            params_snapshot=params_snapshot,
+            reward_params_snapshot=reward_params_snapshot,
+        )
+
+        # cell_subgraph is a networkx graph — it's picklable, no issues
+        result_queue.put(('success', result))
+
+    except Exception:
+        import traceback
+        result_queue.put(('error', traceback.format_exc()))
+    finally:
+        if val_tbar is not None:
+            val_tbar.close()
+        if val_env is not None:
+            val_env.close()
+        torch.cuda.empty_cache()
+
+
+def _collect_pending_validation(
+        validation_process: mp.Process | None,
+        result_queue: mp.Queue,
+        pending_episode: int | None,
+        results_manager: ResultsManager,
+        best_validation_score: float,
+        num_days: int,
+        agent: DQNAgent,
+        logger,
+        block: bool = False,
+) -> tuple[float, float | None]:
+    """
+    Checks whether the running validation process has finished and, if so,
+    collects and processes its result.
+
+    Args:
+        block: If True, wait for the process to finish (used at end of training).
+
+    Returns:
+        Updated best_validation_score, and last_validation_score (or None if
+        no result was collected this call).
+    """
+    if validation_process is None:
+        return best_validation_score, None
+
+    if block:
+        validation_process.join()
+    elif validation_process.is_alive():
+        return best_validation_score, None
+
+    # Process has finished — drain the queue
+    if result_queue.empty():
+        logger.error(f"Validation process for episode {pending_episode} exited with no result.")
+        return best_validation_score, None
+
+    status, payload = result_queue.get_nowait()
+
+    if status == 'error':
+        logger.error(f"Validation process for episode {pending_episode} failed:\n{payload}")
+        return best_validation_score, None
+
+    validation_dict = payload
+
+    validation_results = EpisodeResults(
+        episode=pending_episode,
+        mode='validation',
+        epsilon=0.05,
+        epsilon_per_timeslot=validation_dict.get('epsilon_per_timeslot', []),
+        rewards_per_timeslot=validation_dict['rewards_per_timeslot'],
+        total_reward=sum(validation_dict['rewards_per_timeslot']),
+        failures_per_timeslot=validation_dict['failures_per_timeslot'],
+        total_failures=sum(validation_dict['failures_per_timeslot']),
+        mean_daily_failures=sum(validation_dict['failures_per_timeslot']) / num_days,
+        action_per_step=validation_dict['action_per_step'],
+        total_invalid_actions=validation_dict['total_invalid_actions'],
+        reward_tracking_per_action=validation_dict['reward_tracking_per_action'],
+        q_values_per_timeslot=validation_dict.get('q_values_per_timeslot', []),
+        mean_q_values=float(np.mean(validation_dict['q_values_per_timeslot'])) if validation_dict[
+            'q_values_per_timeslot'] else 0.0,
+        deployed_bikes=validation_dict['deployed_bikes'],
+        global_critic_scores=validation_dict.get('global_critic_scores', []),
+        cell_subgraph=validation_dict['cell_subgraph'],
+    )
+
+    results_manager.save_episode(validation_results)
+    last_validation_score = validation_results.total_failures
+
+    is_best = validation_results.total_failures < best_validation_score
+    if is_best:
+        best_validation_score = validation_results.total_failures
+
+    model_path = results_manager.save_model(
+        agent=agent,
+        episode=pending_episode,
+        score=validation_results.total_failures,
+        model_type='best' if is_best else 'checkpoint',
+        save_best=is_best,
+    )
+
+    logger.info(
+        f"Episode {pending_episode}: Validation failures = {validation_results.mean_daily_failures:.2f} mean / "
+        f"{validation_results.total_failures} total | "
+        f"Best = {best_validation_score} | "
+        f"Invalid actions = {validation_results.total_invalid_actions} | "
+        f"Model saved: {model_path} ({'best' if is_best else 'checkpoint'})"
+    )
+
+    return best_validation_score, last_validation_score
 
 # ----------------------------------------------------------------------------------------------------------------------
 
 def main():
+    # spawn is required before any CUDA context is created
+    mp.set_start_method('spawn', force=True)
+
     warnings.filterwarnings("ignore")
     args = create_parser().parse_args()
 
@@ -514,7 +841,7 @@ def main():
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
-    enable_logging = args.enable_logging
+    logging_enabled = args.log
     one_validation = args.one_validation
 
     # Update params dict with parsed values
@@ -522,7 +849,8 @@ def main():
     params['num_episodes'] = args.num_episodes
     params['maximum_number_of_bikes'] = args.max_num_bikes
     params['minimum_number_of_bikes'] = args.min_num_bikes
-    params['base_repositioning'] = args.base_repositioning
+    params['enable_repositioning'] = args.enable_repositioning
+    params['use_net_flow'] = args.use_net_flow
     params['exploration_time'] = args.exploration_time
 
     set_seed(params['seed'])
@@ -541,8 +869,26 @@ def main():
     results_manager = ResultsManager(results_path, run_id)
     results_manager.save_hyperparameters(params, reward_params)
 
+    # Init logging
+    init_logging(LoggingConfig(
+        level=logging.INFO,
+        log_dir=os.path.join(results_manager.training_path, "logs"),
+        run_id=run_id,
+        console=False,
+        logger_name="train",
+    ))
+
+    logger = get_logger("train", logger_name="train")
+    logger.info("Starting training loop")
+
     # Create the environment
-    env = gym.make('gymnasium_env/FullyDynamicEnv-v0', data_path=data_path, results_path=f"{str(results_manager.training_path)}/")
+    env = gym.make(
+        'gymnasium_env/FullyDynamicEnv-v0',
+        data_path=data_path,
+        results_path=f"{str(results_manager.training_path)}/",
+        seed=params['seed'],
+        logging_enabled=logging_enabled
+    )
     env.unwrapped.seed(params['seed'])
     env.action_space.seed(params['seed'])
     env.observation_space.seed(params['seed'])
@@ -569,124 +915,176 @@ def main():
     starting_episode = 0
     last_validation_score = None
     num_days = params["total_timeslots"] // 8
+
+    # Parallel validation state
+    validation_process: mp.Process | None = None
+    result_queue: mp.Queue = mp.Queue()
+    pending_validation_episode: int | None = None
+
     try:
         tbar = tqdm(
             range(params["total_timeslots"]*params["num_episodes"]),
-            desc="Training computation is starting ... ... ... ...",
+            desc="Training computation is starting ",
             initial=starting_episode*params["total_timeslots"],
             position=0,
             leave=True,
             dynamic_ncols=True
         )
 
-        logger = setup_logger('training_logger', str(results_manager.training_path) + '/training.log', level=logging.INFO)
-
         logger.info(f"Training started with the following parameters: {params}")
 
         # Train and validation loop
+        best_training_score = 1e4
         best_validation_score = 1e4
         for episode in range(starting_episode, params["num_episodes"]):
+            # ------------------------------------------------------------------
+            # Opportunistically collect any finished validation result before
+            # starting a new training episode — non-blocking
+            # ------------------------------------------------------------------
 
-            training_dict = train_dqn(env, agent, params["batch_size"], episode, device, run_id, enable_logging, tbar)
+            if validation_process is not None and not validation_process.is_alive():
+                best_validation_score, collected_score = _collect_pending_validation(
+                    validation_process=validation_process,
+                    result_queue=result_queue,
+                    pending_episode=pending_validation_episode,
+                    results_manager=results_manager,
+                    best_validation_score=best_validation_score,
+                    num_days=num_days,
+                    agent=agent,
+                    logger=logger,
+                )
+                if collected_score is not None:
+                    last_validation_score = collected_score
+                validation_process = None
+                pending_validation_episode = None
+
+            training_dict = train_dqn(
+                env=env,
+                agent=agent,
+                batch_size=params["batch_size"],
+                episode=episode,
+                device=device,
+                run_id=run_id,
+                logging_enabled=logging_enabled,
+                tbar=tbar,
+                episode_results_path=os.path.join(f"{str(results_manager.training_path)}", f"episode_{episode:03d}")
+            )
 
             # Convert to EpisodeResults
             training_results = EpisodeResults(
                 episode=episode,
                 mode='train',
-                total_reward=sum(training_dict['rewards_per_timeslot']),
-                mean_failures=sum(training_dict['failures_per_timeslot']) / num_days,
-                total_failures=sum(training_dict['failures_per_timeslot']),
-                total_trips=training_dict['total_trips'],
-                total_invalid=training_dict['total_invalid'],
-                mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
-                mean_loss=sum(training_dict['losses']) / len(training_dict['losses']),
                 epsilon=agent.epsilon,
-                rewards_per_timeslot=training_dict['rewards_per_timeslot'],
-                failures_per_timeslot=training_dict['failures_per_timeslot'],
                 epsilon_per_timeslot=training_dict['epsilon_per_timeslot'],
-                deployed_bikes=training_dict['deployed_bikes'],
-                action_per_step=training_dict['action_per_step'],
-                reward_tracking=training_dict['reward_tracking'],
-                losses=training_dict['losses'],
-                global_critic_scores=training_dict['global_critic_scores'],
+                rewards_per_timeslot=training_dict['rewards_per_timeslot'],
+                total_reward=sum(training_dict['rewards_per_timeslot']),
+                failures_per_timeslot=training_dict['failures_per_timeslot'],
+                total_failures=sum(training_dict['failures_per_timeslot']),
+                mean_daily_failures=sum(training_dict['failures_per_timeslot']) / num_days,
                 q_values_per_timeslot=training_dict['q_values_per_timeslot'],
+                mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
+                deployed_bikes=training_dict['deployed_bikes'],
+                truck_load=training_dict['truck_load'],
+                depot_load=training_dict['depot_load'],
+                outside_system_bikes=training_dict['outside_system_bikes'],
+                action_per_step=training_dict['action_per_step'],
+                total_invalid_actions=training_dict['total_invalid_actions'],
+                reward_tracking_per_action=training_dict['reward_tracking_per_action'],
+                global_critic_scores=training_dict['global_critic_scores'],
                 cell_subgraph=training_dict['cell_subgraph'],
             )
 
             # Save using ResultsManager
-            results_manager.save_episode(training_results)  # TODO: parallelize saving
+            results_manager.save_episode(training_results)  # TODO: parallelize savings
 
             logger.info(
-                f"Episode {episode}: Mean Failures = {training_results.mean_failures:.2f}, "
-                f"Total Failures = {training_results.total_failures}/{training_results.total_trips}, "
-                f"Invalid Actions = {training_results.total_invalid}"
+                f"Episode {episode}: Mean Failures = {training_results.mean_daily_failures:.2f}, "
+                f"Total Failures = {training_results.total_failures}, "
+                f"Invalid Actions = {training_results.total_invalid_actions}"
             )
 
-            # Save model if the training and validation score is better
-            should_validate = (episode%10 == 0 and (agent.epsilon < 0.15 or training_results.mean_failures < 10)
-                               and not one_validation) or episode == (params["num_episodes"]-1) # TODO: adjust validation frequency
+            # # Decide whether to validate
+            # if training_results.mean_daily_failures < best_training_score:
+            #     best_training_score = training_results.mean_daily_failures
+            #     should_validate = agent.epsilon < 0.15 and not one_validation
+            # else:
+            #     should_validate = False
+            #
+            # # Always validate on the last episode
+            # if episode == params["num_episodes"] - 1:
+            #     should_validate = True
+
             should_validate = False
-            if should_validate:     # TODO: parallelize validation and saving
-                enable_val_logging = enable_logging 
-                if episode > params["num_episodes"]*0.9: 
-                    enable_val_logging = True
-                # validate the training with a greedy validation, VALIDATE_DQN             
-                validation_dict = validate_dqn(env, agent, episode, device, tbar, enable_val_logging)
 
-                validation_results = EpisodeResults(
-                    episode=episode,
-                    mode='validation',
-                    total_reward=sum(validation_dict['rewards_per_timeslot']),
-                    mean_failures=sum(validation_dict['failures_per_timeslot']) / num_days,
-                    total_failures=sum(validation_dict['failures_per_timeslot']),
-                    total_trips=validation_dict['total_trips'],
-                    total_invalid=validation_dict['total_invalid'],
-                    mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
-                    mean_loss=sum(training_dict['losses']) / len(training_dict['losses']),
-                    epsilon=agent.epsilon,
-                    rewards_per_timeslot=validation_dict['rewards_per_timeslot'],
-                    failures_per_timeslot=validation_dict['failures_per_timeslot'],
-                    epsilon_per_timeslot=validation_dict.get('epsilon_per_timeslot', []),
-                    deployed_bikes=validation_dict['deployed_bikes'],
-                    action_per_step=validation_dict['action_per_step'],
-                    reward_tracking=validation_dict['reward_tracking'],
-                    losses=validation_dict.get('losses', []),
-                    global_critic_scores=validation_dict.get('global_critic_scores', []),
-                    q_values_per_timeslot=validation_dict.get('q_values_per_timeslot', []),
-                    cell_subgraph=validation_dict['cell_subgraph'],
-                )
+            if should_validate:
+                if validation_process is not None and validation_process.is_alive():
+                    # A validation is already running — skip this one to avoid
+                    # hammering the GPU and stacking up processes
+                    logger.info(
+                        f"Episode {episode}: Skipping validation, previous one (episode "
+                        f"{pending_validation_episode}) still running."
+                    )
+                else:
+                    # Snapshot weights to CPU — fast, avoids deep-copying the
+                    # entire agent (which would drag the replay buffer along)
+                    state_dict_cpu = {
+                        k: v.cpu().clone()
+                        for k, v in agent.train_model.state_dict().items()
+                    }
 
-                # Save using ResultsManager
-                results_manager.save_episode(validation_results)
-
-                last_validation_score = validation_results.total_failures
-
-                logger.info(
-                    f"Episode {episode}: Mean Validation Failures = {validation_results.mean_failures:.2f}, "
-                    f"Total Validation Failures = {validation_results.total_failures}/{validation_results.total_trips},"
-                    f" Invalid Actions = {validation_results.total_invalid}, "
-                    f"Best Validation Failures = {best_validation_score}"
-                )
-
-                if validation_results.total_failures < best_validation_score or episode > 125:
-                    if validation_results.total_failures < best_validation_score:
-                        best_validation_score = validation_results.total_failures
-                        is_best = True
-                    else:
-                        is_best = False
-
-                    # Save the trained model using ResultsManager
-                    model_path = results_manager.save_model(
-                        agent=agent,
-                        episode=episode,
-                        score=validation_results.total_failures,
-                        model_type='best' if is_best else 'checkpoint', # TODO: implement again checkpointing
-                        save_best=is_best
+                    val_episode_path = os.path.join(
+                        str(results_manager.validation_path), f"episode_{episode:03d}"
                     )
 
-                    logger.info(f"Model saved: {model_path}")
+                    validation_process = mp.Process(
+                        target=_validation_worker,
+                        args=(
+                            state_dict_cpu,
+                            env.action_space.n,
+                            env.observation_space.shape[0],
+                            data_path,
+                            val_episode_path,
+                            episode,
+                            run_id,
+                            logging_enabled,
+                            dict(params),
+                            dict(reward_params),
+                            str(device),
+                            result_queue,
+                        ),
+                        daemon=True,
+                    )
+                    pending_validation_episode = episode
+                    validation_process.start()
+                    logger.info(
+                        f"Episode {episode}: Launched validation process "
+                        f"(PID {validation_process.pid}) on {device}."
+                    )
 
             gc.collect()
+
+        # ------------------------------------------------------------------
+        # Training done — block until any outstanding validation finishes
+        # ------------------------------------------------------------------
+        if validation_process is not None:
+            logger.info(
+                f"Training complete. Waiting for validation of episode "
+                f"{pending_validation_episode} to finish..."
+            )
+            best_validation_score, collected_score = _collect_pending_validation(
+                validation_process=validation_process,
+                result_queue=result_queue,
+                pending_episode=pending_validation_episode,
+                results_manager=results_manager,
+                best_validation_score=best_validation_score,
+                num_days=num_days,
+                agent=agent,
+                logger=logger,
+                block=True,
+            )
+            if collected_score is not None:
+                last_validation_score = collected_score
+            validation_process = None
 
         final_score = last_validation_score if last_validation_score is not None else float('inf')
         results_manager.save_model(
@@ -701,10 +1099,18 @@ def main():
         results_manager.save_run_summary()
         logger.info("Training completed successfully")
         tbar.close()
+        env.close()
     except Exception as e:
+        # Make sure we don't leave orphan processes on crash
+        if validation_process is not None and validation_process.is_alive():
+            validation_process.terminate()
+            validation_process.join()
         raise e
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
+        if validation_process is not None and validation_process.is_alive():
+            validation_process.terminate()
+            validation_process.join()
         return
 
     # Print the rewards after training

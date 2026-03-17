@@ -27,20 +27,6 @@ def set_seed(seed):
     # torch.geometric.seed(seed)
 
 
-def setup_logger(name, log_file, level=logging.INFO):
-    """Set up logger for validation."""
-    handler = logging.FileHandler(log_file)
-
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    logger.addHandler(handler)
-
-    return logger
-
-
 def setup_device(device_str: str, devices: list) -> torch.device:
     """Set up the computation device."""
     if device_str not in devices:
@@ -107,6 +93,7 @@ def build_cell_graph_from_cells(
             "cell_id": cell_id,
             "x": coords[1],  # longitude
             "y": coords[0],  # latitude
+            "boundary": cell.get_boundary(),
         }
 
         # Add all cell metrics as node attributes
@@ -140,6 +127,15 @@ def build_cell_graph_from_cells(
                     raw_distance=distance  # Keep raw distance too
                 )
 
+    return graph
+
+
+def update_cell_graph_features(graph: nx.MultiDiGraph, cells: dict) -> nx.MultiDiGraph:
+    """Update only node feature attributes in-place. Edges/structure unchanged."""
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
+        if center_node in graph.nodes:
+            graph.nodes[center_node].update(cell.get_all_metrics())
     return graph
 
 

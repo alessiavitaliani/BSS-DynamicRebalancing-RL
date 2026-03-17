@@ -106,8 +106,8 @@ class DQNAgent:
         """
         self.target_model.load_state_dict(self.train_model.state_dict())
 
-
-    def compute_loss(self, q_values, expected_q, actions, beta, tau):
+    @staticmethod
+    def compute_loss(q_values, expected_q, actions, beta, tau):
         # Gather Q(s, a) for the taken actions using the provided action indices.
         q_action = q_values.gather(1, actions)
 
@@ -189,29 +189,3 @@ class DQNAgent:
         """
 
         self.train_model.load_state_dict(torch.load(file_path, map_location=self.device, weights_only=True))
-
-
-    def save_checkpoint(self, file_path):
-        """
-        Save the complete state of the agent for checkpointing.
-        """
-        checkpoint = {
-            'train_model': self.train_model.state_dict(),
-            'target_model': self.target_model.state_dict(),
-            'optimizer': self.optimizer.state_dict(),
-            'epsilon': self.epsilon,
-            'steps_done': self.steps_done,
-        }
-        torch.save(checkpoint, file_path)
-
-
-    def load_checkpoint(self, file_path):
-        """
-        Load the state of the agent from a checkpoint.
-        """
-        checkpoint = torch.load(file_path, map_location=self.device)
-        self.train_model.load_state_dict(checkpoint['train_model'])
-        self.target_model.load_state_dict(checkpoint['target_model'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-        self.epsilon = checkpoint['epsilon']
-        self.steps_done = checkpoint['steps_done']

@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch
 from torch_geometric.nn.conv import GATv2Conv
-from torch_geometric.nn.glob import GlobalAttention
+from torch_geometric.nn.aggr import AttentionalAggregation
 import torch.nn.functional as F
 
 class DQN(nn.Module):
@@ -44,7 +44,7 @@ class DQN(nn.Module):
         # 2) Pooling Layer (GlobalAttention)
         # ------------------------------------------------------------------------------
         self.pooling_gate_nn = nn.Linear(256, 1)
-        self.global_attention_pool = GlobalAttention(
+        self.global_attention_pool = AttentionalAggregation(
             gate_nn=self.pooling_gate_nn
         )  # returns (batch_size, 256)
 

@@ -18,12 +18,10 @@ class EpisodeResults:
 
     # Episode-level scalars
     total_reward: float = 0.0
-    mean_failures: float = 0.0
+    mean_daily_failures: float = 0.0
     total_failures: int = 0
-    total_trips: int = 0
-    total_invalid: int = 0
+    total_invalid_actions: int = 0
     mean_q_values: float = 0.0
-    mean_loss: float = 0.0
     epsilon: float = 0.0
 
     # Time-series data (per timeslot)
@@ -31,12 +29,15 @@ class EpisodeResults:
     failures_per_timeslot: List[int] = field(default_factory=list)
     epsilon_per_timeslot: List[float] = field(default_factory=list)
     deployed_bikes: List[int] = field(default_factory=list)
+    truck_load: List[int] = field(default_factory=list)
+    depot_load: List[int] = field(default_factory=list)
+    outside_system_bikes: List[int] = field(default_factory=list)
+    traveling_bikes: List[int] = field(default_factory=list)
     q_values_per_timeslot: List[np.ndarray] = field(default_factory=list)
 
     # Action-level data (per step)
     action_per_step: List[int] = field(default_factory=list)
-    reward_tracking: Dict[int, List[float]] = field(default_factory=dict)
-    losses: List[float] = field(default_factory=list)
+    reward_tracking_per_action: Dict[int, List[float]] = field(default_factory=dict)
     global_critic_scores: List[float] = field(default_factory=list)
 
     # Spatial data (cell subgraph)
@@ -127,10 +128,9 @@ class ResultsManager:
         scalars = {
             'episode': results.episode,
             'total_reward': results.total_reward,
-            'mean_failures': results.mean_failures,
+            'mean_daily_failures': results.mean_daily_failures,
             'total_failures': results.total_failures,
-            'total_trips': results.total_trips,
-            'total_invalid': results.total_invalid,
+            'total_invalid_actions': results.total_invalid_actions,
             'epsilon': results.epsilon,
         }
         with open(episode_dir / 'scalars.json', 'w') as f:
@@ -143,14 +143,17 @@ class ResultsManager:
             'failures': results.failures_per_timeslot,
             'epsilon': results.epsilon_per_timeslot,
             'deployed_bikes': results.deployed_bikes,
+            'truck_load': results.truck_load,
+            'depot_load': results.depot_load,
+            'outside_system_bikes': results.outside_system_bikes,
+            'traveling_bikes': results.traveling_bikes,
         })
         timeslot_df.to_csv(episode_dir / 'timeslot_metrics.csv', index=False)
 
         # 3. Save step-level data as compressed pickle (large data)
         step_data = {
             'actions': results.action_per_step,
-            'reward_tracking': results.reward_tracking,
-            'losses': results.losses,
+            'reward_tracking_per_action': results.reward_tracking_per_action,
             'global_critic_scores': results.global_critic_scores,
             'q_values': results.q_values_per_timeslot,
         }
@@ -170,10 +173,9 @@ class ResultsManager:
         summary_row = {
             'episode': results.episode,
             'total_reward': results.total_reward,
-            'mean_failures': results.mean_failures,
+            'mean_daily_failures': results.mean_daily_failures,
             'total_failures': results.total_failures,
-            'total_trips': results.total_trips,
-            'total_invalid': results.total_invalid,
+            'total_invalid_actions': results.total_invalid_actions,
             'epsilon': results.epsilon,
         }
 
@@ -240,18 +242,20 @@ class ResultsManager:
             episode=scalars['episode'],
             mode=mode,
             total_reward=scalars['total_reward'],
-            mean_failures=scalars['mean_failures'],
+            mean_daily_failures=scalars['mean_daily_failures'],
             total_failures=scalars['total_failures'],
-            total_trips=scalars['total_trips'],
-            total_invalid=scalars['total_invalid'],
+            total_invalid_actions=scalars['total_invalid_actions'],
             epsilon=scalars['epsilon'],
             rewards_per_timeslot=timeslot_df['reward'].tolist(),
             failures_per_timeslot=timeslot_df['failures'].tolist(),
             epsilon_per_timeslot=timeslot_df['epsilon'].tolist(),
             deployed_bikes=timeslot_df['deployed_bikes'].tolist(),
+            truck_load=timeslot_df['truck_load'].tolist(),
+            depot_load=timeslot_df['depot_load'].tolist(),
+            outside_system_bikes=timeslot_df['outside_system_bikes'].tolist(),
+            traveling_bikes=timeslot_df['traveling_bikes'].tolist(),
             action_per_step=step_data['actions'],
-            reward_tracking=step_data['reward_tracking'],
-            losses=step_data['losses'],
+            reward_tracking_per_action=step_data['reward_tracking_per_action'],
             global_critic_scores=step_data['global_critic_scores'],
             q_values_per_timeslot=step_data['q_values'],
             cell_subgraph=cell_subgraph,
@@ -365,10 +369,9 @@ class ResultsManager:
             episode=results.episode,
             mode=results.mode,
             total_reward=results.total_reward,
-            mean_failures=results.mean_failures,
+            mean_daily_failures=results.mean_daily_failures,
             total_failures=results.total_failures,
-            total_trips=results.total_trips,
-            total_invalid=results.total_invalid,
+            total_invalid_actions=results.total_invalid_actions,
             epsilon=results.epsilon,
 
             # Ensure consistent lengths
@@ -376,12 +379,15 @@ class ResultsManager:
             failures_per_timeslot=pad_to_length(results.failures_per_timeslot, expected_length, 0),
             epsilon_per_timeslot=pad_to_length(results.epsilon_per_timeslot, expected_length, results.epsilon),
             deployed_bikes=pad_to_length(results.deployed_bikes, expected_length, 0),
+            truck_load=pad_to_length(results.truck_load, expected_length, 0),
+            depot_load=pad_to_length(results.depot_load, expected_length, 0),
+            outside_system_bikes=pad_to_length(results.outside_system_bikes, expected_length, 0),
+            traveling_bikes=pad_to_length(results.traveling_bikes, expected_length, 0),
             q_values_per_timeslot=results.q_values_per_timeslot,
 
             # Step-level data (no length requirements)
             action_per_step=results.action_per_step,
-            reward_tracking=results.reward_tracking,
-            losses=results.losses,
+            reward_tracking_per_action=results.reward_tracking_per_action,
             global_critic_scores=results.global_critic_scores,
             cell_subgraph=results.cell_subgraph,
         )
