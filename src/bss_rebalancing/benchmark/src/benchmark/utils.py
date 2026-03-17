@@ -8,19 +8,20 @@ Author: Edoardo Scarpel
 """
 
 import os
-from enum import Enum
-from typing import List, Optional, Tuple
+import psutil
+import requests
+import torch
+import matplotlib
 
 import geopandas as gpd
-import matplotlib
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import osmnx as ox
-import psutil
-import requests
-import torch
-from torch_geometric.utils import from_networkx
+
+from enum import Enum
+from typing import List, Optional, Tuple
+from gymnasium_env.simulator.cell import Cell
 
 
 # =============================================================================
@@ -79,73 +80,83 @@ def convert_seconds_to_hours_minutes(seconds: int) -> str:
 # Graph Conversion
 # =============================================================================
 
-def convert_graph_to_data(graph: nx.MultiDiGraph):
+def build_cell_graph_from_cells(
+        cells: dict[int, Cell],
+        nodes_dict: dict[int, tuple[float, float]],
+        distance_lookup: dict[int, dict],
+) -> nx.MultiDiGraph:
     """
-    Convert NetworkX graph to PyTorch Geometric Data object.
+    Build a NetworkX graph from Cell objects for GNN processing.
 
-    Args:
-        graph: Input MultiDiGraph representing the spatial network.
+    Reads all node features directly from Cell.metrics instead of passing them as parameters.
+
+    Parameters:
+        cells: Dictionary of Cell objects keyed by cell_id
+        nodes_dict: Dictionary mapping node_id to (lat, lon) coordinates
+        distance_lookup: Dictionary for fast distance lookups between nodes
 
     Returns:
-        PyTorch Geometric Data object with node features, edge attributes,
-        and edge types suitable for GNN processing.
+        NetworkX MultiDiGraph with nodes representing cells and edges representing adjacency
     """
-    # Convert to base PyG data structure
-    data = from_networkx(graph)
+    graph = nx.MultiDiGraph()
+    graph.graph['crs'] = "EPSG:4326"
 
-    # Define node attributes to extract
-    node_attrs = [
-        'demand_rate',
-        'arrival_rate',
-        'average_battery_level',
-        'low_battery_ratio',
-        'variance_battery_level',
-        'total_bikes',
-        'bike_load',
-        'visits',
-        'critic_score',
-    ]
+    max_distance = 0.0
 
-    # Extract and concatenate node features
-    data.x = torch.cat([
-        torch.tensor(
-            [graph.nodes[n].get(attr, 0) for n in graph.nodes()],
-            dtype=torch.float
-        ).unsqueeze(dim=-1)
-        for attr in node_attrs
-    ], dim=-1)
+    # First pass: Add nodes and find max distance
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
+        coords = nodes_dict[center_node]
 
-    # Extract edge information
-    edge_types = []
-    edge_attrs = ['distance']
-    edge_attr_list = {attr: [] for attr in edge_attrs}
+        # Get ALL metrics from the cell
+        node_attrs = {
+            "cell_id": cell_id,
+            "x": coords[1],  # longitude
+            "y": coords[0],  # latitude
+            "boundary": cell.get_boundary(),
+        }
 
-    for u, v, k, attr in graph.edges(data=True, keys=True):
-        edge_types.append(k)
-        for edge_attr in edge_attrs:
-            edge_attr_list[edge_attr].append(attr[edge_attr])
+        # Add all cell metrics as node attributes
+        node_attrs.update(cell.get_all_metrics())
 
-    # Map edge types to integer indices
-    edge_type_mapping = {
-        e_type: i for i, e_type in enumerate(set(edge_types))
-    }
-    edge_type_indices = torch.tensor(
-        [edge_type_mapping[e_type] for e_type in edge_types],
-        dtype=torch.long
-    )
+        graph.add_node(center_node, **node_attrs)
 
-    # Add edge information to data object
-    data.edge_type = edge_type_indices
-    data.edge_attr = torch.cat([
-        torch.tensor(
-            edge_attr_list[attr],
-            dtype=torch.float
-        ).unsqueeze(dim=-1)
-        for attr in edge_attrs
-    ], dim=-1)
+        # Calculate max distance for normalization
+        for adj_cell_id in cell.get_adjacent_cells().values():
+            if adj_cell_id and adj_cell_id in cells:
+                adj_center = cells[adj_cell_id].get_center_node()
+                distance = distance_lookup[center_node][str(adj_center)]
+                max_distance = max(max_distance, distance)
 
-    return data
+    # Second pass: Add edges with normalized distances
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
 
+        for adj_cell_id in cell.get_adjacent_cells().values():
+            if adj_cell_id and adj_cell_id in cells:
+                adj_center = cells[adj_cell_id].get_center_node()
+                distance = distance_lookup[center_node][str(adj_center)]
+
+                # Normalize distance
+                normalized_distance = distance / max_distance if max_distance > 0 else 0.0
+
+                graph.add_edge(
+                    center_node,
+                    adj_center,
+                    distance=normalized_distance,
+                    raw_distance=distance  # Keep raw distance too
+                )
+
+    return graph
+
+
+def update_cell_graph_features(graph: nx.MultiDiGraph, cells: dict) -> nx.MultiDiGraph:
+    """Update only node feature attributes in-place. Edges/structure unchanged."""
+    for cell_id, cell in cells.items():
+        center_node = cell.get_center_node()
+        if center_node in graph.nodes:
+            graph.nodes[center_node].update(cell.get_all_metrics())
+    return graph
 
 # =============================================================================
 # Plotting Functions
