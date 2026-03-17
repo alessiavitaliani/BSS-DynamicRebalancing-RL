@@ -1,8 +1,21 @@
 from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from gymnasium_env.simulator.station import Station
     from gymnasium_env.simulator.bike import Bike
+
+
+@dataclass
+class TripSample:
+    """Lightweight record of a sampled trip. No bike, no Event objects."""
+    dep_time: int
+    travel_time: int
+    start_station_id: int
+    end_station_id: int
+    distance: int
+    abs_start_time: int
+
 
 class Trip:
 

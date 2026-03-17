@@ -5,14 +5,18 @@ import numpy as np
 import osmnx as ox
 import polars as pl
 import networkx as nx
+import hashlib
+import json
 
 from dataclasses import dataclass
 from typing import Dict, Tuple, FrozenSet
 from scipy.stats import truncnorm
 from enum import Enum
+from tqdm import tqdm
 
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.bike import Bike
+from gymnasium_env.simulator.trip import TripSample
 
 # ==============================================================================
 # Configuration Dataclass
@@ -141,11 +145,11 @@ def generate_poisson_events(rate, time_duration) -> list[int]:
     return np.floor(event_times).astype(int).tolist()
 
 
-def convert_seconds_to_hours_minutes(seconds) -> str:
+def convert_seconds_to_hours_minutes_day(day, seconds) -> str:
     hours, remainder = divmod(seconds, 3600)
     hours = hours % 24
     minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02}:{minutes:02}:{seconds:02}"
+    return f"{day} AT {hours:02}:{minutes:02}:{seconds:02}"
 
 
 def truncated_gaussian(lower=5, upper=25, mean=15, std_dev=5):
@@ -300,3 +304,24 @@ def flatten_pmf_matrix(pmf_matrix: pl.DataFrame) -> pl.DataFrame:  # TODO: preco
     )
 
     return flattened_pmf
+
+# ==============================================================================
+
+def cache_precomputed_buffers(buffer: dict[int, list[TripSample]], cache_file: str) -> None:
+    if cache_file is None:
+        return
+
+    cache_dir = os.path.dirname(cache_file)
+    if cache_dir and not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+
+    with open(cache_file, 'wb') as f:
+        pickle.dump(buffer, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_cached_buffers(cache_file: str) -> dict[int, list[TripSample]]:
+    if cache_file is None or not os.path.exists(cache_file):
+        return {}
+
+    with open(cache_file, 'rb') as f:
+        return pickle.load(f)

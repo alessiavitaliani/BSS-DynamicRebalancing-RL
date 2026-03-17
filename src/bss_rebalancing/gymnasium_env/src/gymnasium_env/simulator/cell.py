@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import osmnx as ox
-from geopy.distance import geodesic
 from shapely.geometry import Polygon
 
 if TYPE_CHECKING:
@@ -49,6 +48,7 @@ class Cell:
             # Bike counts (recomputed each step)
             'total_bikes': 0,
             'surplus_bikes': 0,
+            'dead_bikes': 0.0,
             # Operational counters (accumulate over episode)
             'visits': 0,
             'operations': 0,
@@ -106,8 +106,16 @@ class Cell:
         Called once per step via update_cells_metrics() in the environment.
         """
         # ── Bike count ────────────────────────────────────────────────────────
-        total_bikes = sum(len(stations[node].get_bikes()) for node in self._nodes)
+        total_bikes = 0
+        dead_bikes = 0
+        for node in self._nodes:
+            bikes = stations[node].get_bikes()
+            total_bikes += len(bikes)
+            for bike in bikes.values():
+                if bike.get_battery()/bike.get_max_battery() <= 0.2:
+                    dead_bikes += 1
         self.set_total_bikes(total_bikes)
+        self._metrics['dead_bikes'] = dead_bikes
 
         # ── Failure rate ──────────────────────────────────────────────────────
         total_demand = self.get_total_departures() + self.get_failures()
@@ -117,7 +125,7 @@ class Cell:
 
         # ── Critic score & surplus ────────────────────────────────────────────
         if expected > 0:
-            critic_score = -1 * np.exp(1 + 0.2 * aft_arrivals) * (1 - total_bikes / expected)
+            critic_score = -1 + np.exp((1 + 0.2 * aft_arrivals) * (1 - total_bikes / expected))
         else:
             critic_score = -float(total_bikes)
         self.set_critic_score(critic_score)
@@ -162,6 +170,10 @@ class Cell:
                 total * (1 + score) * (1 - t) / (1 + score * (1 - t) / t)
             )
 
+    def set_is_critical(self, is_critical: bool) -> None:
+        """Directly set the is_critical flag (use with caution, may cause inconsistency)."""
+        self._is_critical = is_critical
+
     # ── Accumulator increments ──────────────────────────────────────────────────
 
     def add_departure(self, d: int = 1) -> None: self._metrics['total_departures'] += d
@@ -193,6 +205,7 @@ class Cell:
     # Bike counts
     def get_total_bikes(self)    -> int:       return self._metrics['total_bikes']
     def get_surplus_bikes(self)  -> int:       return self._metrics['surplus_bikes']
+    def get_dead_bikes(self)     -> int:       return self._metrics['dead_bikes']
 
     # Demand
     def get_demand_rate(self)    -> float:     return self._metrics['demand_rate']

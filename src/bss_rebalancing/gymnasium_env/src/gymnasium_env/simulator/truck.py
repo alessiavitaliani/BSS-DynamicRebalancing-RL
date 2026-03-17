@@ -86,3 +86,6 @@ class Truck:
 
     def get_load(self) -> int:
         return self.current_load
+
+    def get_max_load(self) -> int:
+        return self.max_load

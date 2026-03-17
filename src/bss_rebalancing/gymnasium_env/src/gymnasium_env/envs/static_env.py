@@ -8,64 +8,61 @@ and periodic system-wide rebalancing operations.
 Author: Edoardo Scarpel
 """
 
-import bisect
-import pickle
-import random
-from typing import Optional
+import os
+import logging
+import heapq
 
 import gymnasium as gym
 import numpy as np
 import osmnx as ox
-import pandas as pd
-from gymnasium.utils import seeding
+import polars as pl
 
-from gymnasium_env.simulator.bike_simulator import event_handler, simulate_environment
+from gymnasium.utils import seeding
+from gymnasium import spaces
+from dataclasses import dataclass, field
+from tqdm import tqdm
+from collections import deque
+
+from gymnasium_env.simulator.bike import Bike
+from gymnasium_env.simulator.truck import Truck
+from gymnasium_env.simulator.station import Station
+from gymnasium_env.simulator.trip import TripSample
+from gymnasium_env.simulator.event import Event
 from gymnasium_env.simulator.utils import (
+    DAYS_TO_NUM,
+    DEFAULT_PATHS,
+    NUM_TO_DAYS,
+    Actions,
     initialize_bikes,
     initialize_graph,
     initialize_stations,
     truncated_gaussian,
+    load_preprocessed_data,
+    flatten_pmf_matrix,
+    cache_precomputed_buffers,
+    load_cached_buffers,
+    convert_seconds_to_hours_minutes_day
 )
+from gymnasium_env.simulator.env_logger import EnvLogger
+from gymnasium_env.simulator.bike_simulator import event_handler, simulate_events, build_events
 from gymnasium_env.simulator.truck_simulator import tsp_rebalancing
-
-
-# =============================================================================
-# Module-Level Constants
-# =============================================================================
-
-class FilePaths:
-    """File path constants for data loading."""
-
-    GRAPH_FILE = 'utils/cambridge_network.graphml'
-    CELL_FILE = 'utils/cell_data.pkl'
-    DISTANCE_MATRIX_FILE = 'utils/distance_matrix.csv'
-    MATRICES_FOLDER = 'matrices/09-10'
-    RATES_FOLDER = 'rates/09-10'
-    TRIPS_FOLDER = 'trips/'
-    NEARBY_NODES_FILE = 'utils/nearby_nodes.pkl'
-    VELOCITY_MATRIX_FILE = 'utils/ev_velocity_matrix.csv'
-    CONSUMPTION_MATRIX_FILE = 'utils/ev_consumption_matrix.csv'
-    GLOBAL_RATES_FILE = 'utils/global_rates.pkl'
-
-
-# Day mappings
-DAYS_TO_NUM = {
-    'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
-    'friday': 4, 'saturday': 5, 'sunday': 6
-}
-
-NUM_TO_DAYS = {
-    0: 'monday', 1: 'tuesday', 2: 'wednesday', 3: 'thursday',
-    4: 'friday', 5: 'saturday', 6: 'sunday'
-}
-
 
 # =============================================================================
 # Environment Constants
 # =============================================================================
 
 class EnvDefaults:
-    """Default configuration values for the static environment."""
+    """Default configuration values for the environment."""
+
+    # Bike fleet parameters
+    MAX_BIKES = 1000
+    MIN_BIKES_PER_CELL = 5
+    BASE_REPOSITIONING = True
+    NET_FLOW_BASED_REPOSITIONING = True
+
+    # Truck parameters
+    MAX_TRUCK_LOAD = 30
+    INITIAL_TRUCK_BIKES = 0
 
     # Time parameters
     TIMESLOT_DURATION_HOURS = 3
@@ -73,18 +70,27 @@ class EnvDefaults:
     STEP_DURATION_SECONDS = 30
     TIMESLOTS_PER_DAY = 8
 
+    # RL parameters
+    DISCOUNT_FACTOR = 0.99
+    ELIGIBILITY_DECAY = 0.9968
+    BORDER_ELIGIBILITY_DECAY = 0.99
+
     # Default starting conditions
     DEFAULT_DAY = 'monday'
     DEFAULT_TIMESLOT = 0
     DEFAULT_TOTAL_TIMESLOTS = 56
-    DEFAULT_DEPOT_ID = 491
+    DEFAULT_DEPOT_ID = 1
+    DEFAULT_NUM_REBALANCING_EVENTS = 2
 
-    # Bike fleet parameters
-    DEFAULT_BIKES_PER_CELL = 5
+    # Simulation parameters
+    PRECOMPUTED_EPISODE_TIMESLOTS = 56  # 7 days × 8 slots
+    FINGERPRINT_FILE = 'event_buffer_fingerprint.json'
 
-    # Rebalancing parameters
-    DEFAULT_NUM_REBALANCING_EVENTS = 1
 
+@dataclass
+class Depot:
+    id: int | None = None
+    bikes: dict[int, Bike] = field(default_factory=dict)
 
 # =============================================================================
 # Main Environment Class
@@ -104,7 +110,7 @@ class StaticEnv(gym.Env):
     # Initialization
     # -------------------------------------------------------------------------
 
-    def __init__(self, data_path: str):
+    def __init__(self, data_path: str, results_path: str, seed: int, logging_enabled: bool = False):
         """
         Initialize the static bike-sharing environment.
 
@@ -115,69 +121,120 @@ class StaticEnv(gym.Env):
 
         # Store path
         self._data_path = data_path
+        self._results_path = results_path
 
+        # Env logger: lazy init, like FullyDynamicEnv
+        self._env_logger = EnvLogger(name="static-env")
+        self._env_logger.init(
+            log_dir=os.path.join(results_path, "logs"),
+            filename="env.log",
+            level=logging.INFO,
+            enabled=logging_enabled,
+        )
+
+        # -------------------------------------------------------------------------
         # Load and initialize network components
-        self._initialize_network()
+        # -------------------------------------------------------------------------
 
-        # Load precomputed data
-        self._load_precomputed_data()
-
-        # Initialize state variables to None/default values
-        self._initialize_state_variables()
-
-    def _initialize_network(self):
-        """Load and initialize the street network and geographic data."""
         # Load the OSMnx graph
-        self._graph = initialize_graph(self._data_path + FilePaths.GRAPH_FILE)
+        self._graph = initialize_graph(os.path.join(self._data_path, DEFAULT_PATHS.graph_file))
 
-    def _load_precomputed_data(self):
-        """Load precomputed data files from disk."""
-        # Load nearby nodes dictionary
-        with open(self._data_path + FilePaths.NEARBY_NODES_FILE, 'rb') as file:
-            self._nearby_nodes_dict = pickle.load(file)
+        # Compute bounding box for coordinate normalization
+        nodes_gdf = ox.graph_to_gdfs(self._graph, edges=False)
+        self._min_lat, self._max_lat = nodes_gdf['y'].min(), nodes_gdf['y'].max()
+        self._min_lon, self._max_lon = nodes_gdf['x'].min(), nodes_gdf['x'].max()
+        self._nodes_dict = {nid: (row['y'], row['x']) for nid, row in nodes_gdf.iterrows()}
 
-        # Load cell definitions
-        with open(self._data_path + FilePaths.CELL_FILE, 'rb') as file:
-            self._cells = pickle.load(file)
+        # -------------------------------------------------------------------------
+        # Load precomputed data
+        # -------------------------------------------------------------------------
 
-        # Load distance matrix
-        self._distance_matrix = pd.read_csv(
-            self._data_path + FilePaths.DISTANCE_MATRIX_FILE,
-            index_col='osmid'
-        )
-        self._distance_matrix.index = self._distance_matrix.index.astype(int)
-        self._distance_matrix.columns = self._distance_matrix.columns.astype(int)
-
-        # Load velocity and consumption matrices
-        self._velocity_matrix = pd.read_csv(
-            self._data_path + FilePaths.VELOCITY_MATRIX_FILE,
-            index_col='hour'
-        )
-        self._consumption_matrix = pd.read_csv(
-            self._data_path + FilePaths.CONSUMPTION_MATRIX_FILE,
-            index_col='hour'
+        (
+            self._distance_matrix,
+            self._velocity_matrix,
+            self._consumption_matrix,
+            self._nearby_nodes_dict,
+            self._global_rate_dict,
+            self._cells,
+        ) = load_preprocessed_data(
+            DEFAULT_PATHS,
+            self._data_path,
         )
 
-    def _initialize_state_variables(self):
-        """Initialize all simulation state variables to default/None values."""
-        # PMF and demand data
-        self._global_rate_dict = None
+        self._distance_lookup = {
+            row["node_id"]: row
+            for row in self._distance_matrix.iter_rows(named=True)
+        }
+
+        self._velocity_lookup = {
+            row["hour"]: row
+            for row in self._velocity_matrix.iter_rows(named=True)
+        }
+
+        self._consumption_lookup = {
+            row["hour"]: row
+            for row in self._consumption_matrix.iter_rows(named=True)
+        }
+
+        self._sorted_cell_ids = sorted(self._cells.keys())
+
+        # -------------------------------------------------------------------------
+        # Initialize stations, bikes and assign cells
+        # -------------------------------------------------------------------------
+
+        # Build stations once
+        stations: dict[int, Station] = {}
+        for node_id, (lat, lon) in self._nodes_dict.items():
+            stations[node_id] = Station(node_id, lat, lon)  # type: ignore
+
+        # Assign cells to stations once
+        for cell in self._cells.values():
+            for node in cell.get_nodes():
+                stations[node].set_cell(cell)
+
+        all_stations_have_a_cell = all(stn.get_cell() is not None for stn in stations.values())
+        assert all_stations_have_a_cell, \
+            "Not all stations were assigned a cell. Check cell definitions and station locations."
+
+        # Virtual station 10000
+        stations[10000] = Station(10000, 0.0, 0.0)
+
+        self._stations = stations
+
+        # -------------------------------------------------------------------------
+        # Define action and observation spaces
+        # -------------------------------------------------------------------------
+
+        # Action space
+        self.action_space = spaces.Discrete(len(Actions))
+
+        # Observation space
+        obs_dim = 17 + 2 * len(self._cells)
+        self.observation_space = spaces.Box(
+            low=0.0,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype=np.float16
+        )
+
+        # -------------------------------------------------------------------------
+        # Initialize state variables to None/default values
+        # -------------------------------------------------------------------------
 
         # Bike storage
         self._system_bikes = None
         self._outside_system_bikes = None
-        self._depot = None
-        self._depot_node = None
+        self._travelling_bikes = None
+        self._depot = Depot()
 
         # Fleet parameters
-        self._maximum_number_of_bikes = 0
-        self._fixed_rebal_bikes_per_cell = EnvDefaults.DEFAULT_BIKES_PER_CELL
+        self._maximum_number_of_bikes = EnvDefaults.MAX_BIKES
+        self._min_bikes_per_cell = EnvDefaults.MIN_BIKES_PER_CELL
+        self._enable_repositioning = EnvDefaults.BASE_REPOSITIONING
+        self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
 
-        # Station objects
-        self._stations = None
-
-        # Event buffer for simulation
-        self._event_buffer = []
+        # Station and truck objects
+        self._truck = None
 
         # Time tracking
         self._env_time = 0
@@ -187,14 +244,73 @@ class StaticEnv(gym.Env):
 
         # Rebalancing configuration
         self._num_rebalancing_events = EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
-        self._rebalancing_hours = []
+        self._rebalancing_hours = None
+        self._prediction_window = None
+        self._enable_repositioning = EnvDefaults.BASE_REPOSITIONING
+        self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
 
-        # Counters
+        # Event buffer for simulation
+        self._event_buffer = None
+
+        # -------------------------------------------------------------------------
+        # Initialize simulation counters
+        # -------------------------------------------------------------------------
+        self._timeslot = 0
         self._timeslots_completed = 0
         self._days_completed = 0
+        self._total_failures = 0
 
-        # Bike ID generator
-        self._next_bike_id = 0
+        # -------------------------------------------------------------------------
+        # Precompute events for a full episode at initialization for reproducibility and performance
+        # -------------------------------------------------------------------------
+        self._precomputed_buffers: dict[int, list[TripSample]] = {}
+        self._event_fingerprint: str = ""
+        self._precompute_full_episode(seed=seed)
+
+    def _precompute_full_episode(self, seed: int = 42) -> None:
+        """
+        Precompute all events for a full episode (56 timeslots) at init time.
+        Stores one list per timeslot in self._precomputed_buffers.
+        """
+        cache_dir = os.path.join(self._data_path, '.cache')
+        cache_file = os.path.join(cache_dir, 'precomputed_buffers.pkl')
+
+        precomputed_buffers: dict[int, list[TripSample]] = load_cached_buffers(cache_file)
+
+        if len(precomputed_buffers) == EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS:
+            self._precomputed_buffers = precomputed_buffers
+            print("Loaded precomputed buffers from cache.")
+            return
+
+        np.random.seed(seed)
+        day = EnvDefaults.DEFAULT_DAY
+        self._precomputed_buffers = {}
+
+        with tqdm(total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+                  desc="Precomputing episode", unit="slot",
+                  leave=False, dynamic_ncols=True) as pbar:
+
+            for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
+                timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
+                pmf_matrix = self._load_pmf_matrix(day, timeslot)
+                global_rate = self._global_rate_dict[(day.lower(), timeslot)]
+                flattened_pmf = flatten_pmf_matrix(pmf_matrix)
+
+                self._precomputed_buffers[slot_index] = simulate_events(
+                    duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
+                    timeslot=timeslot,
+                    global_rate=global_rate,
+                    pmf=flattened_pmf,
+                    distance_lookup=self._distance_lookup,
+                )
+
+                if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
+                    day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
+
+                pbar.set_postfix(day=day, slot=timeslot)
+                pbar.update(1)
+
+        cache_precomputed_buffers(self._precomputed_buffers, cache_file)
 
     # -------------------------------------------------------------------------
     # Environment Reset
@@ -211,7 +327,7 @@ class StaticEnv(gym.Env):
                 - timeslot (int): Starting timeslot (0-7)
                 - total_timeslots (int): Total timeslots to simulate
                 - maximum_number_of_bikes (int): Fleet size
-                - fixed_rebal_bikes_per_cell (int): Base bikes per cell during rebalancing
+                - minimum_number_of_bikes (int): Base bikes per cell during rebalancing
                 - num_rebalancing_events (int): Number of rebalancing operations per day
                 - depot_id (int): Depot cell ID
 
@@ -222,55 +338,49 @@ class StaticEnv(gym.Env):
 
         # Parse options with defaults
         options = options or {}
-        self._apply_reset_options(options)
 
-        # Reset all cells
-        for cell in self._cells.values():
-            cell.reset()
+        # Optional: per-episode log directory
+        episode_results_path = options.get("results_path")
+        if episode_results_path is not None:
+            self._update_logging_path(episode_results_path)
+        else:
+            self._env_logger.set_enabled(False)
 
-        # Initialize depot and bike fleet
-        depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
-        self._initialize_depot(depot_id)
-
-        # Reset counters
-        self._reset_counters()
-
-        # Clear event buffer
-        self._event_buffer = []
-
-        # Create stations
-        self._create_stations()
-
-        # Assign cells to stations
-        self._assign_cells_to_stations()
-
-        # Initialize day/timeslot and generate events
-        self._initialize_day()
-
-        # Distribute bikes based on predicted net flow
-        self._distribute_bikes_to_stations()
-
-        return {}, {}
-
-    def _apply_reset_options(self, options: dict):
-        """Apply reset options to environment state."""
         # Time configuration
         self._day = options.get('day', EnvDefaults.DEFAULT_DAY)
         self._timeslot = options.get('timeslot', EnvDefaults.DEFAULT_TIMESLOT)
-        self._total_timeslots = options.get(
-            'total_timeslots',
-            EnvDefaults.DEFAULT_TOTAL_TIMESLOTS
-        )
+        self._total_timeslots = options.get('total_timeslots', EnvDefaults.DEFAULT_TOTAL_TIMESLOTS)
 
         # Fleet configuration
         self._maximum_number_of_bikes = options.get(
             'maximum_number_of_bikes',
             self._maximum_number_of_bikes
         )
-        self._fixed_rebal_bikes_per_cell = options.get(
-            'fixed_rebal_bikes_per_cell',
-            EnvDefaults.DEFAULT_BIKES_PER_CELL
+        self._min_bikes_per_cell = options.get(
+            'minimum_number_of_bikes',
+            self._min_bikes_per_cell
         )
+
+        # Reset all cells
+        for cell in self._cells.values(): cell.reset()
+
+        # Reset all stations
+        for stn in self._stations.values(): stn.reset()
+
+        # Extract cell and truck configuration from options
+        cell_id_list = list(self._cells.keys())
+        truck_cell_id = options.get('initial_cell', np.random.choice(cell_id_list))
+        max_truck_load = options.get('max_truck_load', EnvDefaults.MAX_TRUCK_LOAD)
+        depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
+        self._enable_repositioning = options.get('enable_repositioning', EnvDefaults.BASE_REPOSITIONING)
+        self._use_net_flow = options.get('use_net_flow', EnvDefaults.NET_FLOW_BASED_REPOSITIONING)
+
+        # Initialize depot and bike fleet
+        if depot_id not in self._cells:
+            raise ValueError(f"Depot cell ID {depot_id} not found in cells.")
+        self._depot.id = self._cells.get(depot_id).get_center_node()
+        self._depot.bikes = initialize_bikes(n=self._maximum_number_of_bikes)
+        self._travelling_bikes = {}
 
         # Rebalancing configuration
         self._num_rebalancing_events = options.get(
@@ -286,96 +396,51 @@ class StaticEnv(gym.Env):
             ]
             self._rebalancing_hours = sorted(self._rebalancing_hours)
 
-    def _initialize_depot(self, depot_id: int):
-        """Initialize the depot with bikes."""
-        self._next_bike_id = 0
-        self._depot_node = self._cells.get(depot_id).get_center_node()
-        self._depot, self._next_bike_id = initialize_bikes(
-            n=self._maximum_number_of_bikes,
-            next_bike_id=self._next_bike_id
+        self._prediction_window = (
+            24 // self._num_rebalancing_events * 3600
+            if self._num_rebalancing_events > 0 else None
         )
 
-    def _reset_counters(self):
-        """Reset all simulation counters to initial values."""
-        self._timeslot = 0
+        # -------------------------------------------------------------------------
+        # Reset counters
+        # -------------------------------------------------------------------------
+        self._env_time = 0
         self._timeslots_completed = 0
         self._days_completed = 0
+        self._total_failures = 0
 
-    def _create_stations(self):
-        """Create Station objects for all nodes in the network."""
-        from gymnasium_env.simulator.station import Station
+        # Clear event buffers
+        self._event_buffer = None
 
-        gdf_nodes = ox.graph_to_gdfs(self._graph, edges=False)
-        stations = {}
+        # -------------------------------------------------------------------------
+        # Initialize truck
+        # -------------------------------------------------------------------------
+        # Load initial bikes onto truck from depot
+        initial_bike_keys = list(self._depot.bikes.keys())[:EnvDefaults.INITIAL_TRUCK_BIKES]
+        bikes = {key: self._depot.bikes.pop(key) for key in initial_bike_keys}
 
-        for index, row in gdf_nodes.iterrows():
-            station = Station(index, row['y'], row['x'])    # type: ignore
-            stations[index] = station
-
-        # Add the "out of system" virtual station
-        stations[10000] = Station(10000, 0, 0)
-
-        self._stations = stations
-
-    def _assign_cells_to_stations(self):
-        """Assign each station to its containing cell."""
-        # Set cell for each station based on cell node membership
-        for cell in self._cells.values():
-            for node in cell.nodes:
-                self._stations[node].set_cell(cell)
-
-        # Validate all stations have cells assigned
-        for station in self._stations.values():
-            station_id = station.get_station_id()
-            if station.get_cell() is None and station_id != 10000:
-                raise ValueError(
-                    f"Station {station} is not assigned to a cell."
-                )
-
-    def _distribute_bikes_to_stations(self):
-        """Distribute bikes to stations based on predicted net flow."""
-        # Compute net flow per cell
-        net_flow_per_cell = self._compute_net_flow()
-
-        # Base allocation: fixed bikes per cell
-        bikes_per_cell = {
-            cell_id: self._fixed_rebal_bikes_per_cell
-            for cell_id in self._cells.keys()
-        }
-
-        # Calculate remaining bikes to distribute
-        remaining_bikes = (
-            self._maximum_number_of_bikes
-            - self._fixed_rebal_bikes_per_cell * len(self._cells)
+        truck_cell = self._cells[truck_cell_id]
+        self._truck = Truck(
+            position=truck_cell.get_center_node(),
+            cell=truck_cell,
+            bikes=bikes,
+            max_load=max_truck_load
         )
 
-        # Distribute remaining bikes based on negative flow (high demand areas)
-        total_negative_flow = sum(
-            flow for flow in net_flow_per_cell.values() if flow < 0
+        # -------------------------------------------------------------------------
+        # Initialize day/timeslot and generate events
+        # -------------------------------------------------------------------------
+        self._initialize_day()
+
+        # -------------------------------------------------------------------------
+        # Distribute bikes based on predicted net flow if enabled, otherwise use base repositioning
+        # -------------------------------------------------------------------------
+        bikes_per_cell = self._bike_repositioning(
+            min_bikes=self._min_bikes_per_cell,
+            max_bikes=self._maximum_number_of_bikes - self._truck.get_load(),
+            enable_repositioning=self._enable_repositioning,
+            use_net_flow=self._use_net_flow
         )
-
-        bikes_positioned = 0
-        for cell_id, flow in net_flow_per_cell.items():
-            if flow < 0:
-                proportional_bikes = int(
-                    (flow / total_negative_flow) * remaining_bikes
-                )
-                bikes_per_cell[cell_id] += proportional_bikes
-                bikes_positioned += proportional_bikes
-
-        # Distribute any remaining bikes randomly to high-demand cells
-        if bikes_positioned < remaining_bikes:
-            high_demand_cells = [
-                cell_id for cell_id, flow in net_flow_per_cell.items()
-                if flow < 0
-            ]
-            random.shuffle(high_demand_cells)
-
-            for cell_id in high_demand_cells:
-                bikes_per_cell[cell_id] += 1
-                bikes_positioned += 1
-                if bikes_positioned == remaining_bikes:
-                    break
 
         # Convert cell-based distribution to station-based
         bikes_per_station = {stn_id: 0 for stn_id in self._stations.keys()}
@@ -384,14 +449,40 @@ class StaticEnv(gym.Env):
             bikes_per_station[center_node] = num_of_bikes
 
         # Initialize system bikes at stations
-        self._system_bikes, self._outside_system_bikes, self._next_bike_id = (
-            initialize_stations(
-                stations=self._stations,
-                depot=self._depot,
-                bikes_per_station=bikes_per_station,
-                next_bike_id=self._next_bike_id,
+        self._system_bikes, self._outside_system_bikes = initialize_stations(
+            stations=self._stations,
+            depot_bikes=self._depot.bikes,
+            bikes_per_station=bikes_per_station
+        )
+
+        info = {
+            'cell_dict': self._cells,
+            'nodes_dict': self._nodes_dict,
+            'steps': 0,
+            'failures': [],
+            'depot_bikes': len(self._depot.bikes),
+            'truck_bikes': self._truck.get_load(),
+            'number_of_system_bikes': len(self._system_bikes),
+            'number_of_outside_bikes': len(self._outside_system_bikes),
+            'distance_lookup': self._distance_lookup,
+        }
+
+        # Log number of bikes in the system, in the truck, in the depot and in the outside system
+        self._env_logger.set_env_time(
+            convert_seconds_to_hours_minutes_day(
+                day=self._day.upper(),
+                seconds=3600 + self._env_time
             )
         )
+        self._env_logger.info(
+            f"Initial bikes -> "
+            f"system={len(self._system_bikes)}, "
+            f"truck={self._truck.get_load()}, "
+            f"depot={len(self._depot.bikes)}, "
+            f"outside={len(self._outside_system_bikes)}"
+        )
+
+        return {}, info
 
     # -------------------------------------------------------------------------
     # Environment Step
@@ -408,41 +499,51 @@ class StaticEnv(gym.Env):
             Tuple of (observation, reward, done, terminated, info)
         """
         terminated = False
-        total_failures = 0
-        failures_per_timeslot = []
+        failures_this_timeslot = 0
         rebalance_time = []
 
         # Process events until timeslot ends
         while not terminated:
             self._env_time += EnvDefaults.STEP_DURATION_SECONDS
+            self._env_logger.set_env_time(
+                convert_seconds_to_hours_minutes_day(
+                    day=self._day.upper(),
+                    seconds=3600 + self._env_time
+                )
+            )
 
             # Process all events that occurred before current time
             while self._event_buffer and self._event_buffer[0].time < self._env_time:
-                event = self._event_buffer.pop(0)
-                failure, self._next_bike_id = event_handler(
+                event = self._event_buffer.popleft()
+
+                # Process the event and get any resulting failure
+                failure = event_handler(
                     event=event,
                     station_dict=self._stations,
                     nearby_nodes_dict=self._nearby_nodes_dict,
-                    distance_matrix=self._distance_matrix,
+                    distance_lookup=self._distance_lookup,
                     system_bikes=self._system_bikes,
                     outside_system_bikes=self._outside_system_bikes,
-                    next_bike_id=self._next_bike_id
+                    traveling_bikes=self._travelling_bikes,
+                    logger=self._env_logger,
+                    logging_state_and_trips=False,
+                    depot=self._depot,
+                    maximum_number_of_bikes=self._maximum_number_of_bikes,
+                    truck_load=self._truck.get_load()
                 )
-                total_failures += failure
+                failures_this_timeslot += failure
 
             # Check for rebalancing events at hour boundaries
             if self._env_time % 3600 == 0:
                 hour = ((self._env_time // 3600) + 1) % 24
                 if hour in self._rebalancing_hours:
-                    time_to_rebalance = self._perform_rebalancing()
+                    time_to_rebalance = self._rebalance_system()
                     rebalance_time.append(time_to_rebalance)
 
             # Check for timeslot termination
             timeslot_duration = EnvDefaults.TIMESLOT_DURATION_SECONDS
             if self._env_time >= timeslot_duration * (self._timeslot + 1):
                 self._timeslot = (self._timeslot + 1) % EnvDefaults.TIMESLOTS_PER_DAY
-                failures_per_timeslot.append(total_failures)
-                total_failures = 0
 
                 # Check for day rollover
                 if self._timeslot == 0:
@@ -451,14 +552,27 @@ class StaticEnv(gym.Env):
                     self._initialize_day()
 
                 terminated = True
+
                 self._timeslots_completed += 1
+
+        global_critic_score = 0
+        for cell in self._cells.values():
+            global_critic_score += cell.get_critic_score()
 
         # Build info dictionary
         info = {
-            'failures': failures_per_timeslot,
             'time': self._env_time + (self._timeslot * 3 + 1) * 3600,
             'day': self._day,
             'week': int(self._days_completed // 7),
+            'year': self._days_completed // 365,
+            'failures': failures_this_timeslot,
+            'global_critic_score': global_critic_score,
+            'cell_dict': self._cells,
+            'depot_bikes': len(self._depot.bikes),
+            'truck_bikes': self._truck.get_load(),
+            'number_of_system_bikes': len(self._system_bikes),
+            'number_of_outside_bikes': len(self._outside_system_bikes),
+            'number_of_traveling_bikes': len(self._travelling_bikes),
             'rebalance_time': rebalance_time
         }
 
@@ -471,123 +585,123 @@ class StaticEnv(gym.Env):
     # Rebalancing Operations
     # -------------------------------------------------------------------------
 
-    def _perform_rebalancing(self) -> int:
-        """
-        Perform system-wide rebalancing operation.
-
-        Returns:
-            Time required for rebalancing in seconds.
-        """
-        # Try rebalancing with decreasing bike count if necessary
-        num_bikes_per_cell = self._fixed_rebal_bikes_per_cell
-        time_to_rebalance = -1
-
-        while time_to_rebalance == -1:
-            try:
-                time_to_rebalance = self._rebalance_system(num_bikes_per_cell)
-            except ValueError:
-                num_bikes_per_cell -= 1
-                if num_bikes_per_cell < 0:
-                    raise ValueError(
-                        "Unable to perform rebalancing: insufficient bikes"
-                    )
-
-        return time_to_rebalance
-
-    def _rebalance_system(self, num_bikes_per_cell: int) -> int:
+    def _rebalance_system(self) -> int:
         """
         Rebalance the system to target distribution.
 
-        Args:
-            num_bikes_per_cell: Base number of bikes per cell.
+        Pools used:
+          - system_bikes: bikes currently at stations (or travelling)
+          - depot.bikes: bikes in storage, deployable
+          - outside_system_bikes: bikes on external trips, NOT touched here
 
         Returns:
             Time required for rebalancing in seconds.
-
-        Raises:
-            ValueError: If insufficient bikes are available.
         """
-        # Add bikes back to the system from outside pool
-        while len(self._system_bikes) < self._maximum_number_of_bikes:
-            bike_id = next(iter(self._outside_system_bikes))
-            bike = self._outside_system_bikes.pop(bike_id)
-            self._system_bikes[bike.get_bike_id()] = bike
-
-        # Compute net flow and target distribution
-        net_flow_per_cell = self._compute_net_flow()
-        bikes_per_cell = {
-            cell_id: num_bikes_per_cell
-            for cell_id in self._cells.keys()
-        }
-
-        # Calculate available bikes
-        available_bikes = sum(
-            1 for bike in self._system_bikes.values() if bike.available
-        )
-        remaining_bikes = available_bikes - num_bikes_per_cell * len(self._cells)
-
-        # Check if there are sufficient bikes
-        if remaining_bikes < 0:
-            raise ValueError(
-                "Low on bikes! The maximum number of bikes is too low to "
-                "fulfill minimum bike rebalancing."
-            )
-
-        # Distribute remaining bikes based on negative flow
-        total_negative_flow = sum(
-            flow for flow in net_flow_per_cell.values() if flow < 0
-        )
-
-        used_bikes = 0
-        for cell_id, flow in net_flow_per_cell.items():
-            if flow < 0:
-                proportional_bikes = int(
-                    (flow / total_negative_flow) * remaining_bikes
+        # -----------------------------------------------------------------
+        # 1. Compute TSP time BEFORE moving any bikes
+        #    (_compute_rebalancing_time reads cell.get_total_bikes(),
+        #    which reflects current station state — this must run first)
+        # -----------------------------------------------------------------
+        available_bikes = (
+                sum(
+                    s.get_number_of_bikes() for s in self._stations.values()
+                    if s.get_station_id() != 10000
                 )
-                bikes_per_cell[cell_id] += proportional_bikes
-                used_bikes += proportional_bikes
+                + len(self._depot.bikes)
+        )
+        max_bikes = min(available_bikes, self._maximum_number_of_bikes)
 
-        # Assign remaining bikes to high-demand cells randomly
-        if used_bikes < remaining_bikes:
-            high_demand_cells = [
-                cell_id for cell_id, flow in net_flow_per_cell.items()
-                if flow < 0
-            ]
-            random.shuffle(high_demand_cells)
-
-            for cell_id in high_demand_cells:
-                bikes_per_cell[cell_id] += 1
-                used_bikes += 1
-                if used_bikes == remaining_bikes:
-                    break
-
-        # Compute rebalancing time using TSP
+        bikes_per_cell = self._bike_repositioning(
+            min_bikes=1,
+            max_bikes=max_bikes,
+            enable_repositioning=True,
+            use_net_flow=True,
+        )
         time_to_rebalance = self._compute_rebalancing_time(bikes_per_cell)
 
-        # Execute rebalancing: empty all stations
-        for station in self._stations.values():
-            if station.get_station_id() != 10000:
-                while station.get_number_of_bikes() > 0:
-                    bike = station.unlock_bike()
-                    bike.set_availability(True)
+        # -----------------------------------------------------------------
+        # 2. Drain all stations into a temporary pool.
+        #    Only bikes currently at stations (not traveling) are moveable.
+        # -----------------------------------------------------------------
+        available_bikes_dict: dict[int, Bike] = {}
 
-        # Redistribute bikes according to plan
-        available_bikes_dict = {
-            bike_id: bike
-            for bike_id, bike in self._system_bikes.items()
-            if bike.available
-        }
+        for station in self._stations.values():
+            if station.get_station_id() == 10000:
+                continue
+            while station.get_number_of_bikes() > 0:
+                bike = station.unlock_bike()
+                bike.set_availability(True)
+                available_bikes_dict[bike.get_bike_id()] = bike
+
+        # -----------------------------------------------------------------
+        # 3. Pull all depot bikes into the pool — they are deployable
+        # -----------------------------------------------------------------
+        for bike_id, bike in list(self._depot.bikes.items()):
+            bike.set_availability(True)
+            available_bikes_dict[bike_id] = bike
+        self._depot.bikes.clear()
+
+        self._env_logger.info(
+            f"Available bikes for rebalancing: {len(available_bikes_dict)} "
+            f"(stations + depot)"
+        )
+
+        # -----------------------------------------------------------------
+        # 4. Redistribute according to plan.
+        #    Rebuild system_bikes to only contain bikes at stations.
+        # -----------------------------------------------------------------
+
+        # Remove from system_bikes only the bikes we collected (i.e. were
+        # at stations). Traveling bikes remain in system_bikes untouched.
+        for bike_id in available_bikes_dict:
+            self._system_bikes.pop(bike_id, None)
 
         for cell_id, num_of_bikes in bikes_per_cell.items():
             center_node_id = self._cells[cell_id].get_center_node()
+            station = self._stations[center_node_id]
             for _ in range(num_of_bikes):
+                if not available_bikes_dict:
+                    self._env_logger.warning(
+                        f"Ran out of bikes placing cell {cell_id} — "
+                        f"in-transit bikes are not yet placeable."
+                    )
+                    break
                 bike_id = next(iter(available_bikes_dict))
                 bike = available_bikes_dict.pop(bike_id)
-                self._stations[center_node_id].lock_bike(bike)
+                bike.set_battery(bike.get_max_battery())
+                station.lock_bike(bike)
+                self._system_bikes[bike_id] = bike
 
-        # Charge all bikes
-        for bike in self._system_bikes.values():
-            bike.set_battery(bike.get_max_battery())
+        self._env_logger.info(
+            f"Total bikes in cells: {sum([cell.get_total_bikes() for cell in self._cells.values()])}"
+        )
+
+        # -----------------------------------------------------------------
+        # 5. Leftover bikes (could not be placed) go back to the depot
+        # -----------------------------------------------------------------
+        for bike_id, bike in available_bikes_dict.items():
+            bike.reset()
+            self._depot.bikes[bike_id] = bike
+
+        if self._depot.bikes:
+            self._env_logger.info(
+                f"{len(self._depot.bikes)} bikes returned to depot after rebalancing."
+            )
+
+        # Invariant check (debug-friendly)
+        total = (
+                len(self._system_bikes)
+                + len(self._depot.bikes)
+                + len(self._outside_system_bikes)
+                + self._truck.get_load()
+        )
+        if total != self._maximum_number_of_bikes:
+            self._env_logger.warning(
+                f"Fleet invariant violated after rebalancing: "
+                f"total={total}, expected={self._maximum_number_of_bikes} "
+                f"(system={len(self._system_bikes)}, depot={len(self._depot.bikes)}, "
+                f"outside={len(self._outside_system_bikes)}, truck={self._truck.get_load()})"
+            )
 
         return time_to_rebalance
 
@@ -618,13 +732,13 @@ class StaticEnv(gym.Env):
         distance, _ = tsp_rebalancing(
             surplus_nodes,
             deficit_nodes,
-            self._depot_node,
-            self._distance_matrix
+            self._depot.id,
+            self._distance_lookup
         )
 
         # Compute time based on distance and velocity
-        hour = ((self._env_time // 3600) + 1) % 24
-        mean_truck_velocity = self._velocity_matrix.loc[hour, self._day]
+        hours = divmod((self._timeslot * 3 + 1) * 3600 + self._env_time, 3600)[0] % 24
+        mean_truck_velocity = self._velocity_lookup[hours][self._day]
         velocity_kmh = truncated_gaussian(10, 70, mean_truck_velocity, 5)
         time_seconds = int(distance * 3.6 / velocity_kmh)
 
@@ -634,139 +748,75 @@ class StaticEnv(gym.Env):
     # Event Simulation
     # -------------------------------------------------------------------------
 
-    def _initialize_day(self):
-        """Initialize simulation for the current day (all 8 timeslots)."""
-        total_events = []
+    def _initialize_day(self) -> None:
+        """
+        Initialize the full day's event buffer for the current day.
 
-        # Generate events for all timeslots of the day
-        for timeslot in range(EnvDefaults.TIMESLOTS_PER_DAY):
-            # Load PMF matrix and global rate
-            pmf_matrix, global_rate = self._load_pmf_matrix_global_rate(
-                self._day,
-                timeslot
-            )
+        If this is a cold start (self._event_buffer is None), build a fresh
+        24-hour window for the current day from precomputed buffers.
 
-            # Flatten PMF matrix for event simulation
-            flattened_pmf = self._flatten_pmf_matrix(pmf_matrix)
+        If there are leftover events (self._event_buffer is not None), keep them,
+        shift their times so that the current env_time becomes the new zero,
+        then append the full new day after that.
+        """
 
-            # Generate events for this timeslot
-            events = simulate_environment(
-                duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
-                timeslot=timeslot,
-                global_rate=global_rate,
-                pmf=flattened_pmf,
-                stations=self._stations,
-                distance_matrix=self._distance_matrix,
-            )
+        day_index = DAYS_TO_NUM[self._day]
+        first_slot_index = day_index * EnvDefaults.TIMESLOTS_PER_DAY
 
-            # Shift event times to correct timeslot
-            for event in events:
-                event.time += EnvDefaults.TIMESLOT_DURATION_SECONDS * timeslot
+        if self._event_buffer is None:
+            # Cold start: build full 24-hour window for current day
+            day_events: list[Event] = []
 
-            total_events.extend(events)
+            for slot_offset in range(EnvDefaults.TIMESLOTS_PER_DAY):
+                slot_index = (first_slot_index + slot_offset) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
+                time_offset = slot_offset * EnvDefaults.TIMESLOT_DURATION_SECONDS
 
-        # Insert all events into event buffer (maintains sorted order)
-        for event in total_events:
-            bisect.insort(self._event_buffer, event, key=lambda x: x.time)
+                slot_events = build_events(
+                    self._precomputed_buffers[slot_index],
+                    self._stations,
+                    time_offset=time_offset,
+                )
+                day_events.extend(slot_events)
 
-        # Reset environment time
+            day_events.sort(key=lambda e: e.time)
+            self._event_buffer = deque(day_events)
+
+        else:
+            # Advance:
+            # 1) Shift surviving events so that current env_time becomes 0
+            remaining_events: list[Event] = list(self._event_buffer)
+            base_time = self._env_time
+            for ev in remaining_events:
+                ev.time -= base_time
+
+            # 2) Build all events for the new day, appended after leftovers
+            new_day_events: list[Event] = []
+            for slot_offset in range(EnvDefaults.TIMESLOTS_PER_DAY):
+                slot_index = (first_slot_index + slot_offset) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
+                # Time offset starts after the leftover horizon
+                time_offset = slot_offset * EnvDefaults.TIMESLOT_DURATION_SECONDS
+
+                slot_events = build_events(
+                    self._precomputed_buffers[slot_index],
+                    self._stations,
+                    time_offset=time_offset,
+                )
+                new_day_events.extend(slot_events)
+
+            # 3) Merge leftovers and new day events into a single sorted stream
+            merged = heapq.merge(remaining_events, new_day_events, key=lambda e: e.time)
+            self._event_buffer = deque(merged)
+
+            # Reset environment clock in the new frame
         self._env_time = 0
 
-    @staticmethod
-    def _flatten_pmf_matrix(pmf_matrix: pd.DataFrame) -> pd.DataFrame:
-        """Flatten a PMF matrix for event simulation."""
-        values = pmf_matrix.values.flatten()
-        ids = [
-            (row, col)
-            for row in pmf_matrix.index
-            for col in pmf_matrix.columns
-        ]
-
-        flattened_pmf = pd.DataFrame({'id': ids, 'value': values})
-        flattened_pmf['cumsum'] = np.cumsum(flattened_pmf['value'].values)
-
-        return flattened_pmf
-
-    def _load_pmf_matrix_global_rate(
-        self,
-        day: str,
-        timeslot: int
-    ) -> tuple[pd.DataFrame, float]:
-        """
-        Load the PMF matrix and global rate for a given day and timeslot.
-
-        Args:
-            day: Day of week (lowercase).
-            timeslot: Timeslot index (0-7).
-
-        Returns:
-            Tuple of (pmf_matrix DataFrame, global_rate float).
-        """
+    def _load_pmf_matrix(self, day: str, timeslot: int) -> pl.DataFrame:
+        """Load the PMF matrix and global rate for a given day and timeslot."""
         # Construct file path
-        matrix_path = (
-            self._data_path +
-            FilePaths.MATRICES_FOLDER +
-            '/' +
-            str(timeslot).zfill(2) +
-            '/'
-        )
+        matrix_path = os.path.join(self._data_path, DEFAULT_PATHS.matrices_folder, day.lower())
+        pmf_matrix = pl.read_csv(os.path.join(matrix_path, str(timeslot).zfill(2) + '-pmf-matrix.csv'))
 
-        pmf_matrix = pd.read_csv(
-            matrix_path + day.lower() + '-pmf-matrix.csv',
-            index_col='osmid'
-        )
-
-        # Convert index and columns to integers
-        pmf_matrix.index = pmf_matrix.index.astype(int)
-        pmf_matrix.columns = pmf_matrix.columns.astype(int)
-
-        # Add out-of-system entry
-        pmf_matrix.loc[10000, 10000] = 0.0
-
-        # Load global rates if not cached
-        if self._global_rate_dict is None:
-            with open(
-                self._data_path + FilePaths.GLOBAL_RATES_FILE, 'rb'
-            ) as f:
-                self._global_rate_dict = pickle.load(f)
-
-        global_rate = self._global_rate_dict[(day.lower(), timeslot)]
-
-        return pmf_matrix, global_rate
-
-    # -------------------------------------------------------------------------
-    # Utility Methods
-    # -------------------------------------------------------------------------
-
-    def _compute_net_flow(self, upper_bound: Optional[int] = None) -> dict:
-        """
-        Compute net flow per cell from the event buffer.
-
-        Args:
-            upper_bound: Optional time limit for event consideration.
-
-        Returns:
-            Dictionary mapping cell_id to net flow (arrivals - departures).
-        """
-        net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
-
-        for event in self._event_buffer:
-            if upper_bound is not None and event.time > upper_bound:
-                break
-
-            if event.is_departure():
-                station_id = event.trip.get_start_location().get_station_id()
-                if station_id != 10000:
-                    cell = self._stations[station_id].get_cell()
-                    net_flow_per_cell[cell.get_id()] -= 1
-
-            elif event.is_arrival():
-                station_id = event.trip.get_end_location().get_station_id()
-                if station_id != 10000:
-                    cell = self._stations[station_id].get_cell()
-                    net_flow_per_cell[cell.get_id()] += 1
-
-        return net_flow_per_cell
+        return pmf_matrix
 
     # -------------------------------------------------------------------------
     # Gymnasium Interface Methods
@@ -776,3 +826,126 @@ class StaticEnv(gym.Env):
         """Set the random seed for the environment."""
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
+
+    # -------------------------------------------------------------------------
+    # Utility Methods
+    # -------------------------------------------------------------------------
+
+    def _bike_repositioning(
+            self,
+            min_bikes: int,
+            max_bikes: int,
+            enable_repositioning: bool = False,
+            use_net_flow: bool = False,
+    ) -> dict:
+        """
+        Compute initial bike distribution.
+
+        Args:
+            enable_repositioning: If False, allocate minimum bikes per cell
+                (plus uniform extras) and stop. If True, perform additional
+                repositioning using either net flow or random allocation.
+            use_net_flow: If True and enable_repositioning is True, bias the
+                extra bikes according to predicted net outflow; otherwise
+                distribute them randomly.
+            max_bikes:
+            min_bikes:
+
+        Returns:
+            Dictionary mapping cell_id to number of bikes.
+        """
+        # -------------------------------------------------------------------
+        # Step 1: Uniform base allocation, adjusted if fleet is too small
+        # -------------------------------------------------------------------
+        available = max_bikes
+        base_bikes_per_cell = min_bikes
+        if base_bikes_per_cell * len(self._cells) > available:
+            base_bikes_per_cell = available // len(self._cells)
+            self._env_logger.warning(
+                f"Base bikes per cell adjusted to {base_bikes_per_cell} "
+                f"due to fleet size / truck load constraints."
+            )
+
+        bikes_per_cell = {
+            cell_id: base_bikes_per_cell for cell_id in self._cells.keys()
+        }
+        remaining = available - base_bikes_per_cell * len(self._cells)
+
+        self._env_logger.info(
+            f"Base bikes per cell adjusted to {base_bikes_per_cell} "
+            f"with {len(self._cells)} cells"
+        )
+
+        if remaining == 0:
+            return bikes_per_cell
+
+        if remaining < 0:
+            raise ValueError(
+                "Fleet size minus truck load is too small to allocate "
+                "the base number of bikes per cell."
+            )
+
+        # If repositioning is disabled, just keep uniform allocation
+        if not enable_repositioning:
+            return bikes_per_cell
+
+        # -------------------------------------------------------------------
+        # Step 2: Net flow biased distribution (only current timeslot events)
+        # -------------------------------------------------------------------
+        bikes_positioned = 0
+
+        if use_net_flow:
+            net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
+
+            for event in self._event_buffer:
+                if event.time > EnvDefaults.TIMESLOT_DURATION_SECONDS:
+                    break  # buffer is sorted — stop at next-timeslot events
+                if event.is_departure():
+                    station_id = event.trip.get_start_location().get_station_id()
+                    if station_id != 10000:
+                        cell = self._stations[station_id].get_cell()
+                        net_flow_per_cell[cell.get_id()] -= 1
+                elif event.is_arrival():
+                    station_id = event.trip.get_end_location().get_station_id()
+                    if station_id != 10000:
+                        cell = self._stations[station_id].get_cell()
+                        net_flow_per_cell[cell.get_id()] += 1
+
+            total_negative_flow = sum(
+                f for f in net_flow_per_cell.values() if f < 0
+            )
+
+            if total_negative_flow < 0:  # guard: at least one cell has net outflow
+                for cell_id, flow in net_flow_per_cell.items():
+                    if flow < 0:
+                        proportional_bikes = int(
+                            (flow / total_negative_flow) * remaining
+                        )
+                        bikes_per_cell[cell_id] += proportional_bikes
+                        bikes_positioned += proportional_bikes
+
+        # -------------------------------------------------------------------
+        # Step 3: Distribute any remaining bikes randomly
+        # -------------------------------------------------------------------
+        leftover = remaining - bikes_positioned
+        if leftover > 0:
+            cell_ids = list(self._cells.keys())
+            chosen = np.random.choice(cell_ids, size=leftover, replace=True)
+            for cell_id in chosen:
+                bikes_per_cell[cell_id] += 1
+
+        return bikes_per_cell
+
+    def _update_logging_path(self, results_path: str | None) -> None:
+        """
+        Update the env logging directory at runtime (e.g. per episode).
+        """
+        self._results_path = results_path
+        if results_path is None:
+            return
+
+        episode_log_dir = os.path.join(results_path, "logs")
+        self._env_logger.reconfigure(
+            log_dir=episode_log_dir,
+            filename="env.log",
+        )

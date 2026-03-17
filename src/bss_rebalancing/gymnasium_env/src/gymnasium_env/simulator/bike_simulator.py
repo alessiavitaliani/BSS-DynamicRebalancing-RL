@@ -3,10 +3,10 @@ import numpy as np
 
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.bike import Bike
-from gymnasium_env.simulator.trip import Trip
+from gymnasium_env.simulator.trip import Trip, TripSample
 from gymnasium_env.simulator.event import EventType, Event
 from gymnasium_env.simulator.utils import generate_poisson_events, truncated_gaussian
-from gymnasium_env.simulator.logger import Logger
+from gymnasium_env.simulator.env_logger import EnvLogger
 
 # ----------------------------------------------------------------------------------------------------------------------
 
@@ -17,11 +17,12 @@ def event_handler(
         distance_lookup: dict[int, dict],
         system_bikes: dict[int, Bike],
         outside_system_bikes: dict[int, Bike],
+        traveling_bikes: dict[int, Bike],
         depot,
         maximum_number_of_bikes: int,
         truck_load: int,
-        logger: Logger = None,
-        logging_state_and_trips: bool = False,
+        logger: EnvLogger = None,
+        logging_state_and_trips: bool = False
 ) -> int:
     """
     Handle the event based on its type.
@@ -46,6 +47,7 @@ def event_handler(
             nearby_nodes_dict=nearby_nodes_dict,
             distance_lookup=distance_lookup,
             outside_system_bikes=outside_system_bikes,
+            traveling_bikes=traveling_bikes,
             depot=depot
         )
         if logging_state_and_trips:
@@ -61,6 +63,7 @@ def event_handler(
             outside_system_bikes=outside_system_bikes,
             depot=depot,
             maximum_number_of_bikes=maximum_number_of_bikes,
+            traveling_bikes=traveling_bikes,
             truck_load=truck_load
         )
 
@@ -73,6 +76,7 @@ def departure_handler(
         nearby_nodes_dict: dict[int, list[int]],
         distance_lookup: dict[int, dict],
         outside_system_bikes: dict[int, Bike],
+        traveling_bikes: dict[int, Bike],
         depot
 ) -> Trip:
     """
@@ -105,6 +109,7 @@ def departure_handler(
             return trip
         trip.set_bike(bike)
         trip.set_failed(False)
+        traveling_bikes[bike.get_bike_id()] = bike
         return trip
 
     # Here starting station is inside the system
@@ -115,6 +120,7 @@ def departure_handler(
         if bike.get_battery() > trip.get_distance()/1000:
             trip.set_bike(bike)
             trip.set_failed(False)
+            traveling_bikes[bike.get_bike_id()] = bike
             return trip
         else:
             start_station.lock_bike(bike)
@@ -132,6 +138,7 @@ def departure_handler(
                 trip.set_bike(bike)
                 trip.set_failed(False)
                 trip.set_deviated(True)
+                traveling_bikes[bike.get_bike_id()] = bike
                 return trip
             else:
                 station_dict[node_id].lock_bike(bike)
@@ -148,6 +155,7 @@ def arrival_handler(
         outside_system_bikes: dict[int, Bike],
         depot,
         maximum_number_of_bikes: int,
+        traveling_bikes: dict[int, Bike],
         truck_load: int
 ):
     """
@@ -165,6 +173,7 @@ def arrival_handler(
     bike = trip.get_bike()
     # TURN OFF THIS TO DISABLE BATTERY CHARGE
     bike.set_battery(bike.get_battery() - trip.get_distance()/1000)
+    traveling_bikes.pop(bike.get_bike_id())
 
     # Move the bike to the outside system if the destination station is outside the system
     if end_station.get_station_id() == 10000:
@@ -186,29 +195,17 @@ def arrival_handler(
     end_station.lock_bike(bike)
 
 # ----------------------------------------------------------------------------------------------------------------------
-# Only for benchmark 
 
-def simulate_environment(
+def simulate_events(
         duration: int,
         timeslot: int,
         global_rate: float,
         pmf: pl.DataFrame,
-        stations: dict,
-        distance_lookup: dict[int, dict]
-) -> list[Event]:
+        distance_lookup: dict[int, dict],
+) -> list[TripSample]:
     """
-    Simulate the environment for a given time interval.
-
-    Parameters:
-        - duration (int): The time duration to simulate.
-        - timeslot (int): The time slot to simulate.
-        - global_rate (float): The rate of requests.
-        - pmf (pl.DataFrame): The PMF matrix.
-        - station (dict): A dictionary containing the stations in the network.
-        - distance_lookup (dict): A dictionary containing the distance lookup between stations.
-
-    Returns:
-        - list[Event]: A list of events generated during the simulation.
+    Sample trip requests for a timeslot via Poisson process.
+    Returns lightweight TripSample records — no Trip or Event objects created.
     """
     # Convert pmf for faster access
     pmf_data = pmf.to_dicts()
@@ -216,49 +213,68 @@ def simulate_environment(
 
     # Simulate requests
     event_times = generate_poisson_events(global_rate, duration)
-    event_buffer = []
+    samples = []
 
     for event_time in event_times:
-        random_value = np.random.rand()
-
-        # Find station pair using binary search
-        idx = np.searchsorted(cumsum_values, random_value)
+        idx = np.searchsorted(cumsum_values, np.random.rand())
         row = pmf_data[idx]['id']
-
         origin_id = row['node_id']
         dest_id = row['col_id']
-        stn_pair = (origin_id, dest_id)
 
-        if stn_pair[0] == 10000 or stn_pair[1] == 10000:
+        if origin_id == 10000 or dest_id == 10000:
             distance = 0
-            travel_time_seconds = 1
+            travel_time = 1
         else:
             velocity_kmh = truncated_gaussian(5, 25, 15, 5)
-            distance = distance_lookup[stn_pair[0]][str(stn_pair[1])]
-            travel_time_seconds = int(distance * 3.6 / velocity_kmh)
+            distance = int(distance_lookup[origin_id][str(dest_id)])
+            travel_time = int(distance * 3.6 / velocity_kmh)
 
-        #This next line FIXES the "timeslot" design to divide the day in 8 slots [0;7] of 3 hours each with, the first starting at 1AM. 
-        #To modify the slots set-up it is necessary to change the design of the function and/or pass the slot number as parameter.
-        #The output of the equation is the exact event time of the day in seconds.
-        ev_t = event_time + 3600*(3*timeslot + 1)
-        trip = Trip(ev_t, ev_t + travel_time_seconds, stations[stn_pair[0]],
-                    stations[stn_pair[1]], distance=distance)
+        abs_start = event_time + 3600 * (3 * timeslot + 1)
 
-        dep_event = Event(
-            time=event_time,
+        samples.append(TripSample(
+            dep_time=event_time,
+            travel_time=travel_time,
+            start_station_id=origin_id,
+            end_station_id=dest_id,
+            distance=distance,
+            abs_start_time=abs_start,
+        ))
+
+    samples.sort(key=lambda s: s.dep_time)
+    return samples
+
+
+def build_events(
+    samples: list[TripSample],
+    stations: dict,
+    time_offset: int = 0,
+) -> list[Event]:
+    """
+    Build fresh Trip + Event pairs from TripSample records.
+    Each Trip is shared between its departure and arrival Event.
+    bike=None on all trips — departure_handler assigns it at runtime.
+    """
+    events = []
+
+    for s in samples:
+        trip = Trip(
+            start_time=s.abs_start_time,
+            end_time=s.abs_start_time + s.travel_time,
+            start_location=stations[s.start_station_id],
+            end_location=stations[s.end_station_id],
+            bike=None,
+            distance=s.distance,
+        )
+        events.append(Event(
+            time=s.dep_time + time_offset,
             event_type=EventType.DEPARTURE,
-            trip=trip
-        )
-        arr_event = Event(
-            time=event_time + travel_time_seconds,
+            trip=trip,
+        ))
+        events.append(Event(
+            time=s.dep_time + s.travel_time + time_offset,
             event_type=EventType.ARRIVAL,
-            trip=trip
-        )
+            trip=trip,
+        ))
 
-        event_buffer.append(dep_event)
-        event_buffer.append(arr_event)
-
-    # Sort the event buffer based on time
-    event_buffer.sort(key=lambda x: x.time)
-
-    return event_buffer
+    events.sort(key=lambda e: e.time)
+    return events

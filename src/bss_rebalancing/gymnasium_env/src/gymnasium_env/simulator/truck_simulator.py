@@ -259,9 +259,6 @@ def charge_bike(
     # Find the lowest metric bike
     bike_id = min(bike_dict, key=lambda bid: bike_dict[bid].get_battery())
 
-    # Record battery ratio BEFORE the bike is collected
-    truck.last_charge = bike_dict[bike_id].get_battery() / bike_dict[bike_id].get_max_battery()
-
     # Go get the chosen bike
     time, distance = _collect_bike(truck, distance_lookup, mean_velocity,
                                    depot, system_bikes, bike_id, bike_dict)
