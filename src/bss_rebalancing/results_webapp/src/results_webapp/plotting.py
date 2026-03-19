@@ -89,41 +89,89 @@ def create_timeslot_plot(
         metric: str,
         title: str,
         yaxis_label: str,
-        scale: float = 1.0
+        scale: float = 1.0,
+        slots_per_day: int = 8,
 ) -> go.Figure:
-    """
-    Create a plot for per-timeslot metrics.
 
-    Args:
-        timeslot_df: DataFrame with timeslot metrics
-        metric: Column name to plot
-        title: Plot title
-        yaxis_label: Y-axis label
-        scale:
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    Returns:
-        Plotly Figure object
-    """
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
         x=timeslot_df['timeslot'],
-        y=timeslot_df[metric]*scale,
+        y=timeslot_df[metric] * scale,
         mode='lines+markers',
         name=metric,
         line=dict(color=COLORS['primary'], width=2),
         marker=dict(size=6)
     ))
 
+    # Timeslot range
+    min_slot = int(timeslot_df['timeslot'].min())
+    max_slot = int(timeslot_df['timeslot'].max())
+
+    first_day = min_slot // slots_per_day
+    last_day = max_slot // slots_per_day
+
+    # Background shading per day
+    shapes = []
+    for day_idx in range(first_day, last_day + 1):
+        day_start = day_idx * slots_per_day - 1
+        day_end = (day_idx + 1) * slots_per_day - 1
+
+        if day_idx % 2 == 0:  # shade every other day
+            shapes.append(dict(
+                type="rect",
+                xref="x",
+                yref="paper",
+                x0=day_start,
+                x1=day_end,
+                y0=0,
+                y1=1,
+                fillcolor="rgba(200, 200, 200, 0.25)",
+                line=dict(width=0),
+                layer="below"
+            ))
+
+    # Annotations for day labels at the center of each day block (4, 12, 20, ...)
+    annotations = []
+    for day_idx in range(first_day, last_day + 1):
+        center = day_idx * slots_per_day + (slots_per_day / 2.0) - 1
+        annotations.append(dict(
+            x=center,
+            y=0,  # bottom of plot, use yref='paper'
+            xref='x',
+            yref='paper',
+            text=day_names[day_idx % 7],
+            showarrow=False,
+            yanchor='top',
+            xanchor='center',
+            font=dict(size=12),
+        ))
+
     fig.update_layout(
         title=dict(text=title, font=dict(size=18)),
-        xaxis=dict(title='Timeslot', gridcolor='lightgray'),
-        yaxis=dict(title=yaxis_label, gridcolor='lightgray'),
+        xaxis=dict(
+            type='linear',
+            tickmode='linear',
+            tick0=min_slot,     # first tick at first timeslot
+            dtick=1,            # tick (and vertical grid) every timeslot
+            showticklabels=False,   # hide numeric labels
+            showgrid=True,
+            gridcolor='lightgray',
+            range=[min_slot - 0.5, max_slot + 0.5],
+            zeroline=False
+        ),
+        yaxis=dict(title=yaxis_label, gridcolor='lightgray',zeroline=False),
         template='plotly_white',
-        hovermode='x unified'
+        hovermode='x unified',
+        shapes=shapes,
+        annotations=annotations
     )
 
     return fig
+
+
 
 
 def create_action_distribution_plot(actions: List[int]) -> go.Figure:

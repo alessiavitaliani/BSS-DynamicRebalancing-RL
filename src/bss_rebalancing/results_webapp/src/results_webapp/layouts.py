@@ -8,7 +8,7 @@ def create_header():
     """Create app header."""
     return dbc.Row([
         dbc.Col([
-            html.H1('🚴 BSS Training Dashboard', className='text-center mb-4',
+            html.H1('Train-Val Dashboard', className='text-center mb-4',
                     style={'color': '#4A90E2'})
         ])
     ])
@@ -66,10 +66,10 @@ def create_controls():
 
 PLOT_CONFIG = {
     'toImageButtonOptions': {
-        'format': 'svg',
+        'format': 'png',
         'filename': 'plot',
-        'height': 900,
-        'width': 1600,
-        'scale': 1
+        'height': 450,
+        'width': 800,
+        'scale': 3
     }
 }

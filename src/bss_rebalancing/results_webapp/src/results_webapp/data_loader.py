@@ -3,11 +3,12 @@
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import networkx as nx
 import osmnx as ox
 import pandas as pd
+from pandas import DataFrame
 
 
 def discover_runs(base_path: Path) -> Dict[str, Path]:
@@ -228,33 +229,50 @@ def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     return ox.load_graphml(graph_path)
 
 
-def load_bench_data(run_dir: Path, mode: str = 'benchmark') -> Optional[tuple[int, dict[str, pd.DataFrame]]]:
-    bench_fail_path = run_dir / mode / 'failures.pkl'
-    bench_rebal_time_path = run_dir / mode / 'rebalance_time.pkl'
+def load_bench_data(
+        run_dir: Path,
+        mode: str = 'benchmark'
+) -> tuple[int | Any, dict[str, DataFrame], Any | None] | None:
+    """
+    Load benchmark results saved by ResultsManager.save_episode().
 
-    if not bench_fail_path.exists() and not bench_rebal_time_path.exists():
+    ResultsManager writes:
+      bench_path / scalars.json          — total_failures, mean_daily_failures
+      bench_path / timeslot_metrics.csv  — per-timeslot failures, truck_load, …
+    """
+    bench_dir = run_dir / mode
+
+    scalars_path = bench_dir / 'scalars.json'
+    timeslot_path = bench_dir / 'timeslot_metrics.csv'
+
+    if not scalars_path.exists() and not timeslot_path.exists():
         return None
 
-    dfs = {}
+    dfs: dict[str, pd.DataFrame] = {}
+    total_failures = 0
 
-    if bench_fail_path.exists():
-        with open(bench_fail_path, 'rb') as f:
-            failures: list = pickle.load(f)
-        dfs['failures'] = pd.DataFrame({
-            'timeslot': list(range(len(failures))),
-            'failures': failures,
-        })
+    if scalars_path.exists():
+        with open(scalars_path, 'r') as f:
+            scalars = json.load(f)
+        total_failures = scalars.get('total_failures', 0)
 
-    total_failures = sum(failures)
+    if timeslot_path.exists():
+        timeslot_df = pd.read_csv(timeslot_path)
 
-    if bench_rebal_time_path.exists():
-        with open(bench_rebal_time_path, 'rb') as f:
-            rebalance_time: list = pickle.load(f)
-        dfs['rebalance_time'] = pd.DataFrame({
-            'timeslot': list(range(len(rebalance_time))),
-            'rebalance_time': rebalance_time,
-        })
+        if 'failures' in timeslot_df.columns:
+            dfs['failures'] = timeslot_df[['timeslot', 'failures']].copy()
+            if total_failures == 0:
+                total_failures = int(timeslot_df['failures'].sum())
 
-    return total_failures, dfs
+        for col in ['truck_load', 'depot_load', 'deployed_bikes',
+                    'outside_system_bikes', 'traveling_bikes', 'rebalance_times']:
+            if col in timeslot_df.columns:
+                dfs[col] = timeslot_df[['timeslot', col]].copy()
 
+    subgraph_path = bench_dir / 'cell_subgraph.gpickle'
+    subgraph = None
+    if subgraph_path.exists():
+        with open(subgraph_path, 'rb') as f:
+            subgraph = pickle.load(f)
 
+    return total_failures, dfs, subgraph

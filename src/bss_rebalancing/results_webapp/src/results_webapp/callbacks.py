@@ -95,7 +95,6 @@ def register_callbacks(app):
         Input('run-selector', 'value')
     )
     def display_config(run_path):
-        """Display run configuration."""
         if not run_path:
             return html.P('No run selected', className='text-muted')
 
@@ -112,18 +111,10 @@ def register_callbacks(app):
             lr_str = 'N/A'
 
         return dbc.Row([
-            dbc.Col([
-                html.Strong('Episodes: '), f"{params.get('num_episodes', 'N/A')}"
-            ], width=3),
-            dbc.Col([
-                html.Strong('Batch Size: '), f"{params.get('batch_size', 'N/A')}"
-            ], width=3),
-            dbc.Col([
-                html.Strong('Learning Rate: '), f"{lr_str}"
-            ], width=3),
-            dbc.Col([
-                html.Strong('Gamma: '), f"{params.get('gamma', 'N/A')}"
-            ], width=3),
+            dbc.Col([html.Strong('Episodes: '), f"{params.get('num_episodes', 'N/A')}"], width=3),
+            dbc.Col([html.Strong('Batch Size: '), f"{params.get('batch_size', 'N/A')}"], width=3),
+            dbc.Col([html.Strong('Learning Rate: '), f"{lr_str}"], width=3),
+            dbc.Col([html.Strong('Gamma: '), f"{params.get('gamma', 'N/A')}"], width=3),
         ])
 
     # ============================================================================
@@ -134,8 +125,6 @@ def register_callbacks(app):
         Output('rewards-plot', 'figure'),
         Output('epsilon-plot', 'figure'),
         Output('total-failures-plot', 'figure'),
-        Output('bench-failures-plot', 'figure'),
-        Output('bench-rebalance-times-plot', 'figure'),
         Input('run-selector', 'value'),
         Input('mode-selector', 'value'),
         Input('interval-component', 'n_intervals'),
@@ -149,23 +138,18 @@ def register_callbacks(app):
 
         if not run_path:
             empty_fig.update_layout(title='No run selected')
-            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
+            return empty_fig, empty_fig, empty_fig, empty_fig
 
         run_dir = Path(run_path)
 
         # Load summary data (FAST - single CSV or build from scalars.json only)
         summary = load_summary_data(run_dir, mode)
-        bench_result = load_bench_data(run_dir)
-        if bench_result is None:
-            bench_total_failures, bench_df = None, None
-        else:
-            bench_total_failures, bench_df = bench_result
 
         # Check if we have any data
         if summary is None or summary.empty:
             empty_fig = go.Figure()
             empty_fig.update_layout(title=f'No {mode} data available yet')
-            return empty_fig, empty_fig, empty_fig, empty_fig, empty_fig, empty_fig
+            return empty_fig, empty_fig, empty_fig, empty_fig
 
         # ============================================
         # Plot 1: Mean Failures per Episode
@@ -231,36 +215,7 @@ def register_callbacks(app):
             failures_fig = go.Figure()
             failures_fig.update_layout(title='No failure data')
 
-        # ============================================
-        # Plot 5: Total Failures Benchmark
-        # ============================================
-        if bench_df is not None:
-            bench_failures_fig = create_timeslot_plot(
-                bench_df['failures'],
-                'failures',
-                f'Benchmark Failures per Timeslot - Total: {bench_total_failures}',
-                'Total Failures',
-            )
-        else:
-            bench_failures_fig = go.Figure()
-            bench_failures_fig.update_layout(title='No benchmark failure data')
-
-        # ============================================
-        # Plot 6: Rebalance Time Benchmark
-        # ============================================
-        if bench_df is not None:
-            bench_rebal_time_fig = create_timeslot_plot(
-                bench_df['rebalance_time'],
-                'rebalance_time',
-                f'Benchmark Rebalance Time per Timeslot',
-                'Rebalance Time (min)',
-                scale=1.0/60.0
-            )
-        else:
-            bench_rebal_time_fig = go.Figure()
-            bench_rebal_time_fig.update_layout(title='No benchmark rebalance time data')
-
-        return mean_daily_failures_fig, rewards_fig, epsilon_fig, failures_fig, bench_failures_fig, bench_rebal_time_fig
+        return mean_daily_failures_fig, rewards_fig, epsilon_fig, failures_fig
 
     # ============================================================================
     # Callback: Update episode detail plots
@@ -445,12 +400,12 @@ def register_callbacks(app):
             base_graph    = _get_base_graph(app)
 
             if cell_subgraph is None:
-                return ('', f'⚠ No cell_subgraph found for episode {episode}')
+                return '', f'⚠ No cell_subgraph found for episode {episode}'
 
             n_boundary = sum(1 for _, d in cell_subgraph.nodes(data=True) if d.get('boundary') is not None)
 
             if n_boundary == 0:
-                return ('', '⚠ No "boundary" attr on nodes — update build_cell_graph_from_cells')
+                return '', '⚠ No "boundary" attr on nodes — update build_cell_graph_from_cells'
 
             # Render to disk in assets/ (Dash serves this directory automatically)
             assets_dir = Path(__file__).parent / 'assets'
@@ -466,11 +421,129 @@ def register_callbacks(app):
 
             # Cache-bust with timestamp so browser reloads the file
             ts = int(time.time())
-            return (f'/assets/heatmap.png?t={ts}', f'✓ {metric}, episode {episode}')
+            return f'/assets/heatmap.png?t={ts}', f'✓ {metric}, episode {episode}'
 
         except Exception as exc:
             import traceback; traceback.print_exc()
-            return ('', f'✗ {type(exc).__name__}: {exc}')
+            return '', f'✗ {type(exc).__name__}: {exc}'
+
+
+    # ============================================================================
+    # Callback: Benchmark tab — stats cards + timeslot plots
+    # ============================================================================
+    @app.callback(
+        Output('bench-stats-cards', 'children'),
+        Output('bench-failures-plot', 'figure'),
+        Output('bench-rebalance-times-plot', 'figure'),
+        Output('bench-deployed-bikes-plot', 'figure'),
+        Output('bench-depot-load-plot', 'figure'),
+        Output('bench-truck-load-plot', 'figure'),
+        Output('bench-outside-bikes-plot', 'figure'),
+        Input('run-selector', 'value'),
+        Input('interval-component', 'n_intervals'),
+    )
+    def update_benchmark_tab(run_path, n):
+        empty_fig = go.Figure()
+        empty_fig.update_layout(title='No data available', template='plotly_white')
+        empty_figs = (empty_fig,) * 6
+
+        if not run_path:
+            return html.P('No run selected', className='text-muted'), *empty_figs
+
+        run_dir = Path(run_path)
+        bench_result = load_bench_data(run_dir)
+
+        if bench_result is None:
+            return html.P('No benchmark data found for this run.', className='text-muted'), *empty_figs
+
+        total_failures, dfs, _ = bench_result
+
+        num_days = len(dfs['failures']) // 8 if 'failures' in dfs else 0
+        mean_daily = total_failures / num_days if num_days > 0 else 0.0
+
+        # ── Stats cards ──────────────────────────────────────────────────────
+        stats_cards = dbc.Row([
+            dbc.Col([dbc.Card([dbc.CardBody([
+                html.H4(f"{total_failures}", className='text-danger'),
+                html.P('Total Failures', className='text-muted mb-0')
+            ])])], width=3),
+            dbc.Col([dbc.Card([dbc.CardBody([
+                html.H4(f"{mean_daily:.1f}", className='text-warning'),
+                html.P('Mean Daily Failures', className='text-muted mb-0')
+            ])])], width=3),
+            dbc.Col([dbc.Card([dbc.CardBody([
+                html.H4(f"{num_days}", className='text-info'),
+                html.P('Days Simulated', className='text-muted mb-0')
+            ])])], width=3),
+        ])
+
+        # ── Helper ────────────────────────────────────────────────────────────
+        def _plot(col, title, ylabel, scale=1.0):
+            if col in dfs:
+                return create_timeslot_plot(dfs[col], col, title, ylabel, scale=scale)
+            f = go.Figure()
+            f.update_layout(title=f'No {col} data', template='plotly_white')
+            return f
+
+        failures_fig = _plot('failures',            f'Benchmark Failures per Timeslot — Total: {total_failures}', 'Failures')
+        rebal_fig    = _plot('rebalance_times',      'Benchmark Rebalance Time per Timeslot', 'Rebalance Time (min)', scale=1/60)
+        deployed_fig = _plot('deployed_bikes',       'Deployed Bikes per Timeslot', '# Bikes')
+        depot_fig    = _plot('depot_load',           'Depot Load per Timeslot', '# Bikes')
+        truck_fig    = _plot('truck_load',           'Truck Load per Timeslot', '# Bikes')
+        outside_fig  = _plot('outside_system_bikes', 'Outside-System Bikes per Timeslot', '# Bikes')
+
+        return stats_cards, failures_fig, rebal_fig, deployed_fig, depot_fig, truck_fig, outside_fig
+
+    # ============================================================================
+    # Callback: Benchmark spatial heatmap
+    # ============================================================================
+    @app.callback(
+        Output('bench-heatmap-plot', 'src'),
+        Output('bench-heatmap-status', 'children'),
+        Input('run-selector', 'value'),
+        Input('bench-graph-metric-selector', 'value'),
+        prevent_initial_call=True,
+    )
+    def update_bench_heatmap(run_path, metric):
+        import time
+        NO_IMG = ('', '')
+
+        if not run_path or not metric:
+            return NO_IMG
+
+        try:
+            run_dir = Path(run_path)
+            bench_result = load_bench_data(run_dir)
+            if bench_result is None:
+                return '', '⚠ No benchmark data found'
+
+            _, _, cell_subgraph = bench_result
+            base_graph = _get_base_graph(app)
+
+            if cell_subgraph is None:
+                return '', '⚠ No cell_subgraph in benchmark results'
+
+            n_boundary = sum(1 for _, d in cell_subgraph.nodes(data=True) if d.get('boundary') is not None)
+            if n_boundary == 0:
+                return '', '⚠ No "boundary" attr on nodes'
+
+            assets_dir = Path(__file__).parent / 'assets'
+            assets_dir.mkdir(exist_ok=True)
+            out_path = assets_dir / 'bench_heatmap.png'
+
+            create_graph_heatmap_plot(
+                base_graph=base_graph,
+                cell_subgraph=cell_subgraph,
+                metric=metric,
+                out_path=out_path,
+            )
+
+            ts = int(time.time())
+            return f'/assets/bench_heatmap.png?t={ts}', f'✓ {metric} — benchmark'
+
+        except Exception as exc:
+            import traceback; traceback.print_exc()
+            return '', f'✗ {type(exc).__name__}: {exc}'
 
 
 # ---------------------------------------------------------------------------

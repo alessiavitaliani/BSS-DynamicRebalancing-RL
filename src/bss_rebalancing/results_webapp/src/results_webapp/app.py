@@ -31,7 +31,7 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050, updat
         suppress_callback_exceptions=True
     )
 
-    app.title = "BSS Training Dashboard"
+    app.title = "Train-Val Dashboard"
 
     # Store config in app
     app.results_path = Path(results_path)
@@ -88,13 +88,76 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050, updat
                     ], width=6),
                 ], className='mt-3'),
 
-                # Row 3: Benchmark Results
+            ]),
+
+            # Benchmark Tab
+            dbc.Tab(label='🏁 Benchmark', children=[
+                dbc.Row([
+                    dbc.Col([
+                        html.Div(id='bench-stats-cards')
+                    ])
+                ], className='mt-3'),
+
                 dbc.Row([
                     dbc.Col([
                         dcc.Graph(id='bench-failures-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
                         dcc.Graph(id='bench-rebalance-times-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='bench-deployed-bikes-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        dcc.Graph(id='bench-depot-load-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Graph(id='bench-truck-load-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                    dbc.Col([
+                        dcc.Graph(id='bench-outside-bikes-plot', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
+                        html.Div([
+                            html.Label("Select metric:", style={'font-weight': 'bold'}),
+                            dcc.Dropdown(
+                                id="bench-graph-metric-selector",
+                                options=[
+                                    {"label": "Failures (sum)", "value": "failure_sum"},
+                                    {"label": "Failure rate", "value": "failure_rate"},
+                                    {"label": "Bikes (mean)", "value": "bikes_mean"},
+                                    {"label": "Critic score (mean)", "value": "critic_mean"},
+                                    {"label": "Eligibility (mean)", "value": "eligibility_mean"},
+                                ],
+                                value="failure_sum",
+                                clearable=False,
+                                style={'width': '40%', 'marginBottom': '10px'}
+                            ),
+                            html.Div(id="bench-heatmap-status",
+                                     style={'color': '#888', 'fontSize': '13px',
+                                            'fontFamily': 'monospace', 'marginBottom': '6px'}),
+                            html.Img(
+                                id="bench-heatmap-plot",
+                                style={
+                                    'width': '100%',
+                                    'display': 'block',
+                                    'border': '1px solid #d3d3d3',
+                                }
+                            ),
+                        ], style={
+                            'padding': '10px',
+                            'box-shadow': '0px 1px 3px rgba(0,0,0,0.2)',
+                            'background-color': 'white'
+                        }),
                     ], width=6),
                 ], className='mt-3'),
             ]),
