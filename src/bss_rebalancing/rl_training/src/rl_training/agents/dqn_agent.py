@@ -180,12 +180,21 @@ class DQNAgent:
         """
         Save the model to a file.
         """
-        torch.save(self.train_model.state_dict(), file_path)
+        torch.save({
+            'train_model': self.train_model.state_dict(),
+            'target_model': self.target_model.state_dict(),
+        }, file_path)
 
 
     def load_model(self, file_path):
         """
         Load the model from a file.
         """
-
-        self.train_model.load_state_dict(torch.load(file_path, map_location=self.device, weights_only=True))
+        checkpoint = torch.load(file_path, map_location=self.device, weights_only=True)
+        if isinstance(checkpoint, dict) and 'train_model' in checkpoint:
+            self.train_model.load_state_dict(checkpoint['train_model'])
+            self.target_model.load_state_dict(checkpoint['target_model'])
+        else:
+            # backwards compatibility with old single-state-dict saves
+            self.train_model.load_state_dict(checkpoint)
+            self.target_model.load_state_dict(checkpoint)

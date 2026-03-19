@@ -1,6 +1,6 @@
 """
-Validation script for trained DQN agent.
-Matches the structure and improvements from train.py.
+Standalone validation script for trained DQN agents.
+Mirrors the validate_dqn() / _validation_worker() logic from train.py exactly.
 """
 
 import os
@@ -8,432 +8,615 @@ import argparse
 import warnings
 import logging
 import torch
-import gymnasium
 import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
+import gymnasium_env  # noqa: F401 — registers the gym environment
+
 from rl_training.agents import DQNAgent
-from rl_training.utils import (convert_graph_to_data, convert_seconds_to_hours_minutes,
-                               set_seed, setup_logger, setup_device)
-from rl_training.memory import ReplayBuffer
 from rl_training.results import ResultsManager, EpisodeResults
+from rl_training.logging_config import init_logging, LoggingConfig, get_logger
+from rl_training.utils import (
+    convert_graph_to_data,
+    convert_seconds_to_hours_minutes,
+    set_seed,
+    setup_device,
+    build_cell_graph_from_cells,
+    update_cell_graph_features,
+)
 from torch_geometric.data import Data
-from gymnasium_env.simulator.utils import Actions, initialize_cells_subgraph
+from gymnasium_env.simulator.utils import Actions
 
-# ----------------------------------------------------------------------------------------------------------------------
-# Default paths and parameters
-# ----------------------------------------------------------------------------------------------------------------------
-
-# Device configuration
+# ------------------------------------------------------------------------------
+# Device detection (mirrors train.py)
+# ------------------------------------------------------------------------------
 devices = ["cpu"]
 if torch.cuda.is_available():
-    num_cuda = torch.cuda.device_count()
-    for i in range(num_cuda):
+    for i in range(torch.cuda.device_count()):
         devices.append(f"cuda:{i}")
 if torch.backends.mps.is_available():
     devices.append("mps")
 
-print(f"Devices available: {devices}")
+print(f"Devices available: {devices}\n")
 
-# Validation parameters
+# ------------------------------------------------------------------------------
+# Default params — kept in sync with train.py defaults
+# ------------------------------------------------------------------------------
 params = {
-    'seed': 42,                                     # Random seed for reproducibility
-    'total_timeslots': 56,                          # Total number of time slots (1 week = 7 days * 8 timeslots)
-    'gamma': 0.95,                                  # Discount factor (needed for environment)
-    'maximum_number_of_bikes': 500,                 # Max number of bikes in the system
-    'epsilon': 0.05,                                # Validation epsilon (near-greedy)
-    'depot_position_id': 103,                       # ID (cell) of the depot position
-    'initial_cell_id': 103,                         # Initial cell where the truck starts
+    "seed": 42,
+    "total_timeslots": 56,
+    "maximum_number_of_bikes": 500,
+    "minimum_number_of_bikes": 1,
+    "gamma": 0.95,
+    "lr": 1e-4,
+    "tau": 0.005,
+    "enable_repositioning": False,
+    "use_net_flow": False,
+    "depot_position_id": 18,
+    "initial_cell_id": 18,
 }
 
 reward_params = {
-    'W_ZERO_BIKES': 1.0,
-    'W_CRITICAL_ZONES': 1.0,
-    'W_DROP_PICKUP': 0.9,
-    'W_MOVEMENT': 0.7,
-    'W_CHARGE_BIKE': 0.9,
-    'W_STAY': 0.7,
+    "W_ZERO_BIKES": 1.0,
+    "W_CRITICAL_ZONES": 1.0,
+    "W_DROP_PICKUP": 0.9,
+    "W_MOVEMENT": 0.7,
+    "W_CHARGE_BIKE": 0.9,
+    "W_STAY": 0.7,
 }
 
-# Logging formatter
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
+# ------------------------------------------------------------------------------
+# validate_dqn — exact copy of train.py's validate_dqn, nothing removed
+# ------------------------------------------------------------------------------
 def validate_dqn(
-        env: gymnasium.Env,
+        env,
         agent: DQNAgent,
         episode: int,
         device: torch.device,
-        enable_logging: bool,
-        tbar: tqdm = None
+        run_id: int,
+        epsilon: float,
+        logging_enabled: bool,
+        tbar=None,
+        episode_results_path: str | None = None,
+        params_snapshot: dict | None = None,
+        reward_params_snapshot: dict | None = None,
 ) -> dict:
-    """
-    Run a validation episode with a trained agent.
+    # -------------------------------------------------------------------------
+    # Metrics tracking
+    # -------------------------------------------------------------------------
+    rewards = []
+    failures = []
+    system_bikes = []
+    truck_load = []
+    depot_load = []
+    outside_system_bikes = []
+    traveling_bikes = []
 
-    Args:
-        env: Gymnasium environment
-        agent: Trained DQN agent
-        episode: Episode number
-        device: Torch device
-        tbar: Progress bar (optional)
-
-    Returns:
-        Dictionary containing validation metrics
-    """
-    # Per-timeslot metrics
-    rewards_per_timeslot = []
-    failures_per_timeslot = []
-    deployed_bikes = []
-
-    # Per-step metrics
     action_per_step = []
     global_critic_scores = []
-    reward_tracking = {idx: [] for idx in range(len(Actions))}
+    reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
 
-    # Accumulators (reset each timeslot)
-    total_reward = 0.0
-    total_failures = 0
+    total_reward_per_timeslot = 0.0
+    total_failures_per_timeslot = 0
     timeslots_completed = 0
     iterations = 0
 
-    # Reset environment
+    # -------------------------------------------------------------------------
+    # Environment reset
+    # -------------------------------------------------------------------------
+    _params = params_snapshot if params_snapshot is not None else params
+    _reward_params = reward_params_snapshot if reward_params_snapshot is not None else reward_params
+
     reset_options = {
-        'total_timeslots': params['total_timeslots'],
-        'maximum_number_of_bikes': params['maximum_number_of_bikes'],
-        'discount_factor': params['gamma'],
-        'logging': enable_logging,
-        'depot_id': params['depot_position_id'],
-        'initial_cell': params['initial_cell_id'],
-        'reward_params': reward_params,
-        'node_features': ['truck_cell', 'critic_score', 'eligibility_score', 'bikes'],
+        "total_timeslots": _params["total_timeslots"],
+        "maximum_number_of_bikes": _params["maximum_number_of_bikes"],
+        "minimum_number_of_bikes": _params["minimum_number_of_bikes"],
+        "enable_repositioning": _params["enable_repositioning"],
+        "use_net_flow": _params["use_net_flow"],
+        "discount_factor": _params["gamma"],
+        "depot_id": _params["depot_position_id"],
+        "reward_params": _reward_params,
     }
+    if episode_results_path is not None:
+        reset_options["results_path"] = episode_results_path
 
     agent_state, info = env.reset(options=reset_options)
 
-    # Initialize state
-    node_features = ['truck_cell', 'critic_score', 'eligibility_score', 'bikes']
-    state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
+    cell_dict = info["cell_dict"]
+    nodes_dict = info["nodes_dict"]
+    distance_lookup = info["distance_lookup"]
+
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict,
+        nodes_dict=nodes_dict,
+        distance_lookup=distance_lookup,
+    )
+
+    gnn_features = [
+        "truck_cell",
+        "critic_score",
+        "eligibility_score",
+        "total_bikes",
+    ]
+
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
     state.agent_state = agent_state
-    state.steps = info['steps']
+    state.steps = info["steps"]
 
-    # Extract static environment info
-    cell_dict = info['cell_dict']
-    nodes_dict = info['nodes_dict']
-    distance_matrix = info['distance_matrix']
+    # -------------------------------------------------------------------------
+    # Freeze epsilon for validation
+    # -------------------------------------------------------------------------
+    agent.epsilon = epsilon
 
-    # Initialize cell graph for spatial statistics
-    custom_features = {
-        'visits': 0,
-        'operations': 0,
-        'rebalanced': 0,
-        'failures': 0,
-        'failure_rates': 0.0,
-        'critic_score': 0.0,
-        'num_bikes': 0.0,
+    # -------------------------------------------------------------------------
+    # Main loop
+    # -------------------------------------------------------------------------
+    episode_cell_stats = {
+        cell_id: {"critic_sum": 0.0, "eligibility_sum": 0.0, "bikes_sum": 0.0}
+        for cell_id in cell_dict.keys()
     }
-    cell_graph = initialize_cells_subgraph(cell_dict, nodes_dict, distance_matrix, custom_features)
-
-    # Save original epsilon and set validation epsilon
-    original_epsilon = agent.epsilon
-    agent.epsilon = params['epsilon']
 
     done = False
-
     while not done:
-        # Prepare state for agent (S)
         single_state = Data(
             x=state.x.to(device),
             edge_index=state.edge_index.to(device),
             edge_attr=state.edge_attr.to(device),
-            agent_state=torch.tensor([state.agent_state], dtype=torch.float32).unsqueeze(0).to(device),
+            agent_state=torch.tensor(state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
             batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
         )
 
-        # Select action (A)
+        # Select action and step environment (A) (epsilon=0.05, mostly greedy)
         action = agent.select_action(single_state, epsilon_greedy=True)
 
-        # Step environment (R)
+        # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
-        # Create next state (S')
-        next_state = convert_graph_to_data(info['cells_subgraph'], node_features=node_features)
-        next_state.agent_state = agent_state
-        next_state.steps = info['steps']
-
-        # Record step metrics
-        action_per_step.append(action)
-        reward_tracking[action].append(reward)
-        global_critic_scores.append(info['global_critic_score'])
-        total_reward += reward
-        total_failures += sum(info['failures'])
-        iterations += 1
+        # Only update node attributes
+        cell_dict = info['cell_dict']
+        update_cell_graph_features(cell_graph, cell_dict)
 
         # Update cumulative cell statistics (averaged at episode end)
         for cell_id, cell in cell_dict.items():
-            center_node = cell.get_center_node()
-            if center_node not in cell_graph:
-                raise ValueError(f"Node {center_node} not found in cell_graph")
+            stats = episode_cell_stats[cell_id]
+            stats["critic_sum"] += cell.get_critic_score()
+            stats["eligibility_sum"] += cell.get_eligibility_score()
+            stats["bikes_sum"] += cell.get_total_bikes()
+            stats["bikes_dead_sum"] = cell.get_dead_bikes()
 
-            cell_graph.nodes[center_node]['critic_score'] = info['cells_subgraph'].nodes[center_node]['critic_score']
-            cell_graph.nodes[center_node]['num_bikes'] = info['cells_subgraph'].nodes[center_node]['bikes']
+        # Create next state (S')
+        next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+        next_state.agent_state = agent_state
+        next_state.steps = info["steps"]
+
+        # Record step metrics (no training in validation)
+        action_per_step.append(action)
+        reward_tracking_per_action[action].append(reward)
+        global_critic_scores.append(info["global_critic_score"])
+        total_reward_per_timeslot += reward
+        total_failures_per_timeslot += sum(info["failures"])
+        iterations += 1
 
         # Handle timeslot completion
         if timeslot_terminated:
             timeslots_completed += 1
 
             # Record timeslot metrics
-            rewards_per_timeslot.append(total_reward / 360)
-            failures_per_timeslot.append(total_failures)
-            deployed_bikes.append(info['number_of_system_bikes'])
+            rewards.append(total_reward_per_timeslot)
+            failures.append(total_failures_per_timeslot)
+            system_bikes.append(info["number_of_system_bikes"])
+            truck_load.append(info["truck_bikes"])
+            depot_load.append(info["depot_bikes"])
+            outside_system_bikes.append(info["number_of_outside_bikes"])
+            traveling_bikes.append(info["number_of_traveling_bikes"])
 
             # Reset accumulators
-            total_reward = 0.0
-            total_failures = 0
+            total_reward_per_timeslot = 0.0
+            total_failures_per_timeslot = 0
 
-        # Update progress bar
-        if tbar is not None:
-            tbar.set_description(
-                f"Validation Ep. {episode}, Week {info['week']}/{52}, {info['day'].capitalize()} "
-                f"at {convert_seconds_to_hours_minutes(info['time'])}"
-            )
-            tbar.set_postfix(eps=agent.epsilon, failures=sum(failures_per_timeslot))
-            tbar.update(1)
+            # Update progress bar
+            if tbar is not None:
+                tbar.set_description(
+                    f"[VALIDATION] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
+                    f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
+                )
+                tbar.set_postfix({"eps": agent.epsilon})
+                tbar.update(1)
 
         # Move to next state
         state = next_state
-        del single_state
+        del single_state  # Free GPU memory
 
-    # Copy final episode values and compute averages
-    for cell_id, cell in cell_dict.items():
-        center_node = cell.get_center_node()
-        if center_node not in cell_graph:
-            raise ValueError(f"Node {center_node} not found in cell_graph")
-
-        cell_graph.nodes[center_node]['visits'] = info['cells_subgraph'].nodes[center_node]['visits']
-        cell_graph.nodes[center_node]['operations'] = info['cells_subgraph'].nodes[center_node]['operations']
-        cell_graph.nodes[center_node]['rebalanced'] = info['cells_subgraph'].nodes[center_node]['rebalanced']
-        cell_graph.nodes[center_node]['failures'] = info['cells_subgraph'].nodes[center_node]['failures']
-        cell_graph.nodes[center_node]['failure_rates'] = info['cells_subgraph'].nodes[center_node]['failure_rates']
-
-        # Average cumulative values
-        cell_graph.nodes[center_node]['critic_score'] /= iterations
-        cell_graph.nodes[center_node]['num_bikes'] /= iterations
-
-    # Cleanup
-    env.close()
+    # -------------------------------------------------------------------------
+    # Post-episode cell stats
+    # -------------------------------------------------------------------------
     torch.cuda.empty_cache()
 
-    # Restore original epsilon
-    agent.epsilon = original_epsilon
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get("critic_sum", 0.0) / steps_in_episode
+            eligibility_mean = stats.get("eligibility_sum", 0.0) / steps_in_episode
+            bikes_mean = stats.get("bikes_sum", 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get("bikes_dead_sum", 0.0) / steps_in_episode
+        else:
+            critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+        nx_attrs["critic_mean"] = critic_mean
+        nx_attrs["eligibility_mean"] = eligibility_mean
+        nx_attrs["failure_sum"] = cell_dict[cell_id].get_failures()
+        nx_attrs["failure_rate"] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs["visits_sum"] = cell_dict[cell_id].get_visits()
+        nx_attrs["ops_sum"] = cell_dict[cell_id].get_ops()
+        nx_attrs["bikes_mean"] = bikes_mean
+        nx_attrs["dead_bikes_mean"] = dead_bikes_mean
 
     return {
-        'rewards_per_timeslot': rewards_per_timeslot,
-        'failures_per_timeslot': failures_per_timeslot,
-        'total_trips': info['total_trips'],
-        'total_invalid': info['total_invalid'],
-        'action_per_step': action_per_step,
-        'reward_tracking': reward_tracking,
-        'deployed_bikes': deployed_bikes,
-        'global_critic_scores': global_critic_scores,
-        'cell_subgraph': cell_graph,
+        "rewards_per_timeslot": rewards,
+        "failures_per_timeslot": failures,
+        "total_invalid_actions": info["total_invalid_actions"],
+        "action_per_step": action_per_step,
+        "global_critic_scores": global_critic_scores,
+        "reward_tracking_per_action": reward_tracking_per_action,
+        "deployed_bikes": system_bikes,
+        "truck_load": truck_load,
+        "depot_load": depot_load,
+        "outside_system_bikes": outside_system_bikes,
+        "traveling_bikes": traveling_bikes,
+        "cell_subgraph": cell_graph,
+        # Not tracked during validation — kept for EpisodeResults compatibility
+        "q_values_per_timeslot": [],
+        "epsilon_per_timeslot": [],
     }
 
 
+# ------------------------------------------------------------------------------
+# CLI
+# ------------------------------------------------------------------------------
 def create_parser() -> argparse.ArgumentParser:
-    """Create argument parser for validation CLI."""
     parser = argparse.ArgumentParser(
         description="BSS Validation Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Validate trained model
-  bss-validate --model-path results/run_000/models/best_model.pt --data-path data
+  # Validate the best model from run 0
+  bss-validate --run-id 0 --data-path data/ --results-path results/ --model-type best
 
-  # Specify validation run ID and results path
-  bss-validate --model-path results/run_000/models/best_model.pt --run-id 1 --results-path validation_results
+  # Validate a specific checkpoint episode
+  bss-validate --run-id 0 --data-path data/ --results-path results/ --model-type checkpoint --model-episode 42
 
-  # Use GPU device
-  bss-validate --model-path results/run_000/models/best_model.pt --device cuda:0
+  # Validate an arbitrary .pt file
+  bss-validate --run-id 0 --data-path data/ --results-path results/ --model-path results/run_000/models/final/trained_agent.pt
 
-  # Custom epsilon and timeslots
-  bss-validate --model-path results/run_000/models/best_model.pt --epsilon 0.1 --total-timeslots 112
-        """
+  # Override number of bikes and use GPU
+  bss-validate --run-id 0 --data-path data/ --max-num-bikes 300 --device cuda:0
+        """,
     )
 
-    parser.add_argument('--model-path', type=str, required=True,
-                        help='Path to the trained model file (e.g., trained_agent.pt)')
-    parser.add_argument('--run-id', type=int, default=0,
-                        help='Run ID for the validation experiment.')
-    parser.add_argument('--data-path', type=str, default='data/',
-                        help='Path to the data folder.')
-    parser.add_argument('--results-path', type=str, default='results/',
-                        help='Path to the results folder.')
-    parser.add_argument('--device', type=str, default='cpu',
-                        help=f'Hardware device to use. Available options: {devices}.')
-    parser.add_argument('--seed', type=int, default=params['seed'],
-                        help='Random seed for reproducibility.')
-    parser.add_argument('--num-bikes', type=int, default=params['maximum_number_of_bikes'],
-                        help='Number of bikes in the system.')
-    parser.add_argument('--epsilon', type=float, default=params['epsilon'],
-                        help='Epsilon value for epsilon-greedy policy (default: 0.05)')
-    parser.add_argument('--total-timeslots', type=int, default=params['total_timeslots'],
-                        help='Total number of timeslots for validation (default: 56 = 1 week)')
-    parser.add_argument('--enable-logging', action='store_true',
-                        help='Enable logging.')
+    # --- model source (mutually exclusive-ish: either --model-path or --model-type) ---
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Direct path to a trained_agent.pt file. Takes priority over --model-type.",
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="best",
+        choices=["best", "checkpoint", "final"],
+        help="Which saved model to load from the run directory (default: best).",
+    )
+    parser.add_argument(
+        "--model-episode",
+        type=int,
+        default=None,
+        help="Episode number to load when --model-type=checkpoint.",
+    )
+
+    # --- run / paths ---
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=0,
+        help="Run ID whose models/results to use."
+    )
+    parser.add_argument(
+        "--data-path",
+        type=str,
+        default="data/",
+        help="Path to the data folder."
+    )
+    parser.add_argument(
+        "--results-path",
+        type=str,
+        default="results/",
+        help="Path to the results folder (same root used during training)."
+    )
+
+    # --- environment overrides ---
+    parser.add_argument(
+        "--max-num-bikes",
+        type=int,
+        default=params["maximum_number_of_bikes"],
+        help="Maximum number of bikes in the system."
+    )
+    parser.add_argument(
+        "--min-num-bikes",
+        type=int,
+        default=params["minimum_number_of_bikes"],
+        help="Minimum number of bikes per cell."
+    )
+    parser.add_argument(
+        "--total-timeslots",
+        type=int,
+        default=params["total_timeslots"],
+        help="Total timeslots for the validation episode (default: 56 = 1 week)."
+    )
+    parser.add_argument(
+        "--enable-repositioning",
+        action="store_true",
+        help="Enable repositioning at the start of the episode."
+    )
+    parser.add_argument(
+        "--use-net-flow",
+        action="store_true",
+        help="Use net-flow repositioning strategy."
+    )
+
+    # --- misc ---
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help=f"Hardware device. Available: {devices}."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=params["seed"],
+        help="Random seed."
+    )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Enable environment logging."
+    )
+    parser.add_argument(
+        "--num-episodes",
+        type=int,
+        default=1,
+        help="Number of validation episodes to run (default: 1)."
+    )
 
     return parser
 
 
+# ------------------------------------------------------------------------------
+# main
+# ------------------------------------------------------------------------------
 def main():
-    """Main validation function."""
-
     warnings.filterwarnings("ignore")
-
-    # Parse arguments
     args = create_parser().parse_args()
 
-    # Save parsed arguments to global variables
+    # ------------------------------------------------------------------
+    # Params
+    # ------------------------------------------------------------------
+    params["seed"] = args.seed
+    params["total_timeslots"] = args.total_timeslots
+    params["maximum_number_of_bikes"] = args.max_num_bikes
+    params["minimum_number_of_bikes"] = args.min_num_bikes
+    params["enable_repositioning"] = args.enable_repositioning
+    params["use_net_flow"] = args.use_net_flow
+
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
-    enable_logging = args.enable_logging
+    logging_enabled = args.log
+    num_episodes = args.num_episodes
+    num_days = params["total_timeslots"] // 8
 
-    # Update params dict
-    params['seed'] = args.seed
-    params['total_timeslots'] = args.total_timeslots
-    params['maximum_number_of_bikes'] = args.num_bikes
-    params['epsilon'] = args.epsilon
-    params['results_path'] = results_path
+    set_seed(params["seed"])
 
-    # Set random seed
-    set_seed(params['seed'])
-
-    # Validate paths
     if not os.path.exists(data_path):
-        raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
+        raise FileNotFoundError(f"Data path not found: {data_path}")
 
-    if not os.path.exists(args.model_path):
-        raise FileNotFoundError(f"Model file not found: {args.model_path}")
-
-    # Set up device
     device = setup_device(args.device.lower(), devices)
 
-    # Create results manager
-    results_manager = ResultsManager(results_path, run_id)
+    # ------------------------------------------------------------------
+    # ResultsManager — reuse the existing run directory so validation
+    # results land next to the training results.
+    # ------------------------------------------------------------------
+    results_manager = ResultsManager(results_path, run_id, overwrite=True, interactive=False)
+    results_manager.save_hyperparameters(params, reward_params)
 
-    # Set up logger
-    logger = setup_logger(
-        'validation_logger',
-        str(results_manager.validation_path) + '/validation.log',
-        level=logging.INFO
-    )
-
-    logger.info(f"Validation started with the following parameters: {params}")
-    logger.info(f"Reward parameters: {reward_params}")
-    logger.info(f"Loading model from: {args.model_path}")
+    init_logging(LoggingConfig(
+        level=logging.INFO,
+        log_dir=os.path.join(str(results_manager.validation_path), "logs"),
+        run_id=run_id,
+        console=False,
+        logger_name="validate",
+    ))
+    logger = get_logger("validate", logger_name="validate")
+    logger.info(f"Validation started | params={params} | reward_params={reward_params}")
 
     print("=" * 80)
-    print(f"Device in use: {device}")
-    print(f"Validation parameters: {params}")
-    print(f"Reward parameters: {reward_params}")
+    print(f"Device: {device}")
+    print(f"Params: {params}")
+    print(f"Reward params: {reward_params}")
     print("=" * 80)
 
-    # Create environment
+    # ------------------------------------------------------------------
+    # Resolve model path
+    # ------------------------------------------------------------------
+    if args.model_path is not None:
+        model_path = args.model_path
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+    else:
+        # Let ResultsManager resolve it
+        if args.model_type == "final":
+            model_path = str(results_manager.models_path / "final" / "trained_agent.pt")
+        elif args.model_type == "best":
+            best = results_manager.get_best_model_path()
+            if best is None:
+                raise FileNotFoundError(
+                    "No best model tracked in this run. "
+                    "Use --model-path to point directly at a .pt file."
+                )
+            model_path = str(best)
+        elif args.model_type == "checkpoint":
+            if args.model_episode is None:
+                raise ValueError("--model-episode is required when --model-type=checkpoint")
+            model_path = str(
+                results_manager.models_path / "checkpoints"
+                / f"episode_{args.model_episode:03d}" / "trained_agent.pt"
+            )
+        else:
+            raise ValueError(f"Unknown model-type: {args.model_type}")
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Resolved model path not found: {model_path}")
+
+    logger.info(f"Loading model from: {model_path}")
+    print(f"Loading model: {model_path}")
+
+    # ------------------------------------------------------------------
+    # Environment
+    # ------------------------------------------------------------------
     env = gym.make(
-        'gymnasium_env:FullyDynamicEnv-v0',
+        "gymnasium_env/FullyDynamicEnv-v0",
         data_path=data_path,
-        results_path=f"{str(results_manager.validation_path)}/"
+        results_path=f"{str(results_manager.validation_path)}/",
+        seed=params["seed"],
+        logging_enabled=logging_enabled,
     )
-    env.unwrapped.seed(params['seed'])
-    env.action_space.seed(params['seed'])
-    env.observation_space.seed(params['seed'])
+    env.unwrapped.seed(params["seed"])
+    env.action_space.seed(params["seed"])
+    env.observation_space.seed(params["seed"])
 
-    # Initialize agent (with dummy replay buffer)
-    dummy_replay_buffer = ReplayBuffer(1000)  # Small buffer, won't be used
+    # ------------------------------------------------------------------
+    # Agent — frozen, no replay buffer (mirrors _validation_worker)
+    # ------------------------------------------------------------------
     agent = DQNAgent(
-        replay_buffer=dummy_replay_buffer,
         num_actions=env.action_space.n,
-        gamma=params['gamma'],
-        epsilon_start=params['epsilon'],
-        epsilon_end=params['epsilon'],
-        epsilon_decay=1.0,  # No decay during validation
-        lr=1e-4,
+        observation_space_len=env.observation_space.shape[0],
+        gamma=params["gamma"],
+        epsilon_start=0.01,
+        epsilon_end=0.01,
+        epsilon_decay=1,          # no decay
+        lr=params["lr"],
         device=device,
-        tau=0.005,
-        soft_update=True,
+        tau=params["tau"],
+        soft_update=False,
+        replay_buffer=None,
     )
+    agent.load_model(model_path)
+    agent.train_model.eval()
+    print("Model loaded successfully.\n")
 
-    # Load trained model
-    print(f"Loading trained model from {args.model_path}")
-    agent.load_model(args.model_path)
-    print("Model loaded successfully!")
+    # ------------------------------------------------------------------
+    # Validation loop
+    # ------------------------------------------------------------------
+    best_score = float("inf")
 
     try:
-        # Run validation
-        print("\nStarting validation episode...")
+        for episode in range(num_episodes):
+            val_episode_path = os.path.join(
+                str(results_manager.validation_path), f"episode_{episode:03d}"
+            )
 
-        tbar = tqdm(
-            range(params['total_timeslots']),
-            desc="Validation starting...",
-            position=0,
-            leave=True,
-            dynamic_ncols=True
-        )
+            tbar = tqdm(
+                total=params["total_timeslots"],
+                desc=f"[VAL] Episode {episode}",
+                position=0,
+                leave=True,
+                dynamic_ncols=True,
+            )
 
-        validation_dict = validate_dqn(env, agent, episode=0, device=device, enable_logging=enable_logging, tbar=tbar)
+            validation_dict = validate_dqn(
+                env=env,
+                agent=agent,
+                episode=episode,
+                device=device,
+                run_id=run_id,
+                epsilon=agent.epsilon_min,
+                logging_enabled=logging_enabled,
+                tbar=tbar,
+                episode_results_path=val_episode_path,
+                params_snapshot=dict(params),
+                reward_params_snapshot=dict(reward_params),
+            )
 
-        tbar.close()
+            tbar.close()
 
-        # Convert to EpisodeResults
-        validation_results = EpisodeResults(
-            episode=0,
-            mode='validation',
-            total_reward=sum(validation_dict['rewards_per_timeslot']),
-            mean_failures=sum(validation_dict['failures_per_timeslot']) / params['total_timeslots'],
-            total_failures=sum(validation_dict['failures_per_timeslot']),
-            total_trips=validation_dict['total_trips'],
-            total_invalid=validation_dict['total_invalid'],
-            epsilon=agent.epsilon,
-            rewards_per_timeslot=validation_dict['rewards_per_timeslot'],
-            failures_per_timeslot=validation_dict['failures_per_timeslot'],
-            epsilon_per_timeslot=[],  # Not tracked in validation
-            deployed_bikes=validation_dict['deployed_bikes'],
-            action_per_step=validation_dict['action_per_step'],
-            reward_tracking=validation_dict['reward_tracking'],
-            losses=[],  # Not tracked in validation
-            global_critic_scores=validation_dict['global_critic_scores'],
-            q_values_per_timeslot=[],  # Not tracked in validation
-            cell_subgraph=validation_dict['cell_subgraph'],
-        )
+            # Build EpisodeResults — identical field names to train.py's _collect_pending_validation
+            validation_results = EpisodeResults(
+                episode=episode,
+                mode="validation",
+                epsilon=agent.epsilon_min,
+                epsilon_per_timeslot=validation_dict.get("epsilon_per_timeslot", []),
+                rewards_per_timeslot=validation_dict["rewards_per_timeslot"],
+                total_reward=sum(validation_dict["rewards_per_timeslot"]),
+                failures_per_timeslot=validation_dict["failures_per_timeslot"],
+                total_failures=sum(validation_dict["failures_per_timeslot"]),
+                mean_daily_failures=sum(validation_dict["failures_per_timeslot"]) / num_days,
+                action_per_step=validation_dict["action_per_step"],
+                total_invalid_actions=validation_dict["total_invalid_actions"],
+                reward_tracking_per_action=validation_dict["reward_tracking_per_action"],
+                q_values_per_timeslot=validation_dict.get("q_values_per_timeslot", []),
+                mean_q_values=0.0,
+                deployed_bikes=validation_dict["deployed_bikes"],
+                truck_load=validation_dict["truck_load"],
+                depot_load=validation_dict["depot_load"],
+                outside_system_bikes=validation_dict["outside_system_bikes"],
+                global_critic_scores=validation_dict.get("global_critic_scores", []),
+                cell_subgraph=validation_dict["cell_subgraph"],
+            )
 
-        # Save results using ResultsManager
-        results_manager.save_episode(validation_results)
+            results_manager.save_episode(validation_results)
 
-        # Print summary
-        print("=" * 80)
-        print("VALIDATION RESULTS")
-        print("=" * 80)
-        print(f"Total trips: {validation_results.total_trips}")
-        print(f"Total failures: {validation_results.total_failures}")
-        print(f"Mean failures per timeslot: {validation_results.mean_failures:.2f}")
-        print(f"Invalid actions: {validation_results.total_invalid}")
-        print(f"Mean reward per timeslot: {np.mean(validation_results.rewards_per_timeslot):.4f}")
-        print(f"Failure rate: {(validation_results.total_failures / validation_results.total_trips * 100):.2f}%")
-        print("=" * 80)
+            is_best = validation_results.total_failures < best_score
+            if is_best:
+                best_score = validation_results.total_failures
 
-        logger.info(f"Validation completed - Mean Failures: {validation_results.mean_failures:.2f}, "
-                    f"Total Failures: {validation_results.total_failures}/{validation_results.total_trips}")
+            # Summary
+            print("=" * 80)
+            print(f"EPISODE {episode} RESULTS")
+            print("=" * 80)
+            print(f"  Total failures      : {validation_results.total_failures}")
+            print(f"  Mean daily failures : {validation_results.mean_daily_failures:.2f}")
+            print(f"  Invalid actions     : {validation_results.total_invalid_actions}")
+            print(f"  Mean reward/timeslot: {np.mean(validation_results.rewards_per_timeslot):.4f}")
+            print(f"  Total reward        : {validation_results.total_reward:.2f}")
+            print("=" * 80)
 
-        print(f"\n✓ Validation results saved to {results_manager.validation_path}")
-        print("Validation completed successfully!")
+            logger.info(
+                f"Episode {episode}: failures={validation_results.total_failures} total / "
+                f"{validation_results.mean_daily_failures:.2f} mean daily | "
+                f"invalid={validation_results.total_invalid_actions}"
+            )
+
+        results_manager.save_run_summary()
+        print(f"\nValidation complete. Results saved to {results_manager.validation_path}")
 
     except KeyboardInterrupt:
-        print("\n⚠ Validation interrupted by user.")
+        print("\nValidation interrupted.")
+        env.close()
         return
     except Exception as e:
-        print(f"\n✗ An error occurred during validation: {e}")
         logger.error(f"Validation failed: {e}")
-        raise e
+        env.close()
+        raise
+
+    env.close()
 
 
 if __name__ == "__main__":

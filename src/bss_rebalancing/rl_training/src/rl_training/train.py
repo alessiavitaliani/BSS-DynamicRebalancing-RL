@@ -456,6 +456,7 @@ def validate_dqn(
     # ============================================================================
     _params = params_snapshot if params_snapshot is not None else params
     _reward_params = reward_params_snapshot if reward_params_snapshot is not None else reward_params
+
     reset_options = {
         'total_timeslots': _params["total_timeslots"],
         'maximum_number_of_bikes': _params["maximum_number_of_bikes"],
@@ -506,11 +507,7 @@ def validate_dqn(
     # Main validation loop
     # ============================================================================
     episode_cell_stats = {
-        cell_id: {
-            'critic_sum': 0.0,
-            'eligibility_sum': 0.0,
-            'bikes_sum': 0.0,
-        }
+        cell_id: {"critic_sum": 0.0, "eligibility_sum": 0.0, "bikes_sum": 0.0}
         for cell_id in cell_dict.keys()
     }
 
@@ -532,7 +529,7 @@ def validate_dqn(
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
         # Only update node attributes
-        cell_dict = info['cell_dict'] # <- VERY BIG BUG, IT WAS PREVIOUSLY MISSING
+        cell_dict = info['cell_dict']
         update_cell_graph_features(cell_graph, cell_dict)
 
         # Update cumulative cell statistics (averaged at episode end)
@@ -1003,90 +1000,99 @@ def main():
                 f"Invalid Actions = {training_results.total_invalid_actions}"
             )
 
-            # # Decide whether to validate
-            # if training_results.mean_daily_failures < best_training_score:
-            #     best_training_score = training_results.mean_daily_failures
-            #     should_validate = agent.epsilon < 0.15 and not one_validation
-            # else:
-            #     should_validate = False
-            #
-            # # Always validate on the last episode
-            # if episode == params["num_episodes"] - 1:
-            #     should_validate = True
+            # Decide whether to validate
+            if training_results.mean_daily_failures < best_training_score:
+                best_training_score = training_results.mean_daily_failures
+                should_validate = agent.epsilon < 0.15 and not one_validation
+            else:
+                should_validate = False
 
-            should_validate = False
+            # Always validate on the last episode
+            if episode == params["num_episodes"] - 1:
+                should_validate = True
 
             if should_validate:
-                if validation_process is not None and validation_process.is_alive():
-                    # A validation is already running — skip this one to avoid
-                    # hammering the GPU and stacking up processes
-                    logger.info(
-                        f"Episode {episode}: Skipping validation, previous one (episode "
-                        f"{pending_validation_episode}) still running."
-                    )
-                else:
-                    # Snapshot weights to CPU — fast, avoids deep-copying the
-                    # entire agent (which would drag the replay buffer along)
-                    state_dict_cpu = {
-                        k: v.cpu().clone()
-                        for k, v in agent.train_model.state_dict().items()
-                    }
-
-                    val_episode_path = os.path.join(
-                        str(results_manager.validation_path), f"episode_{episode:03d}"
-                    )
-
-                    validation_process = mp.Process(
-                        target=_validation_worker,
-                        args=(
-                            state_dict_cpu,
-                            env.action_space.n,
-                            env.observation_space.shape[0],
-                            data_path,
-                            val_episode_path,
-                            episode,
-                            run_id,
-                            logging_enabled,
-                            dict(params),
-                            dict(reward_params),
-                            str(device),
-                            result_queue,
-                        ),
-                        daemon=True,
-                    )
-                    pending_validation_episode = episode
-                    validation_process.start()
-                    logger.info(
-                        f"Episode {episode}: Launched validation process "
-                        f"(PID {validation_process.pid}) on {device}."
-                    )
+                results_manager.save_model(
+                    agent=agent,
+                    episode=episode,
+                    score=training_results.mean_daily_failures,
+                    model_type='best',
+                    save_best=True,
+                )
+                logger.info(
+                    f"Episode {episode}: Saved best model "
+                    f"(mean_daily_failures={training_results.mean_daily_failures:.2f})"
+                )
+                # if validation_process is not None and validation_process.is_alive():
+                #     # A validation is already running — skip this one to avoid
+                #     # hammering the GPU and stacking up processes
+                #     logger.info(
+                #         f"Episode {episode}: Skipping validation, previous one (episode "
+                #         f"{pending_validation_episode}) still running."
+                #     )
+                # else:
+                #     # Snapshot weights to CPU — fast, avoids deep-copying the
+                #     # entire agent (which would drag the replay buffer along)
+                #     state_dict_cpu = {
+                #         k: v.cpu().clone()
+                #         for k, v in agent.train_model.state_dict().items()
+                #     }
+                #
+                #     val_episode_path = os.path.join(
+                #         str(results_manager.validation_path), f"episode_{episode:03d}"
+                #     )
+                #
+                #     validation_process = mp.Process(
+                #         target=_validation_worker,
+                #         args=(
+                #             state_dict_cpu,
+                #             env.action_space.n,
+                #             env.observation_space.shape[0],
+                #             data_path,
+                #             val_episode_path,
+                #             episode,
+                #             run_id,
+                #             logging_enabled,
+                #             dict(params),
+                #             dict(reward_params),
+                #             str(device),
+                #             result_queue,
+                #         ),
+                #         daemon=True,
+                #     )
+                #     pending_validation_episode = episode
+                #     validation_process.start()
+                #     logger.info(
+                #         f"Episode {episode}: Launched validation process "
+                #         f"(PID {validation_process.pid}) on {device}."
+                #     )
 
             gc.collect()
 
         # ------------------------------------------------------------------
         # Training done — block until any outstanding validation finishes
         # ------------------------------------------------------------------
-        if validation_process is not None:
-            logger.info(
-                f"Training complete. Waiting for validation of episode "
-                f"{pending_validation_episode} to finish..."
-            )
-            best_validation_score, collected_score = _collect_pending_validation(
-                validation_process=validation_process,
-                result_queue=result_queue,
-                pending_episode=pending_validation_episode,
-                results_manager=results_manager,
-                best_validation_score=best_validation_score,
-                num_days=num_days,
-                agent=agent,
-                logger=logger,
-                block=True,
-            )
-            if collected_score is not None:
-                last_validation_score = collected_score
-            validation_process = None
+        # if validation_process is not None:
+        #     logger.info(
+        #         f"Training complete. Waiting for validation of episode "
+        #         f"{pending_validation_episode} to finish..."
+        #     )
+        #     best_validation_score, collected_score = _collect_pending_validation(
+        #         validation_process=validation_process,
+        #         result_queue=result_queue,
+        #         pending_episode=pending_validation_episode,
+        #         results_manager=results_manager,
+        #         best_validation_score=best_validation_score,
+        #         num_days=num_days,
+        #         agent=agent,
+        #         logger=logger,
+        #         block=True,
+        #     )
+        #     if collected_score is not None:
+        #         last_validation_score = collected_score
+        #     validation_process = None
 
-        final_score = last_validation_score if last_validation_score is not None else float('inf')
+        final_score = last_validation_score if last_validation_score is not None else best_training_score
         results_manager.save_model(
             agent=agent,
             episode=params["num_episodes"] - 1,
