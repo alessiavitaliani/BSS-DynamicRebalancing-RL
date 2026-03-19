@@ -156,7 +156,7 @@ def run_simulation(
             depot_load.append(info['depot_bikes'])
             outside_system_bikes.append(info['number_of_outside_bikes'])
             traveling_bikes.append(info['number_of_traveling_bikes'])
-            rebalance_times.extend(info['rebalance_time'])
+            rebalance_times.extend(info['rebalance_times'])
             global_critic_scores.append(info['global_critic_score'])
 
             # Update progress bar with current status
@@ -203,7 +203,7 @@ def run_simulation(
         "outside_system_bikes": outside_system_bikes,
         'traveling_bikes': traveling_bikes,
         "cell_subgraph": cell_graph,
-        'rebalance_time': rebalance_times
+        'rebalance_times': rebalance_times
     }
 
 
@@ -228,6 +228,7 @@ def run_benchmark(config: dict):
 
     params['seed'] = config['seed']
     params['num_episodes'] = config['num_episodes']
+    params['num_rebalancing_events'] = config['num_rebal_events']
     params['maximum_number_of_bikes'] = config['maximum_number_of_bikes']
     params['minimum_number_of_bikes'] = config['minimum_number_of_bikes']
     params['enable_repositioning'] = config['enable_repositioning']
@@ -302,6 +303,7 @@ def run_benchmark(config: dict):
         depot_load=episode_results['depot_load'],
         outside_system_bikes=episode_results['outside_system_bikes'],
         traveling_bikes=episode_results['traveling_bikes'],
+        rebalance_times=episode_results['rebalance_times'],
         cell_subgraph=episode_results['cell_subgraph'],
     )
     results_manager.save_episode(ep_results)
@@ -376,6 +378,12 @@ def parse_arguments() -> dict:
         help='Number of episodes to simulate'
     )
     parser.add_argument(
+        '--num-rebal-events',
+        type=int,
+        default=params['num_rebalancing_events'],
+        help='Number of rebalancing events to simulate'
+    )
+    parser.add_argument(
         '--max-num-bikes',
         type=int,
         default=params['maximum_number_of_bikes'],
@@ -412,6 +420,7 @@ def parse_arguments() -> dict:
         'results_path': args.results_path,
         'seed': args.seed,
         'num_episodes': args.num_episodes,
+        'num_rebal_events': args.num_rebal_events,
         'maximum_number_of_bikes': args.max_num_bikes,
         'minimum_number_of_bikes': args.min_num_bikes,
         'enable_repositioning': args.enable_repositioning,

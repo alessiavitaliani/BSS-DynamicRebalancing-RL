@@ -27,6 +27,7 @@ class EpisodeResults:
     depot_load: List[int] = field(default_factory=list)
     outside_system_bikes: List[int] = field(default_factory=list)
     traveling_bikes: List[int] = field(default_factory=list)
+    rebalance_times: List[int] = field(default_factory=list)
 
     # Spatial data (cell subgraph)
     cell_subgraph: Optional[nx.Graph] = None
@@ -120,6 +121,7 @@ class ResultsManager:
             'depot_load': results.depot_load,
             'outside_system_bikes': results.outside_system_bikes,
             'traveling_bikes': results.traveling_bikes,
+            'rebalance_times': results.rebalance_times
         })
         timeslot_df.to_csv(episode_dir / 'timeslot_metrics.csv', index=False)
 
@@ -159,7 +161,7 @@ class ResultsManager:
             'run_id': self.run_id,
             'hyperparameters': params,
         }
-        with open(self.results_path / f"run_{self.run_id:03d}" / 'config.json', 'w') as f:
+        with open(self.bench_path / 'config.json', 'w') as f:
             json.dump(config, f, indent=2)
 
     def load_episode(self, mode: str = 'train') -> EpisodeResults:
@@ -194,6 +196,7 @@ class ResultsManager:
             depot_load=timeslot_df['depot_load'].tolist(),
             outside_system_bikes=timeslot_df['outside_system_bikes'].tolist(),
             traveling_bikes=timeslot_df['traveling_bikes'].tolist(),
+            rebalance_times=timeslot_df['rebalance_times'].tolist(),
             cell_subgraph=cell_subgraph,
         )
 
@@ -234,6 +237,7 @@ class ResultsManager:
             depot_load=pad_to_length(results.depot_load, expected_length, 0),
             outside_system_bikes=pad_to_length(results.outside_system_bikes, expected_length, 0),
             traveling_bikes=pad_to_length(results.traveling_bikes, expected_length, 0),
+            rebalance_times=pad_to_length(results.rebalance_times, expected_length, 0),
 
             # Step-level data (no length requirements)
             cell_subgraph=results.cell_subgraph,

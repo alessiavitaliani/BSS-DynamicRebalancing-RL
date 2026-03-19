@@ -500,7 +500,7 @@ class StaticEnv(gym.Env):
         """
         terminated = False
         failures_this_timeslot = 0
-        rebalance_time = []
+        rebalance_times = []
 
         # Process events until timeslot ends
         while not terminated:
@@ -538,7 +538,7 @@ class StaticEnv(gym.Env):
                 hour = ((self._env_time // 3600) + 1) % 24
                 if hour in self._rebalancing_hours:
                     time_to_rebalance = self._rebalance_system()
-                    rebalance_time.append(time_to_rebalance)
+                    rebalance_times.append(time_to_rebalance)
 
             # Check for timeslot termination
             timeslot_duration = EnvDefaults.TIMESLOT_DURATION_SECONDS
@@ -559,6 +559,9 @@ class StaticEnv(gym.Env):
         for cell in self._cells.values():
             global_critic_score += cell.get_critic_score()
 
+        if len(rebalance_times) == 0:
+            rebalance_times.append(0)
+
         # Build info dictionary
         info = {
             'time': self._env_time + (self._timeslot * 3 + 1) * 3600,
@@ -573,7 +576,7 @@ class StaticEnv(gym.Env):
             'number_of_system_bikes': len(self._system_bikes),
             'number_of_outside_bikes': len(self._outside_system_bikes),
             'number_of_traveling_bikes': len(self._travelling_bikes),
-            'rebalance_time': rebalance_time
+            'rebalance_times': rebalance_times
         }
 
         # Check if episode is complete
@@ -617,6 +620,14 @@ class StaticEnv(gym.Env):
             enable_repositioning=True,
             use_net_flow=True,
         )
+
+        self._env_logger.info(
+            f"Rebalancing target — hour={((self._env_time // 3600) + 1) % 24}, "
+            f"available={available_bikes}, "
+            f"bikes_per_cell={dict(sorted(bikes_per_cell.items()))}, "
+            f"total_targeted={sum(bikes_per_cell.values())}"
+        )
+
         time_to_rebalance = self._compute_rebalancing_time(bikes_per_cell)
 
         # -----------------------------------------------------------------
