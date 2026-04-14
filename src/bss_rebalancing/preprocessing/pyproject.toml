@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bss-preprocessing"
-version = "1.0.0"
+version = "1.1.0"
 description = "Data preprocessing pipeline for BSS Dynamic Rebalancing with Deep RL"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,19 +32,20 @@ classifiers = [
 
 # Core dependencies
 dependencies = [
-    "numpy>=1.24.0,<2.0",
-    "pandas>=2.0.0",
-    "osmnx>=1.6.0",
-    "networkx>=3.0",
-    "geopandas>=0.13.0",
-    "matplotlib>=3.7.0",
-    "geopy>=2.3.0",
-    "shapely>=2.0.0",
-    "tqdm>=4.65.0",
-    "requests>=2.31.0",
-    "scipy>=1.11.0",
+    "numpy>=2.3.0",
+    "pandas>=2.3.0",
+    "osmnx>=2.0.0",
+    "networkx>=3.3",
+    "geopandas>=0.14.4",
+    "matplotlib>=3.10.0",
+    "geopy>=2.4.0",
+    "shapely>=2.1.0",
+    "tqdm>=4.66.0",
+    "requests>=2.32.0",
+    "scipy>=1.16.0",
     "polars>=1.38.0",
-    "haversine>=2.9.0"
+    "haversine>=2.9.0",
+    "bss-gymnasium-env>=1.1.0"
 ]
 
 [project.optional-dependencies]

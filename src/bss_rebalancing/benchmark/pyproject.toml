@@ -10,15 +10,18 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 dependencies = [
-    "torch",
-    "gymnasium",
-    "numpy",
-    "matplotlib",
-    "requests",
-    "networkx",
-    "osmnx",
-    "geopandas",
-    "torch_geometric"
+    "pandas>=2.3.0",
+    "psutil>=6.1.0",
+    "tqdm>=4.66.0",
+    "bss-gymnasium-env>=1.1.0",
+    "torch>=2.7.0",
+    "gymnasium>=1.0.0",
+    "numpy>=2.3.0",
+    "matplotlib>=3.10.0",
+    "requests>=2.32.0",
+    "networkx>=3.3",
+    "osmnx>=2.0.0",
+    "geopandas>=0.14.4"
 ]
 
 [project.scripts]

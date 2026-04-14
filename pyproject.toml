@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bss-rebalancing"
-version = "1.0.0"
+version = "1.1.0"
 description = "Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "CC-BY-NC-4.0"}
+license = "CC-BY-NC-4.0"
 authors = [
     {name = "Edoardo Scarpel", email = "edoardo.scarpel@phd.unipd.it"}
 ]
@@ -24,7 +24,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -32,12 +31,11 @@ classifiers = [
 ]
 
 dependencies = [
-    # This will install all subpackages
-    "bss-preprocessing",
-    "bss-gymnasium-env",
-    "bss-rl-training",
-    "bss-benchmark",
-    "bss-results-webapp",
+    "bss-preprocessing @ file:src/bss_rebalancing/preprocessing",
+    "bss-gymnasium-env @ file:src/bss_rebalancing/gymnasium_env",
+    "bss-rl-training @ file:src/bss_rebalancing/rl_training",
+    "bss-benchmark @ file:src/bss_rebalancing/benchmark",
+    "bss-results-webapp @ file:src/bss_rebalancing/results_webapp",
 ]
 
 [project.optional-dependencies]
@@ -55,13 +53,7 @@ Thesis = "https://hdl.handle.net/20.500.12608/84368"
 Issues = "https://github.com/edos08/BSS-DynamicRebalancing-RL/issues"
 
 [tool.setuptools]
-# Install all subpackages when installing the root package
-packages = {find = {where = ["src/bss_rebalancing/**/src"]}}
+packages = []
 
 [tool.setuptools.package-data]
 "*" = ["*.yml", "*.yaml", "*.json"]
-
-# When you run 'pip install -e .' at root, it will:
-# 1. Discover all subpackages in src/bss_rebalancing/*/
-# 2. Install them in editable mode
-# 3. Register all CLI entry points from their pyproject.toml files
