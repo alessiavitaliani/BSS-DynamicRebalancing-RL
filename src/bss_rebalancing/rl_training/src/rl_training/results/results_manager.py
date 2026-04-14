@@ -203,14 +203,15 @@ class ResultsManager:
                 index=False
             )
 
-    def save_hyperparameters(self, params: dict, reward_params: dict):
+    def save_hyperparameters(self, params: dict, reward_params: dict, validation: bool):
         """Save hyperparameters and configuration."""
         config = {
             'run_id': self.run_id,
             'hyperparameters': params,
             'reward_parameters': reward_params,
         }
-        with open(self.results_path / f"run_{self.run_id:03d}" / 'config.json', 'w') as f:
+        path = self.validation_path if validation else self.training_path / 'config.json'
+        with open(path, 'w') as f:
             json.dump(config, f, indent=2)
 
     def load_episode(self, episode: int, mode: str = 'train') -> EpisodeResults:

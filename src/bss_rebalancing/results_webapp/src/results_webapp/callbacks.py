@@ -275,12 +275,14 @@ def register_callbacks(app):
         timeslot_df = episode_data.get('timeslot_metrics')
         step_data = episode_data.get('step_data', {})
 
+        total_failures = scalars.get('total_failures', 'N/A')
+
         # Stats cards
         stats_cards = dbc.Row([
             dbc.Col([
                 dbc.Card([
                     dbc.CardBody([
-                        html.H4(f"{scalars.get('total_failures', 'N/A')}", className='text-danger'),
+                        html.H4(f"{total_failures}", className='text-danger'),
                         html.P('Total Failures', className='text-muted mb-0')
                     ])
                 ])
@@ -317,7 +319,7 @@ def register_callbacks(app):
                 timeslot_df, 'reward', 'Rewards per Timeslot', 'Reward'
             )
             failures_plot = create_timeslot_plot(
-                timeslot_df, 'failures', 'Failures per Timeslot', 'Failures'
+                timeslot_df, 'failures', f'Failures per Timeslot - Total: {total_failures}', 'Failures'
             )
             inside_system_bikes_plot = create_timeslot_plot(
                 timeslot_df, 'inside_system_bikes', 'Total Bikes in the Inside System per Timeslot', '# of Bikes in the System'

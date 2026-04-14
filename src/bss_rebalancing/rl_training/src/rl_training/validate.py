@@ -255,6 +255,7 @@ def validate_dqn(
         nx_attrs["failure_rate"] = cell_dict[cell_id].get_failure_rate()
         nx_attrs["visits_sum"] = cell_dict[cell_id].get_visits()
         nx_attrs["ops_sum"] = cell_dict[cell_id].get_ops()
+        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs["bikes_mean"] = bikes_mean
         nx_attrs["dead_bikes_mean"] = dead_bikes_mean
 
@@ -434,8 +435,17 @@ def main():
     # ResultsManager — reuse the existing run directory so validation
     # results land next to the training results.
     # ------------------------------------------------------------------
-    results_manager = ResultsManager(results_path, run_id, overwrite=True, interactive=False)
-    results_manager.save_hyperparameters(params, reward_params)
+    results_manager = ResultsManager(
+        results_path=results_path,
+        run_id=run_id,
+        overwrite=True,
+        interactive=False
+    )
+    results_manager.save_hyperparameters(
+        params=params,
+        reward_params=reward_params,
+        validation=True
+    )
 
     init_logging(LoggingConfig(
         level=logging.INFO,

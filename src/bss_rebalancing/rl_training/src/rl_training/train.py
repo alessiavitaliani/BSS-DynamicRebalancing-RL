@@ -391,6 +391,7 @@ def train_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 
@@ -611,6 +612,7 @@ def validate_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 

@@ -266,7 +266,7 @@ def main():
                         help='Path to data directory (containing utils/cambridge_network.graphml)')
     parser.add_argument('--port', type=int, default=8050,
                         help='Port to run server on')
-    parser.add_argument('--update-interval', type=int, default=5000,
+    parser.add_argument('--update-interval', type=int, default=60*1000,
                         help='Auto-refresh interval in milliseconds')
     parser.add_argument('--debug', action='store_true',
                         help='Run in debug mode')
