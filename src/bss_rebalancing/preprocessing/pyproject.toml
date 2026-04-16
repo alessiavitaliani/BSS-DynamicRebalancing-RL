@@ -84,8 +84,6 @@ bss-preprocess = "preprocessing.cli:main"
 # Package discovery
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["preprocessing*"]
-exclude = ["tests*", "docs*"]
 
 [tool.setuptools.package-data]
 preprocessing = ["*.json", "*.yml", "*.yaml"]

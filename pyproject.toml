@@ -52,8 +52,8 @@ Repository = "https://github.com/edos08/BSS-DynamicRebalancing-RL"
 Thesis = "https://hdl.handle.net/20.500.12608/84368"
 Issues = "https://github.com/edos08/BSS-DynamicRebalancing-RL/issues"
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yml", "*.yaml", "*.json"]
