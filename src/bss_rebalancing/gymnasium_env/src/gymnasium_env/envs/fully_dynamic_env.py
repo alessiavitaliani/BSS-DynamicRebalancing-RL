@@ -12,6 +12,7 @@ import math
 import os.path
 import heapq
 import logging
+import multiprocessing
 
 import gymnasium as gym
 import numpy as np
@@ -35,7 +36,7 @@ from gymnasium_env.simulator.truck_simulator import (
     move,
     pick_up_bike,
     stay,
-    ACTION_TO_DIRECTION
+    ACTION_TO_DIRECTION,
 )
 from gymnasium_env.simulator.utils import (
     DAYS_TO_NUM,
@@ -49,8 +50,8 @@ from gymnasium_env.simulator.utils import (
     initialize_stations,
     load_preprocessed_data,
     flatten_pmf_matrix,
-    cache_precomputed_buffers,
-    load_cached_buffers
+    cache_episode_zero,
+    load_episode_zero
 )
 from gymnasium_env.simulator.env_logger import EnvLogger
 
@@ -151,18 +152,89 @@ class RewardComponents:
     # Stay penalties
     STAY_BASE = -0.1
     STAY_IN_CRITICAL = -1.0
-    STAY_NO_CRITIC = 0.0        # FIX A: REDUCED TO 0.0 FROM 0.3
+    STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
     DEPLOY_WEIGHT = 0.02
     DEPOT_WEIGHT = 0.02
 
+# =============================================================================
+# Auxiliary classes
+# =============================================================================
 
 @dataclass
 class Depot:
     id: int | None = None
     bikes: dict[int, Bike] = field(default_factory=dict)
+
+# =============================================================================
+# Episode Worker
+# =============================================================================
+
+def _compute_buffer_logic(
+    seed: int,
+    data_path: str,
+    global_rate_dict: dict,
+    distance_lookup: dict,
+    first_episode: bool = False,
+    cache_dir: str | None = None,
+) -> dict:
+    """Pure function — all the actual computation. No queue, no process."""
+
+    # ── Cache load (first episode only) ─────────────────────────────────────
+    if first_episode and cache_dir is not None:
+        cached = load_episode_zero(
+            cache_dir=cache_dir,
+            seed=seed,
+            expected_timeslots=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+        )
+        if cached is not None:
+            return cached
+
+    # ── Compute ─────────────────────────────────────────────────────────────
+    rng = np.random.default_rng(seed)
+    day = EnvDefaults.DEFAULT_DAY
+    buffers = {}
+    pbar = tqdm(
+        total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+        desc="Computing first episode",
+        unit="slot",
+        leave=False,
+        dynamic_ncols=True
+    ) if first_episode else None
+
+    for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
+        timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
+        matrix_path = os.path.join(data_path, DEFAULT_PATHS.matrices_folder)
+        pmf_matrix = pl.read_csv(os.path.join(matrix_path, day.lower(), str(timeslot).zfill(2) + '-pmf-matrix.csv'))
+        global_rate = global_rate_dict[(day.lower(), timeslot)]
+        flattened_pmf = flatten_pmf_matrix(pmf_matrix)
+        slot_seed = int(rng.integers(0, 2 ** 31))
+        buffers[slot_index] = simulate_events(
+            duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
+            timeslot=timeslot,
+            global_rate=global_rate,
+            pmf=flattened_pmf,
+            distance_lookup=distance_lookup,
+            seed=slot_seed,
+        )
+        if pbar: pbar.update(1)
+        if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
+            day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
+
+    if pbar: pbar.close()
+
+    # ── Cache save (first episode only) ─────────────────────────────────────
+    if first_episode and cache_dir is not None:
+        cache_episode_zero(buffers, cache_dir=cache_dir, seed=seed)
+
+    return buffers
+
+def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_queue):
+    """Thin process entry point — just calls the logic and puts result in queue."""
+    result = _compute_buffer_logic(seed, data_path, global_rate_dict, distance_lookup)
+    result_queue.put(result)
 
 # =============================================================================
 # Main Environment Class
@@ -177,11 +249,11 @@ class FullyDynamicEnv(gym.Env):
     controls the truck's movements and bike pickup/drop operations.
     """
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Initialization
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, data_path: str, results_path: str = None, seed: int = None, logging_enabled: bool = False):
+    def __init__(self, data_path: str, results_path: str = None, seed: int = 42, logging_enabled: bool = False):
         """
         Initialize the bike-sharing environment.
 
@@ -196,9 +268,10 @@ class FullyDynamicEnv(gym.Env):
         self._results_path = results_path
 
         # Env logger: lazy init
+        log_dir = os.path.join(results_path, "logs") if results_path is not None else None
         self._env_logger = EnvLogger(name="env")
         self._env_logger.init(
-            log_dir=os.path.join(results_path, "logs"),
+            log_dir=log_dir,
             filename="env.log",
             level=logging.INFO,
             enabled=logging_enabled,
@@ -340,60 +413,17 @@ class FullyDynamicEnv(gym.Env):
         self._total_invalid_actions = 0
 
         # -------------------------------------------------------------------------
-        # Precompute events for a full episode at initialization for reproducibility and performance
+        # Episode buffer state
         # -------------------------------------------------------------------------
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
-        self._event_fingerprint: str = ""
-        self._precompute_full_episode(seed=seed)
+        self._episode_seed: int = seed
 
-    def _precompute_full_episode(self, seed: int = 42) -> None:
-        """
-        Precompute all events for a full episode (56 timeslots) at init time.
-        Stores one list per timeslot in self._precomputed_buffers.
-        """
-        cache_dir = os.path.join(self._data_path, '.cache')
-        cache_file = os.path.join(cache_dir, 'precomputed_buffers.pkl')
+        self._bg_process: multiprocessing.Process | None = None
+        self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
 
-        precomputed_buffers: dict[int, list[TripSample]] = load_cached_buffers(cache_file)
-
-        if len(precomputed_buffers) == EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS:
-            self._precomputed_buffers = precomputed_buffers
-            print("Loaded precomputed buffers from cache.")
-            return
-
-        np.random.seed(seed)
-        day = EnvDefaults.DEFAULT_DAY
-        self._precomputed_buffers = {}
-
-        with tqdm(total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-                  desc="Precomputing episode", unit="slot",
-                  leave=False, dynamic_ncols=True) as pbar:
-
-            for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
-                timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
-                pmf_matrix = self._load_pmf_matrix(day, timeslot)
-                global_rate = self._global_rate_dict[(day.lower(), timeslot)]
-                flattened_pmf = flatten_pmf_matrix(pmf_matrix)
-
-                self._precomputed_buffers[slot_index] = simulate_events(
-                    duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
-                    timeslot=timeslot,
-                    global_rate=global_rate,
-                    pmf=flattened_pmf,
-                    distance_lookup=self._distance_lookup,
-                )
-
-                if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
-                    day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
-
-                pbar.set_postfix(day=day, slot=timeslot)
-                pbar.update(1)
-
-        cache_precomputed_buffers(self._precomputed_buffers, cache_file)
-
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Environment Reset
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None) -> tuple[np.array, dict]: # type: ignore
         """
@@ -418,6 +448,22 @@ class FullyDynamicEnv(gym.Env):
             Tuple of (initial_observation, info_dict)
         """
         super().reset(seed=seed)
+
+        # ── Episode buffer management ─────────────────────────────────────────
+        if not self._precomputed_buffers:
+            self._precomputed_buffers = self._compute_episode_buffer(
+                self._episode_seed, first_episode=True
+            )
+        else:
+            if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
+                # Process died without delivering — recompute synchronously
+                self._env_logger.warning("Background result missing — recomputing synchronously.")
+                self._precomputed_buffers = self._compute_episode_buffer(self._episode_seed)
+            else:
+                # Normal path (also covers: process still running but will deliver)
+                if self._bg_process is not None and self._bg_process.is_alive():
+                    self._env_logger.warning("Waiting for background precomputation...")
+                self._precomputed_buffers = self._acquire_next_episode_buffer()
 
         # Parse options with defaults
         options = options or {}
@@ -562,11 +608,77 @@ class FullyDynamicEnv(gym.Env):
             f"outside={len(self._outside_system_bikes)}"
         )
 
+        # ── Launch background precomputation of the next episode ─────────────
+        self._start_next_episode_precomputation()
+
         return observation, info
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
+    # Episode buffer management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _compute_episode_buffer(self, seed: int, first_episode: bool = False) -> dict:
+        """Synchronous wrapper — runs the worker logic in-process."""
+        # Reuse a temporary queue just to get the return value through the same code path
+        cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
+        return _compute_buffer_logic(
+            seed=seed,
+            data_path=self._data_path,
+            global_rate_dict=self._global_rate_dict,
+            distance_lookup=self._distance_lookup,
+            first_episode=first_episode,
+            cache_dir=cache_dir,
+        )
+
+    def _start_next_episode_precomputation(self) -> None:
+        """
+        Spawn a background PROCESS (not thread) to compute the next episode buffer.
+        The result is placed in self._result_queue when ready.
+        Idempotent: does nothing if a process is already running.
+        """
+        if self._bg_process is not None and self._bg_process.is_alive():
+            return  # Already computing, nothing to do
+
+        # Drain any stale result from a previous (completed but unconsumed) process
+        while not self._result_queue.empty():
+            try:
+                self._result_queue.get_nowait()
+            except Exception:
+                break
+
+        self._episode_seed += 1
+        self._bg_process = multiprocessing.Process(
+            target=_episode_worker,
+            args=(
+                self._episode_seed,
+                self._data_path,
+                self._global_rate_dict,
+                self._distance_lookup,
+                self._result_queue,
+            ),
+            daemon=True,  # dies if main process dies
+        )
+        self._bg_process.start()
+
+    def _acquire_next_episode_buffer(self) -> dict:
+        try:
+            result = self._result_queue.get(timeout=120)
+        except Exception:
+            if self._bg_process is not None:
+                self._bg_process.kill()
+                self._bg_process = None
+            raise RuntimeError(
+                f"Background episode precomputation timed out after 120s "
+                f"(seed={self._episode_seed}). Episode buffer unavailable."
+            )
+        if self._bg_process is not None:
+            self._bg_process.join(timeout=5)
+            self._bg_process = None
+        return result
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Environment Step
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def step(self, action) -> tuple[np.array, float, bool, bool, dict]: # type: ignore
         """
@@ -645,7 +757,7 @@ class FullyDynamicEnv(gym.Env):
         old_eligibility_score = truck_cell.get_eligibility_score()
         old_critic_score = truck_cell.get_critic_score()
         old_global_critic_score = self._global_critic_score
-        old_surplus_bikes = truck_cell.get_surplus_bikes()  # FIX A: added direct computation of old_surplus_bikes
+        old_surplus_bikes = truck_cell.get_surplus_bikes()
 
         self._env_logger.info(
             f"Cell {truck_cell.get_id()} before update has "
@@ -741,7 +853,7 @@ class FullyDynamicEnv(gym.Env):
             'truck_bikes': self._truck.get_load(),
             'number_of_system_bikes': len(self._system_bikes),
             'number_of_outside_bikes': len(self._outside_system_bikes),
-            'number_of_traveling_bikes': len(self._travelling_bikes),
+            'number_of_traveling_bikes': len(self._travelling_bikes)
         }
 
         # Check for timeslot/episode termination
@@ -749,7 +861,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= (self._total_failures / self._total_timeslots) # / 10.0     # RUN: ID-1 REMOVING / 10.0 TO INCREASE PENALTY
+            reward -= (self._total_failures / self._total_timeslots) # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
@@ -791,9 +903,9 @@ class FullyDynamicEnv(gym.Env):
 
         return terminated, done
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Gymnasium Interface Methods
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def seed(self, seed=None):
         """Set the random seed for the environment."""
@@ -801,12 +913,14 @@ class FullyDynamicEnv(gym.Env):
         return [seed]
 
     def close(self):
-        """Clean up resources."""
-        return
+        if self._bg_process is not None and self._bg_process.is_alive():
+            self._bg_process.kill()
+            self._bg_process.join(timeout=3)
+        super().close()
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Event Simulation
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _initialize_day_timeslot(self) -> None:
         current_slot_index = (
@@ -937,9 +1051,9 @@ class FullyDynamicEnv(gym.Env):
 
         return total_step_failures
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Observation Construction
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _get_obs(self, action: int = None) -> np.array: # type: ignore
         """Construct the observation vector."""
@@ -975,7 +1089,7 @@ class FullyDynamicEnv(gym.Env):
 
         scalar_features = np.array([
             system_ratio,
-            depot_load_ratio,   # RUN: ID-6
+            depot_load_ratio,
             1.0 if truck_cell.get_surplus_bikes() > 0 else 0.0,     # Surplus flag
             1.0 if truck_cell.get_total_bikes() == 0 else 0.0,      # Empty cell flag
             self._global_critic_score / len(self._cells),           # Global critic score
@@ -1020,9 +1134,9 @@ class FullyDynamicEnv(gym.Env):
 
         return normalized_lat, normalized_lon
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Reward Function
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _get_reward(
         self,
@@ -1051,7 +1165,7 @@ class FullyDynamicEnv(gym.Env):
         # Compute common state indicators
         loop_detected = detect_self_loops((action, self._last_move_action))
         was_critical = old_critic_score > 0.0
-        was_surplus = old_surplus_bikes > 0     # FIX A: replaced the was_surplus with this from the one below
+        was_surplus = old_surplus_bikes > 0
         # was_surplus = old_critic_score <= RewardComponents.SURPLUS_THRESHOLD
         is_critical = self._truck.get_cell().is_critical()
 
@@ -1110,7 +1224,7 @@ class FullyDynamicEnv(gym.Env):
                 + loop_penalty
                 + r_deploy
                 + r_depot
-                - 0.5 * delta_global    # RUN: ID-2
+                - 0.5 * delta_global
         )
 
         self._env_logger.info(
@@ -1120,9 +1234,9 @@ class FullyDynamicEnv(gym.Env):
 
         return reward
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Reward Computation Utility Methods
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _compute_drop_reward(
             self,
@@ -1234,9 +1348,9 @@ class FullyDynamicEnv(gym.Env):
         )
         self._truck.get_cell().set_eligibility_score(1.0)
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Graph Update
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _update_cells_metrics(self):
         """Update the cell subgraph with current regional metrics."""
@@ -1289,15 +1403,15 @@ class FullyDynamicEnv(gym.Env):
             if self._use_binary_critic:
                 # Binary classification: critic = 1 if “bad”, else 0
                 is_critical = raw_critic > 0.0
-                cell.set_critic_score(1.0 if is_critical else raw_critic)   # FIX A: changed from <1.0 if is_critical else 0.0>
+                cell.set_critic_score(1.0 if is_critical else raw_critic)
                 if is_critical:
                     self._global_critic_score += 1.0
             else:
                 self._global_critic_score += max(raw_critic, 0.0)
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Utility Methods
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _bike_repositioning(
             self,

@@ -55,6 +55,7 @@ class Cell:
             'total_departures': 0,
             'total_rebalanced': 0,
             'failures': 0,
+            'total_demand': 0,
             # Derived quality metrics (recomputed each step)
             'failure_rate': 0.0,
             # Critic score + history
@@ -118,9 +119,8 @@ class Cell:
         self._metrics['dead_bikes'] = dead_bikes
 
         # ── Failure rate ──────────────────────────────────────────────────────
-        total_demand = self.get_total_departures() + self.get_failures()
         self._metrics['failure_rate'] = (
-            self.get_failures() / total_demand if total_demand > 0 else 0.0
+            self.get_failures() / self.get_total_demand() if self.get_total_demand() > 0 else 0.0
         )
 
         # ── Critic score & surplus ────────────────────────────────────────────
@@ -176,8 +176,14 @@ class Cell:
 
     # ── Accumulator increments ──────────────────────────────────────────────────
 
-    def add_departure(self, d: int = 1) -> None: self._metrics['total_departures'] += d
-    def add_failure(self, f: int = 1)   -> None: self._metrics['failures']         += f
+    def add_departure(self, d: int = 1) -> None:
+        self._metrics['total_departures'] += d
+        self._metrics['total_demand'] += d
+
+    def add_failure(self, f: int = 1) -> None:
+        self._metrics['failures'] += f
+        self._metrics['total_demand'] += f
+
     def update_rebalanced_times(self)   -> None: self._metrics['total_rebalanced'] += 1
 
     # ── Direct setters ──────────────────────────────────────────────────────────
@@ -214,6 +220,7 @@ class Cell:
     # Operational counters
     def get_visits(self)           -> int:   return self._metrics['visits']
     def get_ops(self)              -> int:   return self._metrics['operations']
+    def get_total_demand(self)     -> int:   return self._metrics['total_demand']
     def get_total_departures(self) -> int:   return self._metrics['total_departures']
     def get_total_rebalanced(self) -> int:   return self._metrics['total_rebalanced']
     def get_failures(self)         -> int:   return self._metrics['failures']

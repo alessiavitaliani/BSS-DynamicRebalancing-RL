@@ -22,8 +22,8 @@ from gymnasium_env.simulator.utils import (
     detect_self_loops,
     load_preprocessed_data,
     flatten_pmf_matrix,
-    cache_precomputed_buffers,
-    load_cached_buffers
+    cache_episode_zero,
+    load_episode_zero
 )
 from gymnasium_env.simulator.bike_simulator import simulate_events, build_events, event_handler
 from gymnasium_env.simulator.truck_simulator import (
@@ -75,6 +75,6 @@ __all__ = [
     "EnvLogger",
     "load_preprocessed_data",
     "flatten_pmf_matrix",
-    "cache_precomputed_buffers",
-    "load_cached_buffers"
+    "cache_episode_zero",
+    "load_episode_zero"
 ]

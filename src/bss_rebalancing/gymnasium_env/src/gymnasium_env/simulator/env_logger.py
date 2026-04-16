@@ -35,13 +35,13 @@ class EnvLogger:
 
     def init(
         self,
-        log_dir: str,
+        log_dir: str | None,
         filename: str = "env.log",
         level: int = logging.INFO,
         enabled: bool = True,
         overwrite: bool = False,
     ) -> None:
-        if not enabled:
+        if not enabled or log_dir is None:
             self._initialized = False
             self._enabled = False
             self._logger = None

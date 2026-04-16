@@ -11,6 +11,7 @@ Author: Edoardo Scarpel
 import os
 import logging
 import heapq
+import multiprocessing
 
 import gymnasium as gym
 import numpy as np
@@ -39,8 +40,8 @@ from gymnasium_env.simulator.utils import (
     truncated_gaussian,
     load_preprocessed_data,
     flatten_pmf_matrix,
-    cache_precomputed_buffers,
-    load_cached_buffers,
+    cache_episode_zero,
+    load_episode_zero,
     convert_seconds_to_hours_minutes_day
 )
 from gymnasium_env.simulator.env_logger import EnvLogger
@@ -91,6 +92,74 @@ class EnvDefaults:
 class Depot:
     id: int | None = None
     bikes: dict[int, Bike] = field(default_factory=dict)
+
+# =============================================================================
+# Episode Worker
+# =============================================================================
+
+def _compute_buffer_logic(
+    seed: int,
+    data_path: str,
+    global_rate_dict: dict,
+    distance_lookup: dict,
+    first_episode: bool = False,
+    cache_dir: str | None = None,
+) -> dict:
+    """Pure function — all the actual computation. No queue, no process."""
+
+    # ── Cache load (first episode only) ─────────────────────────────────────
+    if first_episode and cache_dir is not None:
+        cached = load_episode_zero(
+            cache_dir=cache_dir,
+            seed=seed,
+            expected_timeslots=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+        )
+        if cached is not None:
+            return cached
+
+    # ── Compute ─────────────────────────────────────────────────────────────
+    rng = np.random.default_rng(seed)
+    day = EnvDefaults.DEFAULT_DAY
+    buffers = {}
+    pbar = tqdm(
+        total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+        desc="Computing first episode",
+        unit="slot",
+        leave=False,
+        dynamic_ncols=True
+    ) if first_episode else None
+
+    for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
+        timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
+        matrix_path = os.path.join(data_path, DEFAULT_PATHS.matrices_folder)
+        pmf_matrix = pl.read_csv(os.path.join(matrix_path, day.lower(), str(timeslot).zfill(2) + '-pmf-matrix.csv'))
+        global_rate = global_rate_dict[(day.lower(), timeslot)]
+        flattened_pmf = flatten_pmf_matrix(pmf_matrix)
+        slot_seed = int(rng.integers(0, 2 ** 31))
+        buffers[slot_index] = simulate_events(
+            duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
+            timeslot=timeslot,
+            global_rate=global_rate,
+            pmf=flattened_pmf,
+            distance_lookup=distance_lookup,
+            seed=slot_seed,
+        )
+        if pbar: pbar.update(1)
+        if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
+            day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
+
+    if pbar: pbar.close()
+
+    # ── Cache save (first episode only) ─────────────────────────────────────
+    if first_episode and cache_dir is not None:
+        cache_episode_zero(buffers, cache_dir=cache_dir, seed=seed)
+
+    return buffers
+
+def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_queue):
+    """Thin process entry point — just calls the logic and puts result in queue."""
+    result = _compute_buffer_logic(seed, data_path, global_rate_dict, distance_lookup)
+    result_queue.put(result)
 
 # =============================================================================
 # Main Environment Class
@@ -264,53 +333,9 @@ class StaticEnv(gym.Env):
         # Precompute events for a full episode at initialization for reproducibility and performance
         # -------------------------------------------------------------------------
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
-        self._event_fingerprint: str = ""
-        self._precompute_full_episode(seed=seed)
-
-    def _precompute_full_episode(self, seed: int = 42) -> None:
-        """
-        Precompute all events for a full episode (56 timeslots) at init time.
-        Stores one list per timeslot in self._precomputed_buffers.
-        """
-        cache_dir = os.path.join(self._data_path, '.cache')
-        cache_file = os.path.join(cache_dir, 'precomputed_buffers.pkl')
-
-        precomputed_buffers: dict[int, list[TripSample]] = load_cached_buffers(cache_file)
-
-        if len(precomputed_buffers) == EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS:
-            self._precomputed_buffers = precomputed_buffers
-            print("Loaded precomputed buffers from cache.")
-            return
-
-        np.random.seed(seed)
-        day = EnvDefaults.DEFAULT_DAY
-        self._precomputed_buffers = {}
-
-        with tqdm(total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-                  desc="Precomputing episode", unit="slot",
-                  leave=False, dynamic_ncols=True) as pbar:
-
-            for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
-                timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
-                pmf_matrix = self._load_pmf_matrix(day, timeslot)
-                global_rate = self._global_rate_dict[(day.lower(), timeslot)]
-                flattened_pmf = flatten_pmf_matrix(pmf_matrix)
-
-                self._precomputed_buffers[slot_index] = simulate_events(
-                    duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
-                    timeslot=timeslot,
-                    global_rate=global_rate,
-                    pmf=flattened_pmf,
-                    distance_lookup=self._distance_lookup,
-                )
-
-                if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
-                    day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
-
-                pbar.set_postfix(day=day, slot=timeslot)
-                pbar.update(1)
-
-        cache_precomputed_buffers(self._precomputed_buffers, cache_file)
+        self._episode_seed: int = seed
+        self._bg_process: multiprocessing.Process | None = None
+        self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
 
     # -------------------------------------------------------------------------
     # Environment Reset
@@ -335,6 +360,19 @@ class StaticEnv(gym.Env):
             Tuple of (empty_observation_dict, empty_info_dict)
         """
         super().reset(seed=seed)
+
+        # Episode buffer management
+        if not self._precomputed_buffers:
+            self._precomputed_buffers = self.compute_episode_buffer(self._episode_seed, first_episode=True)
+        else:
+            if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
+                self._env_logger.warning("Background result missing — recomputing synchronously.")
+                self._precomputed_buffers = self.compute_episode_buffer(self._episode_seed)
+            elif self._bg_process is not None and self._bg_process.is_alive():
+                self._env_logger.warning("Waiting for background precomputation...")
+                self._precomputed_buffers = self.acquire_next_episode_buffer()
+            else:
+                self._precomputed_buffers = self.acquire_next_episode_buffer()
 
         # Parse options with defaults
         options = options or {}
@@ -482,7 +520,52 @@ class StaticEnv(gym.Env):
             f"outside={len(self._outside_system_bikes)}"
         )
 
+        self.start_next_episode_precomputation()
+
         return {}, info
+
+    def compute_episode_buffer(self, seed: int, first_episode: bool = False) -> dict:
+        cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
+        return _compute_buffer_logic(
+            seed=seed,
+            data_path=self._data_path,
+            global_rate_dict=self._global_rate_dict,
+            distance_lookup=self._distance_lookup,
+            first_episode=first_episode,
+            cache_dir=cache_dir,
+        )
+
+    def start_next_episode_precomputation(self) -> None:
+        if self._bg_process is not None and self._bg_process.is_alive():
+            return
+        while not self._result_queue.empty():
+            try:
+                self._result_queue.get_nowait()
+            except Exception:
+                break
+        self._episode_seed += 1
+        self._bg_process = multiprocessing.Process(
+            target=_episode_worker,
+            args=(self._episode_seed, self._data_path, self._global_rate_dict,
+                  self._distance_lookup, self._result_queue),
+            daemon=True,
+        )
+        self._bg_process.start()
+
+    def acquire_next_episode_buffer(self) -> dict:
+        try:
+            result = self._result_queue.get(timeout=120)
+        except Exception:
+            if self._bg_process is not None:
+                self._bg_process.kill()
+                self._bg_process = None
+            raise RuntimeError(
+                f"Background episode precomputation timed out (seed={self._episode_seed})."
+            )
+        if self._bg_process is not None:
+            self._bg_process.join(timeout=5)
+            self._bg_process = None
+        return result
 
     # -------------------------------------------------------------------------
     # Environment Step
@@ -837,6 +920,12 @@ class StaticEnv(gym.Env):
         """Set the random seed for the environment."""
         self.np_random, seed = seeding.np_random(seed)
         return [seed]
+
+    def close(self):
+        if self._bg_process is not None and self._bg_process.is_alive():
+            self._bg_process.kill()
+            self._bg_process.join(timeout=3)
+        super().close()
 
     # -------------------------------------------------------------------------
     # Utility Methods

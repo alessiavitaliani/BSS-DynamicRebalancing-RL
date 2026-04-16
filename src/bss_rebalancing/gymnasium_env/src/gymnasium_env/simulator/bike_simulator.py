@@ -112,8 +112,6 @@ def departure_handler(
         traveling_bikes[bike.get_bike_id()] = bike
         return trip
 
-    # Here starting station is inside the system
-    start_station.get_cell().add_departure()
     # Check if there are any bikes available at the starting station
     if start_station.get_number_of_bikes() > 0:
         bike = start_station.unlock_bike()
@@ -121,6 +119,7 @@ def departure_handler(
             trip.set_bike(bike)
             trip.set_failed(False)
             traveling_bikes[bike.get_bike_id()] = bike
+            start_station.get_cell().add_departure()
             return trip
         else:
             start_station.lock_bike(bike)
@@ -139,6 +138,7 @@ def departure_handler(
                 trip.set_failed(False)
                 trip.set_deviated(True)
                 traveling_bikes[bike.get_bike_id()] = bike
+                start_station.get_cell().add_departure()
                 return trip
             else:
                 station_dict[node_id].lock_bike(bike)
@@ -202,21 +202,24 @@ def simulate_events(
         global_rate: float,
         pmf: pl.DataFrame,
         distance_lookup: dict[int, dict],
+        seed: int | None = None
 ) -> list[TripSample]:
     """
     Sample trip requests for a timeslot via Poisson process.
     Returns lightweight TripSample records — no Trip or Event objects created.
     """
+    rng = np.random.default_rng(seed)
+
     # Convert pmf for faster access
     pmf_data = pmf.to_dicts()
     cumsum_values = pmf.select("cumsum").to_series().to_numpy()
 
     # Simulate requests
-    event_times = generate_poisson_events(global_rate, duration)
+    event_times = generate_poisson_events(global_rate, duration, rng=rng)
     samples = []
 
     for event_time in event_times:
-        idx = np.searchsorted(cumsum_values, np.random.rand())
+        idx = np.searchsorted(cumsum_values, rng.random())
         row = pmf_data[idx]['id']
         origin_id = row['node_id']
         dest_id = row['col_id']
@@ -225,7 +228,7 @@ def simulate_events(
             distance = 0
             travel_time = 1
         else:
-            velocity_kmh = truncated_gaussian(5, 25, 15, 5)
+            velocity_kmh = truncated_gaussian(5, 25, 15, 5, rng=rng)
             distance = int(distance_lookup[origin_id][str(dest_id)])
             travel_time = int(distance * 3.6 / velocity_kmh)
 
