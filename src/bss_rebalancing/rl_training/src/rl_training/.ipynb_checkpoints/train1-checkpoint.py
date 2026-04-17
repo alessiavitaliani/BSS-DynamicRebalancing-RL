@@ -622,7 +622,7 @@ def train_ppo(
         # Bootstrap value for the very last state if the episode wasn't 'done' 
         # (useful for truncated episodes in BSS)
         last_value = 0 
-        if not timeslot_terminated:
+        if not terminated:
             _, _, last_value_tensor = agent.select_action(single_state)
             last_value = last_value_tensor.item()
         # Perform the PPO update using the collected rollout
@@ -1094,7 +1094,6 @@ def _collect_pending_validation(
 # ----------------------------------------------------------------------------------------------------------------------
 
 def main():
-    print("2. Inizio main")
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
 
@@ -1133,7 +1132,7 @@ def main():
         print("one_validation = True")
 
     results_manager = ResultsManager(results_path, run_id)
-    results_manager.save_hyperparameters(params, reward_params, {})
+    results_manager.save_hyperparameters(params, reward_params)
 
     # Init logging
     init_logging(LoggingConfig(
@@ -1147,7 +1146,6 @@ def main():
     logger = get_logger("train", logger_name="train")
     logger.info("Starting training loop")
 
-    print("3. Prima di gym.make")
     # Create the environment
     env = gym.make(
         'gymnasium_env/FullyDynamicEnv-v0',
@@ -1159,7 +1157,6 @@ def main():
     env.unwrapped.seed(params['seed'])
     env.action_space.seed(params['seed'])
     env.observation_space.seed(params['seed'])
-    print("4. Ambiente creato")
 
     # Set up replay buffer
     # replay_buffer = ReplayBuffer(params["replay_buffer_capacity"]) # DQN
@@ -1426,7 +1423,3 @@ def main():
 
     # Print the rewards after training
     print(f"\nTraining {run_id} completed.")
-
-if __name__ == "__main__":
-    print("1. Entrato nel blocco main")
-    main()

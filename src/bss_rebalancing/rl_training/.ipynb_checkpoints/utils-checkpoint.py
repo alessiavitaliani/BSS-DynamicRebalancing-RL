@@ -159,11 +159,6 @@ def convert_graph_to_data(
         raise ValueError("node_features must be provided to specify which Cell metrics to use as features")
 
     # Convert to PyG Data
-    required_attrs = {attr for n, d in graph.nodes(data=True) for attr in d.keys()}
-    for n, d in graph.nodes(data=True):
-        for attr in required_attrs:
-            if attr not in d:
-                d[attr] = 0.0
     data = from_networkx(graph)
 
     # Extract node features

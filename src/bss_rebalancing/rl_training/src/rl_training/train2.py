@@ -15,8 +15,8 @@ from tqdm import tqdm
 from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions
 
-from rl_training.agents import DQNAgent, PPOAgent
-from rl_training.memory import ReplayBuffer, PPOBuffer
+from rl_training.agents import DQNAgent
+from rl_training.memory import ReplayBuffer
 from rl_training.results import ResultsManager, EpisodeResults
 from rl_training.logging_config import init_logging, LoggingConfig, get_logger
 from rl_training.utils import (
@@ -27,7 +27,10 @@ from rl_training.utils import (
     build_cell_graph_from_cells,
     update_cell_graph_features
 )
+
 from rl_training.networks.ppo import PPO as PPONetwork 
+from rl_training.agents import PPOAgent
+from rl_training.memory import PPOBuffer
 
 # ----------------------------------------------------------------------------------------------------------------------
 # Default paths and parameters
@@ -64,7 +67,7 @@ params = {
     "ent_coef": 0.01,                               # Entropy coefficient
     "vf_coef": 0.05,                                # Value coefficient
     "update_epochs": 10,                            # How many times buffer is processed at every update 
-
+    
     "total_timeslots": 56,                          # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
@@ -398,7 +401,6 @@ def train_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
-        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 
@@ -423,6 +425,9 @@ def train_dqn(
     }
 
 # ----------------------------------------------------------------------------------------------------------------------
+
+import torch
+from torch_geometric.data import Data
 
 def train_ppo(
     env: gymnasium.Env,
@@ -622,7 +627,7 @@ def train_ppo(
         # Bootstrap value for the very last state if the episode wasn't 'done' 
         # (useful for truncated episodes in BSS)
         last_value = 0 
-        if not timeslot_terminated:
+        if not terminated:
             _, _, last_value_tensor = agent.select_action(single_state)
             last_value = last_value_tensor.item()
         # Perform the PPO update using the collected rollout
@@ -878,7 +883,6 @@ def validate_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
-        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
 
@@ -1094,7 +1098,6 @@ def _collect_pending_validation(
 # ----------------------------------------------------------------------------------------------------------------------
 
 def main():
-    print("2. Inizio main")
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
 
@@ -1126,7 +1129,7 @@ def main():
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
     # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
-    #params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params["total_timeslots"])**2) / np.log(10) # only for DQN
+    # params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params["total_timeslots"])**2) / np.log(10) # only for DQN
     print(f"\nParams in use: {params}\n")
     print(f"Reward params in use: {reward_params}\n")
     if one_validation:
@@ -1147,7 +1150,6 @@ def main():
     logger = get_logger("train", logger_name="train")
     logger.info("Starting training loop")
 
-    print("3. Prima di gym.make")
     # Create the environment
     env = gym.make(
         'gymnasium_env/FullyDynamicEnv-v0',
@@ -1159,7 +1161,6 @@ def main():
     env.unwrapped.seed(params['seed'])
     env.action_space.seed(params['seed'])
     env.observation_space.seed(params['seed'])
-    print("4. Ambiente creato")
 
     # Set up replay buffer
     # replay_buffer = ReplayBuffer(params["replay_buffer_capacity"]) # DQN
@@ -1196,7 +1197,6 @@ def main():
         update_epochs=params.get("update_epochs"),
         device=device
     )
-
 
     # Train the agent using the training loop
     starting_episode = 0
@@ -1278,6 +1278,7 @@ def main():
                 #epsilon=agent.epsilon,
                 #epsilon_per_timeslot=training_dict['epsilon_per_timeslot'],
                 epsilon=0.0, # In PPO, exploration is given by entropy
+                epsilon_per_timeslot=[0.0] * len(training_dict['rewards_per_timeslot']),
                 rewards_per_timeslot=training_dict['rewards_per_timeslot'],
                 total_reward=sum(training_dict['rewards_per_timeslot']),
                 failures_per_timeslot=training_dict['failures_per_timeslot'],
@@ -1308,9 +1309,10 @@ def main():
             # Decide whether to validate
             if training_results.mean_daily_failures < best_training_score:
                 best_training_score = training_results.mean_daily_failures
-                should_validate = agent.epsilon < 0.15 and not one_validation
-            else:
-                should_validate = False
+                #should_validate = agent.epsilon < 0.15 and not one_validation
+            #else:
+                #should_validate = False
+                results_manager.save_model(agent=agent, episode=episode, score=best_training_score, model_type='best')
 
             # Always validate on the last episode
             if episode == params["num_episodes"] - 1:
@@ -1428,5 +1430,4 @@ def main():
     print(f"\nTraining {run_id} completed.")
 
 if __name__ == "__main__":
-    print("1. Entrato nel blocco main")
     main()
