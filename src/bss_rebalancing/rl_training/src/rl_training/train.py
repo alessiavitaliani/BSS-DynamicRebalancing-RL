@@ -1094,7 +1094,7 @@ def _collect_pending_validation(
 # ----------------------------------------------------------------------------------------------------------------------
 
 def main():
-    print("2. Inizio main")
+    print("2. Start of the main section")
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
 
@@ -1147,7 +1147,7 @@ def main():
     logger = get_logger("train", logger_name="train")
     logger.info("Starting training loop")
 
-    print("3. Prima di gym.make")
+    print("3. Before gym.make")
     # Create the environment
     env = gym.make(
         'gymnasium_env/FullyDynamicEnv-v0',
@@ -1159,7 +1159,7 @@ def main():
     env.unwrapped.seed(params['seed'])
     env.action_space.seed(params['seed'])
     env.observation_space.seed(params['seed'])
-    print("4. Ambiente creato")
+    print("4. Environment created")
 
     # Set up replay buffer
     # replay_buffer = ReplayBuffer(params["replay_buffer_capacity"]) # DQN
@@ -1428,5 +1428,5 @@ def main():
     print(f"\nTraining {run_id} completed.")
 
 if __name__ == "__main__":
-    print("1. Entrato nel blocco main")
+    print("1. Entered in the main section")
     main()
