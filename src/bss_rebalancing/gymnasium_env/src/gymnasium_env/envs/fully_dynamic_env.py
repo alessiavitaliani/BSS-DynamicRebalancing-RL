@@ -416,7 +416,7 @@ class FullyDynamicEnv(gym.Env):
         # Episode buffer state
         # -------------------------------------------------------------------------
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
-        self._episode_seed: int = seed
+        self._apply_seed(seed)
 
         self._bg_process: multiprocessing.Process | None = None
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
@@ -447,6 +447,8 @@ class FullyDynamicEnv(gym.Env):
         Returns:
             Tuple of (initial_observation, info_dict)
         """
+        if seed is not None:
+            self._apply_seed(seed)
         super().reset(seed=seed)
 
         # ── Episode buffer management ─────────────────────────────────────────
@@ -509,7 +511,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Extract cell and truck configuration from options
         cell_id_list = list(self._cells.keys())
-        truck_cell_id = options.get('initial_cell', np.random.choice(cell_id_list))
+        truck_cell_id = options.get('initial_cell', self.np_random.choice(cell_id_list))
         max_truck_load = options.get('max_truck_load', EnvDefaults.MAX_TRUCK_LOAD)
         depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
         self._enable_repositioning = options.get('enable_repositioning', EnvDefaults.BASE_REPOSITIONING)
@@ -646,11 +648,11 @@ class FullyDynamicEnv(gym.Env):
             except Exception:
                 break
 
-        self._episode_seed += 1
+        next_seed = self._episode_seed + 1
         self._bg_process = multiprocessing.Process(
             target=_episode_worker,
             args=(
-                self._episode_seed,
+                next_seed,
                 self._data_path,
                 self._global_rate_dict,
                 self._distance_lookup,
@@ -907,10 +909,12 @@ class FullyDynamicEnv(gym.Env):
     # Gymnasium Interface Methods
     # ─────────────────────────────────────────────────────────────────────────
 
-    def seed(self, seed=None):
-        """Set the random seed for the environment."""
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
+    def _apply_seed(self, seed: int) -> None:
+        """Apply seed to all RNG sources owned by this environment."""
+        self._episode_seed = seed
+        self.np_random, _ = seeding.np_random(seed)
+        self.action_space.seed(seed)
+        self.observation_space.seed(seed)
 
     def close(self):
         if self._bg_process is not None and self._bg_process.is_alive():
@@ -1508,7 +1512,7 @@ class FullyDynamicEnv(gym.Env):
         leftover = remaining - bikes_positioned
         if leftover > 0:
             cell_ids = list(self._cells.keys())
-            chosen = np.random.choice(cell_ids, size=leftover, replace=True)
+            chosen = self.np_random.choice(cell_ids, size=leftover, replace=True)
             for cell_id in chosen:
                 bikes_per_cell[cell_id] += 1
 
