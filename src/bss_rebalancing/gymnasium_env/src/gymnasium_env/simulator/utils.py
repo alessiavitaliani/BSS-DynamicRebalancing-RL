@@ -197,11 +197,7 @@ def initialize_graph(graph_path: str = None) -> nx.MultiDiGraph:
         - nx.Graph: The graph representing the road network.
     """
     if os.path.isfile(graph_path):
-        if mp.current_process().name == "MainProcess":
-            print("Network file already exists. Loading the network data: ", end="")
         graph = ox.load_graphml(graph_path)
-        if mp.current_process().name == "MainProcess":
-            print("network data loaded successfully.")
     else:
         # Raise an error if the graph file does not exist
         raise FileNotFoundError("Network file does not exist. Please check the file path.")
