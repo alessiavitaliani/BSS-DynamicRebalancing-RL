@@ -211,6 +211,12 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050, updat
                         dcc.Graph(id='outside-system-bikes-plot', config=PLOT_CONFIG)
                     ], width=6),
                     dbc.Col([
+                        dcc.Graph(id='demand', config=PLOT_CONFIG)
+                    ], width=6),
+                ], className='mt-3'),
+
+                dbc.Row([
+                    dbc.Col([
                         html.Div([
                             html.Label("Select metric:", style={'font-weight': 'bold'}),
                             dcc.Dropdown(
