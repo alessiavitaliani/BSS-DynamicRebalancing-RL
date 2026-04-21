@@ -14,20 +14,17 @@ from gymnasium_env.simulator.cell import Cell
 plt.ion()
 
 def set_seed(seed):
-    print(f"Setting seed: {seed}")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     # torch.use_deterministic_algorithms(True)
-    torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     # torch.geometric.seed(seed)
 
 
-def setup_device(device_str: str, devices: list) -> torch.device:
+def setup_device(device_str: str, devices: list, non_interactive: bool = False) -> torch.device:
     """Set up the computation device."""
     if device_str not in devices:
         raise ValueError(f"Invalid device '{device_str}'. Available options: {devices}")
@@ -37,9 +34,11 @@ def setup_device(device_str: str, devices: list) -> torch.device:
     if device.type == "cuda":
         gpu_id = device.index
         gpu_name = torch.cuda.get_device_name(gpu_id)
-        print(f"Using CUDA device {gpu_id}: {gpu_name}")
+        if not non_interactive:
+            print(f"Using CUDA device {gpu_id}: {gpu_name}")
     else:
-        print(f"Using device: {device.type}")
+        if not non_interactive:
+            print(f"Using device: {device.type}")
 
     return device
 
