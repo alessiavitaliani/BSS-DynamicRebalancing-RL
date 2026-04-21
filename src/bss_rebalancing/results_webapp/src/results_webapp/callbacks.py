@@ -92,15 +92,16 @@ def register_callbacks(app):
     # ============================================================================
     @app.callback(
         Output('config-display', 'children'),
-        Input('run-selector', 'value')
+        Input('run-selector', 'value'),
+        Input('mode-selector', 'value'),
     )
-    def display_config(run_path):
+    def display_config(run_path, mode):
         if not run_path:
             return html.P('No run selected', className='text-muted')
 
-        config = load_run_config(Path(run_path))
+        config = load_run_config(Path(run_path), mode)
         if not config:
-            return html.P('Configuration not available', className='text-muted')
+            return html.P(f'Configuration not available, broken path: {run_path}', className='text-muted')
 
         params = config.get('hyperparameters', {})
 
@@ -110,11 +111,24 @@ def register_callbacks(app):
         else:
             lr_str = 'N/A'
 
-        return dbc.Row([
-            dbc.Col([html.Strong('Episodes: '), f"{params.get('num_episodes', 'N/A')}"], width=3),
-            dbc.Col([html.Strong('Batch Size: '), f"{params.get('batch_size', 'N/A')}"], width=3),
-            dbc.Col([html.Strong('Learning Rate: '), f"{lr_str}"], width=3),
-            dbc.Col([html.Strong('Gamma: '), f"{params.get('gamma', 'N/A')}"], width=3),
+        return dbc.Tab([
+                dbc.Row([
+                dbc.Col([html.Strong('Seed: '), f"{params.get('seed', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Episodes: '), f"{params.get('num_episodes', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Batch Size: '), f"{params.get('batch_size', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Learning Rate: '), f"{lr_str}"], width=2),
+                dbc.Col([html.Strong('Gamma: '), f"{params.get('gamma', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Exploration Time: '), f"{params.get('exploration_time', 'N/A')}"], width=2)
+            ]),
+            dbc.Row([
+                dbc.Col([html.Strong('Soft update: '), f"{params.get('soft_update', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Tau: '), f"{params.get('tau', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Initial Repositioning: '), f"{params.get('enable_repositioning', 'N/A')}"],
+                        width=2),
+                dbc.Col([html.Strong('Net flow IR: '), f"{params.get('use_net_flow', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Max bikes: '), f"{params.get('maximum_number_of_bikes', 'N/A')}"], width=2),
+                dbc.Col([html.Strong('Min bikes: '), f"{params.get('minimum_number_of_bikes', 'N/A')}"], width=2),
+            ])
         ])
 
     # ============================================================================
@@ -231,6 +245,7 @@ def register_callbacks(app):
         Output('truck-load-plot', 'figure'),
         Output('on-road-bikes-plot', 'figure'),
         Output('outside-system-bikes-plot', 'figure'),
+        Output('demand', 'figure'),
         Input('run-selector', 'value'),
         Input('mode-selector', 'value'),
         Input('episode-selector', 'value')
@@ -277,41 +292,46 @@ def register_callbacks(app):
 
         total_failures = scalars.get('total_failures', 'N/A')
 
+        if timeslot_df is not None and 'demand' in timeslot_df.columns:
+            total_demand = timeslot_df['demand'].sum()
+        else:
+            total_demand = 0
+
+        failure_rate = total_failures / total_demand if total_demand else 0
+
         # Stats cards
         stats_cards = dbc.Row([
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4(f"{total_failures}", className='text-danger'),
-                        html.P('Total Failures', className='text-muted mb-0')
-                    ])
-                ])
-            ], width=3),
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4(f"{scalars.get('total_reward', 0):.2f}", className='text-success'),
-                        html.P('Total Reward', className='text-muted mb-0')
-                    ])
-                ])
-            ], width=3),
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4(f"{scalars.get('mean_daily_failures', 0):.2f}", className='text-warning'),
-                        html.P('Mean Failures', className='text-muted mb-0')
-                    ])
-                ])
-            ], width=3),
-            dbc.Col([
-                dbc.Card([
-                    dbc.CardBody([
-                        html.H4(f"{scalars.get('epsilon', 0):.3f}", className='text-info'),
-                        html.P('Epsilon', className='text-muted mb-0')
-                    ])
-                ])
-            ], width=3),
-        ])
+            dbc.Col(
+                dbc.Card(dbc.CardBody([
+                    html.H4(f"{total_failures}", className="text-danger"),
+                    html.P("Total Failures", className="text-muted mb-0")
+                ])),
+            ),
+            dbc.Col(
+                dbc.Card(dbc.CardBody([
+                    html.H4(f"{scalars.get('total_reward', 0):.2f}", className="text-success"),
+                    html.P("Total Reward", className="text-muted mb-0")
+                ])),
+            ),
+            dbc.Col(
+                dbc.Card(dbc.CardBody([
+                    html.H4(f"{scalars.get('mean_daily_failures', 0):.2f}", className="text-warning"),
+                    html.P("Mean Failures", className="text-muted mb-0")
+                ])),
+            ),
+            dbc.Col(
+                dbc.Card(dbc.CardBody([
+                    html.H4(f"{failure_rate:.2%}", className="text-primary"),
+                    html.P("Failure Rate", className="text-muted mb-0")
+                ])),
+            ),
+            dbc.Col(
+                dbc.Card(dbc.CardBody([
+                    html.H4(f"{scalars.get('epsilon', 0):.3f}", className="text-info"),
+                    html.P("Epsilon", className="text-muted mb-0")
+                ])),
+            ),
+        ], className="g-3")
 
         # Timeslot plots
         if timeslot_df is not None:
@@ -339,6 +359,12 @@ def register_callbacks(app):
                 )
             else:
                 outside_system_bikes_plot = empty_fig
+            if 'demand' in timeslot_df.columns:
+                demand = create_timeslot_plot(
+                    timeslot_df, 'demand', f'Demand per Timeslot - Total: {total_demand}', 'Bike Demand'
+                )
+            else:
+                demand = empty_fig
         else:
             rewards_plot = empty_fig
             failures_plot = empty_fig
@@ -347,6 +373,7 @@ def register_callbacks(app):
             truck_load_plot = empty_fig
             on_road_bikes_plot = empty_fig
             outside_system_bikes_plot = empty_fig
+            demand = empty_fig
 
         # Action distribution
         actions = step_data.get('actions', [])
@@ -372,7 +399,8 @@ def register_callbacks(app):
             depot_load_plot,
             truck_load_plot,
             on_road_bikes_plot,
-            outside_system_bikes_plot
+            outside_system_bikes_plot,
+            demand
         )
 
 

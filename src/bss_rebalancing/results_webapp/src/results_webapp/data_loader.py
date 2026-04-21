@@ -33,19 +33,24 @@ def discover_runs(base_path: Path) -> Dict[str, Path]:
     return runs
 
 
-def load_run_config(run_dir: Path) -> Optional[Dict]:
+def load_run_config(run_dir: Path, mode: str) -> Optional[Dict]:
     """
     Load hyperparameters and config for a run.
 
     Args:
         run_dir: Path to run directory
+        mode: 'training' or 'validation' (config may differ between them)
 
     Returns:
         Dictionary containing run configuration or None if not found
     """
-    config_path = run_dir / 'config.json'
+    config_path = run_dir / mode / 'config.json'
+    old_path = run_dir / 'config.json'
     if config_path.exists():
         with open(config_path, 'r') as f:
+            return json.load(f)
+    elif old_path.exists():
+        with open(old_path, 'r') as f:
             return json.load(f)
     return None
 
