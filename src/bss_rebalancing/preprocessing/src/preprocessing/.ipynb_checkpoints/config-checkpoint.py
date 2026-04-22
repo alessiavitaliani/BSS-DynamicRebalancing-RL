@@ -11,19 +11,23 @@ class PreprocessingConfig:
     """Configuration for the preprocessing pipeline."""
 
     # Location settings
-    place: List[str] = field(default_factory=lambda: ["Cambridge, Massachusetts, USA"])
+    #place: List[str] = field(default_factory=lambda: ["Cambridge, Massachusetts, USA"])
+    place: List[str] = field(default_factory=lambda: ["Manhattan, New York City, New York, USA"])
     network_type: str = "bike"
 
     # Path settings
-    data_path: str = "data/"
-    graph_file: str = "utils/cambridge_network.graphml"
+    #data_path: str = "data_cambridge/"
+    data_path: str = "data_manhattan/"
+    #graph_file: str = "utils/cambridge_network.graphml"
+    graph_file: str = "utils/manhattan_network.graphml"
     cell_data_path: str = "utils/cell_data.pkl"
     global_rates_path: str = "utils/global_rates.pkl"
     distance_matrix_path: str = "utils/distance_matrix.csv"
     nearby_nodes_path: str = "utils/nearby_nodes.pkl"
 
     # Time settings
-    year: int = 2022
+    #year: int = 2022 # Cambridge
+    year: int = 2024 # Manhattan
     months: List[int] = field(default_factory=lambda: [9, 10])
 
     # Nodes to remove from graph
@@ -38,13 +42,18 @@ class PreprocessingConfig:
         default_factory=lambda: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     )
 
-    # Bounding box (north, south, east, west)
+    # Bounding box (north, south, east, west) for Cambridge
+    #bbox: Optional[Tuple[float, float, float, float]] = field(
+    #    default_factory=lambda: (42.370, 42.353, -71.070, -71.117)
+    #)
+    # Bounding box (north, south, east, west) for Manhattan
     bbox: Optional[Tuple[float, float, float, float]] = field(
-        default_factory=lambda: (42.370, 42.353, -71.070, -71.117)
+        default_factory=lambda: (40.8822, 40.6970, -73.9067, -74.0205)
     )
 
     # Grid settings
-    cell_size: int = 300  # meters
+    #cell_size: int = 300  # meters (Cambridge)
+    cell_size: int = 500  # meters (Manhattan)
 
     # Radius settings
     interpolation_radius: int = 500  # meters for PMF interpolation

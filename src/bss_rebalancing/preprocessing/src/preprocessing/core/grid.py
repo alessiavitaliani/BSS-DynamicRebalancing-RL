@@ -112,7 +112,8 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
             if adj_cell.get_id() != cell.get_id():
                 adj_center_coords = adj_cell.get_boundary().centroid.coords[0]
 
-                if haversine(center_coords, adj_center_coords, unit=Unit.METERS) < 300:
+                threshold = cell_size * 1.5
+                if haversine(center_coords, adj_center_coords, unit=Unit.METERS) < threshold:
                     lon_diff = center_coords[0] - adj_center_coords[0]
                     lat_diff = center_coords[1] - adj_center_coords[1]
 

@@ -42,8 +42,8 @@ Examples:
     parser.add_argument(
         "--data-path",
         type=str,
-        default="data/",
-        help="Path to the data directory (default: data/)",
+        default="data_manhattan/",
+        help="Path to the data directory (default: data_manhattan/)",
     )
 
     parser.add_argument(
@@ -77,8 +77,8 @@ Examples:
     parser.add_argument(
         "--cell-size",
         type=int,
-        default=300,
-        help="Cell size in meters for truck grid (default: 300)",
+        default=500,
+        help="Cell size in meters for truck grid (default: 500)",
     )
 
     parser.add_argument(
@@ -99,7 +99,8 @@ Examples:
     parser.add_argument(
         "--bbox",
         type=str,
-        default="[42.36889381,42.35248869,-71.07231001,-71.11736849]",
+        # default="[42.36889381,42.35248869,-71.07231001,-71.11736849]", # Cambridge 
+        default="[40.8822, 40.6970, -73.9067, -74.0205]", # Manhattan
         help="Bounding box for data download in format [north,south,east,west]",
     )
 
