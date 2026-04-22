@@ -132,7 +132,7 @@ class RewardComponents:
 
     # Pick-up rewards
     PICKUP_FROM_CRITICAL = -0.5
-    PICKUP_DEBALANCED_CELL = -2.0
+    PICKUP_UNBALANCED_CELL = -2.0
     PICKUP_FROM_SURPLUS = 0.2
 
     # Charge bike rewards
@@ -173,12 +173,13 @@ class Depot:
 # =============================================================================
 
 def _compute_buffer_logic(
-    seed: int,
-    data_path: str,
-    global_rate_dict: dict,
-    distance_lookup: dict,
-    first_episode: bool = False,
-    cache_dir: str | None = None,
+        seed: int,
+        data_path: str,
+        global_rate_dict: dict,
+        distance_lookup: dict,
+        first_episode: bool = False,
+        cache_dir: str | None = None,
+        show_pbar: bool = False,
 ) -> dict:
     """Pure function — all the actual computation. No queue, no process."""
 
@@ -202,7 +203,7 @@ def _compute_buffer_logic(
         unit="slot",
         leave=False,
         dynamic_ncols=True
-    ) if first_episode else None
+    ) if show_pbar else None
 
     for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
         timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
@@ -219,11 +220,11 @@ def _compute_buffer_logic(
             distance_lookup=distance_lookup,
             seed=slot_seed,
         )
-        if pbar: pbar.update(1)
+        if pbar is not None: pbar.update(1)
         if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
             day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
 
-    if pbar: pbar.close()
+    if pbar is not None: pbar.close()
 
     # ── Cache save (first episode only) ─────────────────────────────────────
     if first_episode and cache_dir is not None:
@@ -253,7 +254,7 @@ class FullyDynamicEnv(gym.Env):
     # Initialization
     # ─────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, data_path: str, results_path: str = None, seed: int = 42, logging_enabled: bool = False):
+    def __init__(self, data_path: str, results_path: str, seed: int = 42, logging_enabled: bool = False):
         """
         Initialize the bike-sharing environment.
 
@@ -454,7 +455,9 @@ class FullyDynamicEnv(gym.Env):
         # ── Episode buffer management ─────────────────────────────────────────
         if not self._precomputed_buffers:
             self._precomputed_buffers = self._compute_episode_buffer(
-                self._episode_seed, first_episode=True
+                seed=self._episode_seed,
+                first_episode=True,
+                show_pbar=True,
             )
         else:
             if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
@@ -619,7 +622,7 @@ class FullyDynamicEnv(gym.Env):
     # Episode buffer management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_episode_buffer(self, seed: int, first_episode: bool = False) -> dict:
+    def _compute_episode_buffer(self, seed: int, first_episode: bool = False, show_pbar: bool = False) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
         # Reuse a temporary queue just to get the return value through the same code path
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
@@ -630,6 +633,7 @@ class FullyDynamicEnv(gym.Env):
             distance_lookup=self._distance_lookup,
             first_episode=first_episode,
             cache_dir=cache_dir,
+            show_pbar=show_pbar
         )
 
     def _start_next_episode_precomputation(self) -> None:
@@ -660,7 +664,12 @@ class FullyDynamicEnv(gym.Env):
             ),
             daemon=True,  # dies if main process dies
         )
-        self._bg_process.start()
+        if self._bg_process is not None:
+            self._bg_process.start()
+        else:
+            raise RuntimeError(
+                f"Background episode precomputation not started for unknown reason."
+            )
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
@@ -917,9 +926,17 @@ class FullyDynamicEnv(gym.Env):
         self.observation_space.seed(seed)
 
     def close(self):
-        if self._bg_process is not None and self._bg_process.is_alive():
-            self._bg_process.kill()
+        if self._bg_process is not None:
+            if self._bg_process.is_alive():
+                self._bg_process.terminate()
             self._bg_process.join(timeout=3)
+            self._bg_process.close()
+            self._bg_process = None
+
+        if self._result_queue is not None:
+            self._result_queue.close()
+            self._result_queue.join_thread()
+
         super().close()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -1131,7 +1148,7 @@ class FullyDynamicEnv(gym.Env):
         Returns:
             Tuple of (normalized_lat, normalized_lon).
         """
-        truck_coords = self._nodes_dict.get(self._truck.get_position())
+        truck_coords = self._nodes_dict[self._truck.get_position()]
 
         normalized_lat = (truck_coords[0] - self._min_lat) / (self._max_lat - self._min_lat)
         normalized_lon = (truck_coords[1] - self._min_lon) / (self._max_lon - self._min_lon)
@@ -1278,8 +1295,8 @@ class FullyDynamicEnv(gym.Env):
         if was_critical:
             pick_up_reward = RewardComponents.PICKUP_FROM_CRITICAL
         elif is_critical and not was_critical:
-            # Debalanced a cell by picking up
-            pick_up_reward = RewardComponents.PICKUP_DEBALANCED_CELL
+            # Unbalanced a cell by picking up
+            pick_up_reward = RewardComponents.PICKUP_UNBALANCED_CELL
         elif was_surplus and not loop_detected:
             pick_up_reward = RewardComponents.PICKUP_FROM_SURPLUS
 
@@ -1368,7 +1385,7 @@ class FullyDynamicEnv(gym.Env):
             if event.time > self._env_time + EnvDefaults.TIMESLOT_DURATION_SECONDS:
                 break
             cell = None
-            cell_id = None
+            cell_id = -1
             if event.is_departure():
                 loc = event.get_trip().get_start_location()
                 if loc.get_station_id() != 10000:

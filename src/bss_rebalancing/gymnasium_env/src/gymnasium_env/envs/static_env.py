@@ -98,12 +98,13 @@ class Depot:
 # =============================================================================
 
 def _compute_buffer_logic(
-    seed: int,
-    data_path: str,
-    global_rate_dict: dict,
-    distance_lookup: dict,
-    first_episode: bool = False,
-    cache_dir: str | None = None,
+        seed: int,
+        data_path: str,
+        global_rate_dict: dict,
+        distance_lookup: dict,
+        first_episode: bool = False,
+        cache_dir: str | None = None,
+        show_pbar: bool = False,
 ) -> dict:
     """Pure function — all the actual computation. No queue, no process."""
 
@@ -123,11 +124,12 @@ def _compute_buffer_logic(
     buffers = {}
     pbar = tqdm(
         total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-        desc="Computing first episode",
+        desc="Computing episode",
         unit="slot",
+        position=1,
         leave=False,
         dynamic_ncols=True
-    ) if first_episode else None
+    ) if show_pbar else None
 
     for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
         timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
@@ -144,11 +146,11 @@ def _compute_buffer_logic(
             distance_lookup=distance_lookup,
             seed=slot_seed,
         )
-        if pbar: pbar.update(1)
+        if pbar is not None: pbar.update(1)
         if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
             day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
 
-    if pbar: pbar.close()
+    if pbar is not None: pbar.close()
 
     # ── Cache save (first episode only) ─────────────────────────────────────
     if first_episode and cache_dir is not None:
@@ -156,10 +158,23 @@ def _compute_buffer_logic(
 
     return buffers
 
-def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_queue):
+def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_queue, show_pbar):
     """Thin process entry point — just calls the logic and puts result in queue."""
-    result = _compute_buffer_logic(seed, data_path, global_rate_dict, distance_lookup)
-    result_queue.put(result)
+    try:
+        result = _compute_buffer_logic(
+            seed=seed,
+            data_path=data_path,
+            global_rate_dict=global_rate_dict,
+            distance_lookup=distance_lookup,
+            show_pbar=show_pbar
+        )
+        result_queue.put(result)
+    except Exception:
+        import traceback
+        with open(os.path.join(data_path, "tmp", "bg_worker_crash.log"), "w") as f:
+            traceback.print_exc(file=f)
+        raise  # still propagate
+
 
 # =============================================================================
 # Main Environment Class
@@ -179,7 +194,7 @@ class StaticEnv(gym.Env):
     # Initialization
     # -------------------------------------------------------------------------
 
-    def __init__(self, data_path: str, results_path: str, seed: int, logging_enabled: bool = False):
+    def __init__(self, data_path: str, results_path: str, seed: int = 42, logging_enabled: bool = False):
         """
         Initialize the static bike-sharing environment.
 
@@ -193,9 +208,10 @@ class StaticEnv(gym.Env):
         self._results_path = results_path
 
         # Env logger: lazy init, like FullyDynamicEnv
+        log_dir = os.path.join(results_path, "logs") if results_path is not None else None
         self._env_logger = EnvLogger(name="static-env")
         self._env_logger.init(
-            log_dir=os.path.join(results_path, "logs"),
+            log_dir=log_dir,
             filename="env.log",
             level=logging.INFO,
             enabled=logging_enabled,
@@ -330,16 +346,17 @@ class StaticEnv(gym.Env):
         self._total_failures = 0
 
         # -------------------------------------------------------------------------
-        # Precompute events for a full episode at initialization for reproducibility and performance
+        # Episode buffer state
         # -------------------------------------------------------------------------
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
-        self._episode_seed: int = seed
+        self._apply_seed(seed)
+
         self._bg_process: multiprocessing.Process | None = None
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Environment Reset
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None) -> tuple[dict, dict]:
         """
@@ -359,20 +376,30 @@ class StaticEnv(gym.Env):
         Returns:
             Tuple of (empty_observation_dict, empty_info_dict)
         """
+        if seed is not None:
+            self._apply_seed(seed)
         super().reset(seed=seed)
 
-        # Episode buffer management
+        # ── Episode buffer management ─────────────────────────────────────────
         if not self._precomputed_buffers:
-            self._precomputed_buffers = self.compute_episode_buffer(self._episode_seed, first_episode=True)
+            self._precomputed_buffers = self._compute_episode_buffer(
+                seed=self._episode_seed,
+                first_episode=True,
+                show_pbar=True,
+            )
         else:
             if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
+                # Process died without delivering — recompute synchronously
                 self._env_logger.warning("Background result missing — recomputing synchronously.")
-                self._precomputed_buffers = self.compute_episode_buffer(self._episode_seed)
-            elif self._bg_process is not None and self._bg_process.is_alive():
-                self._env_logger.warning("Waiting for background precomputation...")
-                self._precomputed_buffers = self.acquire_next_episode_buffer()
+                self._precomputed_buffers = self._compute_episode_buffer(
+                    seed=self._episode_seed,
+                    show_pbar=True,
+                )
             else:
-                self._precomputed_buffers = self.acquire_next_episode_buffer()
+                # Normal path (also covers: process still running but will deliver)
+                if self._bg_process is not None and self._bg_process.is_alive():
+                    self._env_logger.warning("Waiting for background precomputation...")
+                self._precomputed_buffers = self._acquire_next_episode_buffer()
 
         # Parse options with defaults
         options = options or {}
@@ -407,7 +434,7 @@ class StaticEnv(gym.Env):
 
         # Extract cell and truck configuration from options
         cell_id_list = list(self._cells.keys())
-        truck_cell_id = options.get('initial_cell', np.random.choice(cell_id_list))
+        truck_cell_id = options.get('initial_cell', self.np_random.choice(cell_id_list))
         max_truck_load = options.get('max_truck_load', EnvDefaults.MAX_TRUCK_LOAD)
         depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
         self._enable_repositioning = options.get('enable_repositioning', EnvDefaults.BASE_REPOSITIONING)
@@ -520,11 +547,18 @@ class StaticEnv(gym.Env):
             f"outside={len(self._outside_system_bikes)}"
         )
 
-        self.start_next_episode_precomputation()
+        # ── Launch background precomputation of the next episode ─────────────
+        self._start_next_episode_precomputation()
 
         return {}, info
 
-    def compute_episode_buffer(self, seed: int, first_episode: bool = False) -> dict:
+    # ─────────────────────────────────────────────────────────────────────────
+    # Episode buffer management
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _compute_episode_buffer(self, seed: int, first_episode: bool = False, show_pbar: bool = False) -> dict:
+        """Synchronous wrapper — runs the worker logic in-process."""
+        # Reuse a temporary queue just to get the return value through the same code path
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
         return _compute_buffer_logic(
             seed=seed,
@@ -533,26 +567,46 @@ class StaticEnv(gym.Env):
             distance_lookup=self._distance_lookup,
             first_episode=first_episode,
             cache_dir=cache_dir,
+            show_pbar=show_pbar,
         )
 
-    def start_next_episode_precomputation(self) -> None:
+    def _start_next_episode_precomputation(self) -> None:
+        """
+        Spawn a background PROCESS (not thread) to compute the next episode buffer.
+        The result is placed in self._result_queue when ready.
+        Idempotent: does nothing if a process is already running.
+        """
         if self._bg_process is not None and self._bg_process.is_alive():
-            return
+            return  # Already computing, nothing to do
+
+        # Drain any stale result from a previous (completed but unconsumed) process
         while not self._result_queue.empty():
             try:
                 self._result_queue.get_nowait()
             except Exception:
                 break
-        self._episode_seed += 1
+
+        next_seed = self._episode_seed + 1
         self._bg_process = multiprocessing.Process(
             target=_episode_worker,
-            args=(self._episode_seed, self._data_path, self._global_rate_dict,
-                  self._distance_lookup, self._result_queue),
+            args=(
+                next_seed,
+                self._data_path,
+                self._global_rate_dict,
+                self._distance_lookup,
+                self._result_queue,
+                True    # show progress bar
+            ),
             daemon=True,
         )
-        self._bg_process.start()
+        if self._bg_process is not None:
+            self._bg_process.start()
+        else:
+            raise RuntimeError(
+                f"Background episode precomputation not started for unknown reason."
+            )
 
-    def acquire_next_episode_buffer(self) -> dict:
+    def _acquire_next_episode_buffer(self) -> dict:
         try:
             result = self._result_queue.get(timeout=120)
         except Exception:
@@ -560,16 +614,17 @@ class StaticEnv(gym.Env):
                 self._bg_process.kill()
                 self._bg_process = None
             raise RuntimeError(
-                f"Background episode precomputation timed out (seed={self._episode_seed})."
+                f"Background episode precomputation timed out after 120s "
+                f"(seed={self._episode_seed}). Episode buffer unavailable."
             )
         if self._bg_process is not None:
             self._bg_process.join(timeout=5)
             self._bg_process = None
         return result
 
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
     # Environment Step
-    # -------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────
 
     def step(self, action) -> tuple[dict, float, bool, bool, dict]:
         """
@@ -676,7 +731,7 @@ class StaticEnv(gym.Env):
         Rebalance the system to target distribution.
 
         Pools used:
-          - system_bikes: bikes currently at stations (or travelling)
+          - system_bikes: bikes currently at stations (or traveling)
           - depot.bikes: bikes in storage, deployable
           - outside_system_bikes: bikes on external trips, NOT touched here
 
@@ -916,15 +971,25 @@ class StaticEnv(gym.Env):
     # Gymnasium Interface Methods
     # -------------------------------------------------------------------------
 
-    def seed(self, seed=None):
-        """Set the random seed for the environment."""
-        self.np_random, seed = seeding.np_random(seed)
-        return [seed]
+    def _apply_seed(self, seed: int) -> None:
+        """Apply seed to all RNG sources owned by this environment."""
+        self._episode_seed = seed
+        self.np_random, _ = seeding.np_random(seed)
+        self.action_space.seed(seed)
+        self.observation_space.seed(seed)
 
     def close(self):
-        if self._bg_process is not None and self._bg_process.is_alive():
-            self._bg_process.kill()
+        if self._bg_process is not None:
+            if self._bg_process.is_alive():
+                self._bg_process.terminate()
             self._bg_process.join(timeout=3)
+            self._bg_process.close()
+            self._bg_process = None
+
+        if self._result_queue is not None:
+            self._result_queue.close()
+            self._result_queue.join_thread()
+
         super().close()
 
     # -------------------------------------------------------------------------
@@ -1030,7 +1095,7 @@ class StaticEnv(gym.Env):
         leftover = remaining - bikes_positioned
         if leftover > 0:
             cell_ids = list(self._cells.keys())
-            chosen = np.random.choice(cell_ids, size=leftover, replace=True)
+            chosen = self.np_random.choice(cell_ids, size=leftover, replace=True)
             for cell_id in chosen:
                 bikes_per_cell[cell_id] += 1
 
