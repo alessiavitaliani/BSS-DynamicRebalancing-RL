@@ -466,12 +466,11 @@ def train_dqn(
             'bikes_sum': 0.0,
             'bikes_dead_sum': 0.0
         }
-        for cell_id in cell_dict.keys()  # from initial info after reset
+        for cell_id in cell_dict.keys()
     }
 
     done = False
     while not done:
-
         # ── State (S) → device ──────────────────────────────────────────────────
         single_state = Data(
             x=state.x.to(device),
@@ -755,6 +754,7 @@ def main():
 
         # Train loop
         for episode in range(int(params["num_episodes"])):
+            current_seed = int(params['seed'] + episode)
             # ------------------------------------------------------------------
             # Train one episode
             # ------------------------------------------------------------------
@@ -769,13 +769,14 @@ def main():
                 logger=logger,
                 tbar=tbar,
                 episode_results_path=os.path.join(f"{str(results_manager.training_path)}", f"episode_{episode:03d}"),
-                seed=int(params['seed'] + episode)
+                seed=current_seed
             )
 
             # Build EpisodeResults
             training_results = EpisodeResults(
                 episode=episode,
                 mode='train',
+                seed=current_seed,
                 epsilon=agent.epsilon,
                 epsilon_per_timeslot=training_dict['epsilon_per_timeslot'],
                 rewards_per_timeslot=training_dict['rewards_per_timeslot'],
@@ -802,7 +803,7 @@ def main():
             # Save training episode results
             results_manager.save_episode(training_results)
 
-            if agent.epsilon < int(params['validation_epsilon_threshold']):
+            if agent.epsilon < params['validation_epsilon_threshold']:
 
                 # ── Step A: collect the previous val subprocess (if any) ──────
                 # This is the only point where training may briefly wait, and
@@ -864,7 +865,8 @@ def main():
                 pending_val = _launch_validation_subprocess(val_cmd, episode, logger)
 
             logger.info(
-                f"Episode {episode}: Mean Failures = {training_results.mean_daily_failures:.2f}, "
+                f"Episode {episode}: Seed = {current_seed}, "
+                f"Mean Failures = {training_results.mean_daily_failures:.2f}, "
                 f"Total Failures = {training_results.total_failures}, "
                 f"Invalid Actions = {training_results.total_invalid_actions}, "
                 f"Epsilon = {agent.epsilon:.4f}"

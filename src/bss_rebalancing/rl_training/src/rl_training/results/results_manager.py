@@ -27,6 +27,7 @@ class EpisodeResults:
     """Container for all metrics from a single episode."""
     episode: int
     mode: str  # 'train' or 'validation'
+    seed: int
 
     # Episode-level scalars
     total_reward: float = 0.0
@@ -188,6 +189,7 @@ class ResultsManager:
         # 1. Save scalars as JSON (human-readable)
         scalars = {
             'episode': results.episode,
+            'seed': results.seed,
             'total_reward': results.total_reward,
             'mean_daily_failures': results.mean_daily_failures,
             'total_failures': results.total_failures,
@@ -300,6 +302,7 @@ class ResultsManager:
         return EpisodeResults(
             episode=scalars['episode'],
             mode=self.mode,
+            seed=scalars['seed'],
             total_reward=scalars['total_reward'],
             mean_daily_failures=scalars['mean_daily_failures'],
             total_failures=scalars['total_failures'],
@@ -460,6 +463,7 @@ class ResultsManager:
         return EpisodeResults(
             episode=results.episode,
             mode=results.mode,
+            seed=results.seed,
             total_reward=results.total_reward,
             mean_daily_failures=results.mean_daily_failures,
             total_failures=results.total_failures,

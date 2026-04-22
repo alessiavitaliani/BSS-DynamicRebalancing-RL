@@ -1,10 +1,7 @@
 import torch
-import requests
 import networkx as nx
 import numpy as np
-import psutil, os
 import random
-import logging
 
 from torch_geometric.utils import from_networkx
 from matplotlib import pyplot as plt

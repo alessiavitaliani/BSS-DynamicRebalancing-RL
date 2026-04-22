@@ -215,12 +215,10 @@ def validate_dqn(
         episode: int,
         device: torch.device,
         run_id: int,
-        epsilon: float,
         logging_enabled: bool,
-        tbar=None,
+        logger: logging.Logger,
+        tbar: tqdm,
         episode_results_path: str | None = None,
-        params_snapshot: dict | None = None,
-        reward_params_snapshot: dict | None = None,
         seed: int = None,
 ) -> dict:
     # -------------------------------------------------------------------------
@@ -249,13 +247,14 @@ def validate_dqn(
     # Environment reset
     # -------------------------------------------------------------------------
     reset_options = {
-        'total_timeslots': (params_snapshot or params)["total_timeslots"],
-        'maximum_number_of_bikes': (params_snapshot or params)["maximum_number_of_bikes"],
-        'minimum_number_of_bikes': (params_snapshot or params)["minimum_number_of_bikes"],
-        'enable_repositioning': (params_snapshot or params)["enable_repositioning"],
-        'use_net_flow': (params_snapshot or params)["use_net_flow"],
-        'discount_factor': (params_snapshot or params)["gamma"],
-        'depot_id': (params_snapshot or params)['depot_position_id'],
+        'total_timeslots': params["total_timeslots"],
+        'maximum_number_of_bikes': params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
+        'enable_repositioning': params["enable_repositioning"],
+        'use_net_flow': params["use_net_flow"],
+        'discount_factor': params["gamma"],
+        'depot_id': params['depot_position_id'],
+        # 'initial_cell': params['initial_cell_id'],
     }
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path
@@ -285,11 +284,21 @@ def validate_dqn(
     state.agent_state = agent_state
     state.steps = info['steps']
 
-    # -------------------------------------------------------------------------
+    # ============================================================================
     # Main validation loop
-    # -------------------------------------------------------------------------
+    # ============================================================================
+    episode_cell_stats = {
+        cell_id: {
+            'critic_sum': 0.0,
+            'bikes_sum': 0.0,
+            'bikes_dead_sum': 0.0
+        }
+        for cell_id in cell_dict.keys()
+    }
+
     done = False
     while not done:
+        # ── State (S) → device ──────────────────────────────────────────────────
         single_state = Data(
             x=state.x.to(device),
             edge_index=state.edge_index.to(device),
@@ -298,19 +307,29 @@ def validate_dqn(
             batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
         )
 
-        # Greedy action (epsilon is already at its minimum in validation)
+        # ── Action (A) selection ────────────────────────────────────────────────
         action = agent.select_action(single_state, epsilon_greedy=True)
 
+        # ── Environment step ────────────────────────────────────────────────────
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
 
+        # ── Graph update ────────────────────────────────────────────────────────
         cell_dict = info['cell_dict']
         update_cell_graph_features(cell_graph, cell_dict)
 
+        # ── Cell stats accumulation ─────────────────────────────────────────────
+        for cell_id, cell in cell_dict.items():
+            stats = episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] += cell.get_dead_bikes()
+
+        # ── Build next state ────────────────────────────────────────────────────
         next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
 
-        # Bookkeeping
+        # ── Scalar bookkeeping ──────────────────────────────────────────────────
         action_per_step.append(action)
         reward_tracking_per_action[action].append(reward)
         global_critic_scores.append(info['global_critic_score'])
@@ -341,7 +360,6 @@ def validate_dqn(
                     f"[VAL] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
                     f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
                 )
-                tbar.set_postfix({'eps': epsilon})
                 tbar.update(1)
 
         state = next_state
@@ -349,6 +367,36 @@ def validate_dqn(
 
     torch.cuda.empty_cache()
 
+    # ============================================================================
+    # Post-episode cell stats
+    # ============================================================================
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
+            bikes_mean = stats.get('bikes_sum', 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
+        else:
+            critic_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+
+        nx_attrs['critic_mean'] = critic_mean
+        nx_attrs['failure_sum'] = cell_dict[cell_id].get_failures()
+        nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
+        nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
+        nx_attrs['bikes_mean'] = bikes_mean
+        nx_attrs['dead_bikes_mean'] = dead_bikes_mean
+
+    # ============================================================================
+    # Return results
+    # ============================================================================
     return {
         "rewards_per_timeslot": rewards,
         "failures_per_timeslot": failures,
@@ -528,23 +576,22 @@ def main():
             set_seed(current_seed)
 
             validation_dict = validate_dqn(
+                seed=current_seed,
                 env=env,
                 agent=agent,
                 episode=episode,
                 device=device,
                 run_id=run_id,
-                epsilon=agent.epsilon_min,
                 logging_enabled=logging_enabled,
+                logger=logger,
                 tbar=tbar,
                 episode_results_path=os.path.join(str(results_manager.validation_path), f"episode_{episode:03d}"),
-                params_snapshot=dict(params),
-                reward_params_snapshot=dict(reward_params),
-                seed=current_seed,
             )
 
             validation_results = EpisodeResults(
                 episode=episode,
                 mode="validation",
+                seed=current_seed,
                 epsilon=agent.epsilon_min,
                 epsilon_per_timeslot=validation_dict.get("epsilon_per_timeslot", []),
                 rewards_per_timeslot=validation_dict["rewards_per_timeslot"],
