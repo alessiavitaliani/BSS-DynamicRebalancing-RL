@@ -12,7 +12,146 @@ from results_webapp.callbacks import register_callbacks
 from results_webapp.layouts import create_header, create_controls, PLOT_CONFIG
 
 
-def create_app(results_path: str, data_path: str = None, port: int = 8050, update_interval_ms: int = 5000):
+# ---------------------------------------------------------------------------
+# Tab factories — one per mode
+# ---------------------------------------------------------------------------
+
+def _training_tabs():
+    """Tabs shown when Training mode is selected."""
+    return dbc.Tabs(id='mode-tabs', children=[
+
+        # ── Overview ────────────────────────────────────────────────────────
+        dbc.Tab(label='📊 Overview', tab_id='tab-overview', children=[
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='mean-failures-plot', config=PLOT_CONFIG), width=6),
+                dbc.Col(dcc.Graph(id='rewards-plot',       config=PLOT_CONFIG), width=6),
+            ], className='mt-3'),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='epsilon-plot',        config=PLOT_CONFIG), width=6),
+                dbc.Col(dcc.Graph(id='total-failures-plot', config=PLOT_CONFIG), width=6),
+            ], className='mt-3'),
+        ]),
+
+        # ── Episode Details ──────────────────────────────────────────────────
+        dbc.Tab(label='🔍 Episode Details', tab_id='tab-episode', children=[
+            _episode_detail_rows(prefix='train'),
+        ]),
+    ])
+
+
+def _validation_tabs():
+    """Tabs shown when Validation mode is selected."""
+    return dbc.Tabs(id='mode-tabs', active_tab='tab-best', children=[
+
+        # ── Best ────────────────────────────────────────────────────────────
+        dbc.Tab(label='🏆 Best', tab_id='tab-best', children=[
+            dbc.Row([
+                dbc.Col(html.Div(id='best-episode-banner'), width=12)
+            ], className='mt-3'),
+            _episode_detail_rows(prefix='best'),
+        ]),
+
+        # ── Episode Details ──────────────────────────────────────────────────
+        dbc.Tab(label='🔍 Episode Details', tab_id='tab-episode', children=[
+            _episode_detail_rows(prefix='val'),
+        ]),
+    ])
+
+
+def _benchmark_tabs():
+    """Tabs shown when Benchmark mode is selected — single tab, stripped down."""
+    return dbc.Tabs(id='mode-tabs', active_tab='tab-bench',children=[
+        dbc.Tab(label='📋 Results', tab_id='tab-bench', children=[
+            dbc.Row([
+                dbc.Col(html.Div(id='bench-stats-cards'), width=12)
+            ], className='mt-3'),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='bench-failures-plot',       config=PLOT_CONFIG), width=6),
+                dbc.Col(dcc.Graph(id='bench-demand-plot', config=PLOT_CONFIG), width=6),
+            ], className='mt-3'),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='bench-rebalance-times-plot', config=PLOT_CONFIG), width=6),
+            ], className='mt-3'),
+        ]),
+    ])
+
+
+def _episode_detail_rows(prefix: str):
+    """
+    Return the episode detail plot grid.
+
+    `prefix` is used to namespace component IDs so training, validation and
+    best tabs don't clash:
+        'train'  → train-timeslot-rewards-plot, …
+        'val'    → val-timeslot-rewards-plot, …
+        'best'   → best-timeslot-rewards-plot, …
+    """
+    p = prefix
+    return html.Div([
+        dbc.Row([
+            dbc.Col(html.Div(id=f'{p}-episode-stats-cards'), width=12)
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'{p}-timeslot-rewards-plot',  config=PLOT_CONFIG), width=6),
+            dbc.Col(dcc.Graph(id=f'{p}-timeslot-failures-plot', config=PLOT_CONFIG), width=6),
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'{p}-action-distribution-plot', config=PLOT_CONFIG), width=6),
+            dbc.Col(dcc.Graph(id=f'{p}-reward-tracking-plot',     config=PLOT_CONFIG), width=6),
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'{p}-on-road-bikes-plot',       config=PLOT_CONFIG), width=6),
+            dbc.Col(dcc.Graph(id=f'{p}-depot-load-plot',          config=PLOT_CONFIG), width=6),
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'{p}-truck-load-plot',          config=PLOT_CONFIG), width=6),
+            dbc.Col(dcc.Graph(id=f'{p}-inside-system-bikes-plot', config=PLOT_CONFIG), width=6),
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'{p}-outside-system-bikes-plot', config=PLOT_CONFIG), width=6),
+            dbc.Col(dcc.Graph(id=f'{p}-demand',                    config=PLOT_CONFIG), width=6),
+        ], className='mt-3'),
+        dbc.Row([
+            dbc.Col([
+                html.Div([
+                    html.Label('Select metric:', style={'font-weight': 'bold'}),
+                    dcc.Dropdown(
+                        id=f'{p}-graph-metric-selector',
+                        options=[
+                            {'label': 'Visits (sum)',        'value': 'visits_sum'},
+                            {'label': 'Operations (sum)',    'value': 'ops_sum'},
+                            {'label': 'Failures (sum)',      'value': 'failure_sum'},
+                            {'label': 'Failure rate',        'value': 'failure_rate'},
+                            {'label': 'Critic score (mean)', 'value': 'critic_mean'},
+                            {'label': 'Eligibility (mean)',  'value': 'eligibility_mean'},
+                            {'label': 'Bikes (mean)',        'value': 'bikes_mean'},
+                        ],
+                        value='visits_sum',
+                        clearable=False,
+                        style={'width': '40%', 'marginBottom': '10px'}
+                    ),
+                    html.Div(id=f'{p}-graph-heatmap-status',
+                             style={'color': '#888', 'fontSize': '13px',
+                                    'fontFamily': 'monospace', 'marginBottom': '6px'}),
+                    html.Img(
+                        id=f'{p}-graph-heatmap-plot',
+                        style={'width': '100%', 'display': 'block',
+                               'border': '1px solid #d3d3d3'}
+                    ),
+                ], style={'padding': '10px',
+                          'box-shadow': '0px 1px 3px rgba(0,0,0,0.2)',
+                          'background-color': 'white'}),
+            ], width=6),
+        ], className='mt-3'),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
+def create_app(results_path: str, data_path: str = None, port: int = 8050,
+               update_interval_ms: int = 5000):
     """
     Create and configure the Dash app.
 
@@ -28,24 +167,21 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050, updat
     app = dash.Dash(
         __name__,
         external_stylesheets=[dbc.themes.BOOTSTRAP],
-        suppress_callback_exceptions=True
+        suppress_callback_exceptions=True,   # needed: tabs render dynamically
     )
 
-    app.title = "Train-Val Dashboard"
+    app.title = 'Train-Val Dashboard'
 
-    # Store config in app
     app.results_path = Path(results_path)
     app.data_path = Path(data_path) if data_path else None
     app.port = port
     app.update_interval_ms = update_interval_ms
 
-    # Layout
     app.layout = dbc.Container([
         dcc.Store(id='run-data-store'),
 
         create_header(),
 
-        # Auto-refresh interval
         dcc.Interval(
             id='interval-component',
             interval=update_interval_ms,
@@ -64,200 +200,11 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050, updat
             ])
         ], className='mb-4'),
 
-        # Tabs for different views
-        dbc.Tabs([
-            # Overview Tab
-            dbc.Tab(label='📊 Overview', children=[
-                # Row 1: Failures and Rewards
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='mean-failures-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='rewards-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                # Row 2: Epsilon and Deployed Bikes
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='epsilon-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='total-failures-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-            ]),
-
-            # Benchmark Tab
-            dbc.Tab(label='🏁 Benchmark', children=[
-                dbc.Row([
-                    dbc.Col([
-                        html.Div(id='bench-stats-cards')
-                    ])
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='bench-failures-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='bench-rebalance-times-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='bench-deployed-bikes-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='bench-depot-load-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='bench-truck-load-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='bench-outside-bikes-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        html.Div([
-                            html.Label("Select metric:", style={'font-weight': 'bold'}),
-                            dcc.Dropdown(
-                                id="bench-graph-metric-selector",
-                                options=[
-                                    {"label": "Failures (sum)", "value": "failure_sum"},
-                                    {"label": "Failure rate", "value": "failure_rate"},
-                                    {"label": "Bikes (mean)", "value": "bikes_mean"},
-                                    {"label": "Critic score (mean)", "value": "critic_mean"},
-                                    {"label": "Eligibility (mean)", "value": "eligibility_mean"},
-                                ],
-                                value="failure_sum",
-                                clearable=False,
-                                style={'width': '40%', 'marginBottom': '10px'}
-                            ),
-                            html.Div(id="bench-heatmap-status",
-                                     style={'color': '#888', 'fontSize': '13px',
-                                            'fontFamily': 'monospace', 'marginBottom': '6px'}),
-                            html.Img(
-                                id="bench-heatmap-plot",
-                                style={
-                                    'width': '100%',
-                                    'display': 'block',
-                                    'border': '1px solid #d3d3d3',
-                                }
-                            ),
-                        ], style={
-                            'padding': '10px',
-                            'box-shadow': '0px 1px 3px rgba(0,0,0,0.2)',
-                            'background-color': 'white'
-                        }),
-                    ], width=6),
-                ], className='mt-3'),
-            ]),
-
-            # Episode Details Tab
-            dbc.Tab(label='🔍 Episode Details', children=[
-                dbc.Row([
-                    dbc.Col([
-                        html.Div(id='episode-stats-cards')
-                    ])
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='timeslot-rewards-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='timeslot-failures-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='action-distribution-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='reward-tracking-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='on-road-bikes-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='depot-load-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='truck-load-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='inside-system-bikes-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        dcc.Graph(id='outside-system-bikes-plot', config=PLOT_CONFIG)
-                    ], width=6),
-                    dbc.Col([
-                        dcc.Graph(id='demand', config=PLOT_CONFIG)
-                    ], width=6),
-                ], className='mt-3'),
-
-                dbc.Row([
-                    dbc.Col([
-                        html.Div([
-                            html.Label("Select metric:", style={'font-weight': 'bold'}),
-                            dcc.Dropdown(
-                                id="graph-metric-selector",
-                                options=[
-                                    {"label": "Visits (sum)", "value": "visits_sum"},
-                                    {"label": "Operations (sum)", "value": "ops_sum"},
-                                    {"label": "Failures (sum)", "value": "failure_sum"},
-                                    {"label": "Failure rate", "value": "failure_rate"},
-                                    {"label": "Critic score (mean)", "value": "critic_mean"},
-                                    {"label": "Eligibility (mean)", "value": "eligibility_mean"},
-                                    {"label": "Bikes (mean)", "value": "bikes_mean"},
-                                ],
-                                value="visits_sum",
-                                clearable=False,
-                                style={'width': '40%', 'marginBottom': '10px'}
-                            ),
-                            html.Div(id="graph-heatmap-status",
-                                     style={'color': '#888', 'fontSize': '13px',
-                                            'fontFamily': 'monospace', 'marginBottom': '6px'}),
-                            html.Img(
-                                id="graph-heatmap-plot",
-                                style={
-                                    'width': '100%',
-                                    'display': 'block',
-                                    'border': '1px solid #d3d3d3',
-                                }
-                            ),
-                        ], style={
-                            'padding': '10px',
-                            'box-shadow': '0px 1px 3px rgba(0,0,0,0.2)',
-                            'background-color': 'white'
-                        }),
-                    ], width=6),
-                ], className='mt-3'),
-            ]),
-        ])
+        # Dynamic tab area — rendered by the mode-tabs-container callback
+        html.Div(id='mode-tabs-container'),
 
     ], fluid=True, style={'padding': '20px'})
 
-    # Register callbacks
     register_callbacks(app)
 
     return app
