@@ -487,6 +487,7 @@ def parse_arguments() -> dict:
 def main():
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
+    warnings.filterwarnings("ignore")
 
     """Main entry point for benchmark execution."""
     config = parse_arguments()

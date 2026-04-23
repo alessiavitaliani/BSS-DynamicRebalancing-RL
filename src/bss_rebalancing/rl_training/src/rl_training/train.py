@@ -623,8 +623,8 @@ def train_dqn(
 def main():
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
-
     warnings.filterwarnings("ignore")
+
     args = create_parser().parse_args()
 
     device = setup_device(args.device.lower(), devices)

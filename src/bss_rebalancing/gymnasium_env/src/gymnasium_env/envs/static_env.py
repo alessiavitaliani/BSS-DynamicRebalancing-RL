@@ -388,7 +388,7 @@ class StaticEnv(gym.Env):
                 show_pbar=True,
             )
         else:
-            if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
+            if self._bg_process is not None and not self._bg_process.is_alive() and self._result_queue.empty():
                 # Process died without delivering — recompute synchronously
                 self._env_logger.warning("Background result missing — recomputing synchronously.")
                 self._precomputed_buffers = self._compute_episode_buffer(
@@ -608,13 +608,13 @@ class StaticEnv(gym.Env):
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=120)
+            result = self._result_queue.get(timeout=300)
         except Exception:
             if self._bg_process is not None:
                 self._bg_process.kill()
                 self._bg_process = None
             raise RuntimeError(
-                f"Background episode precomputation timed out after 120s "
+                f"Background episode precomputation timed out after 300s "
                 f"(seed={self._episode_seed}). Episode buffer unavailable."
             )
         if self._bg_process is not None:
