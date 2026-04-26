@@ -84,9 +84,14 @@ class Cell:
         """Find and assign the node closest to the cell centroid."""
         center_coords = self._boundary.centroid.coords[0]
         nearest_node = ox.distance.nearest_nodes(graph, center_coords[0], center_coords[1])
-        if nearest_node not in self._nodes:
-            raise ValueError("Center node not found in cell nodes")
-        self._center_node = nearest_node
+        #if nearest_node not in self._nodes:
+        #    raise ValueError("Center node not found in cell nodes")
+        #self._center_node = nearest_node 
+        if hasattr(self, 'nodes') and len(self.nodes) > 0:
+            self.center_node = list(self.nodes)[0]
+        else:
+            self.center_node = None
+            print(f"Warning: Cell at {getattr(self, 'center_coords', 'unknown')} has no nodes.")
 
     # ── Episode reset ───────────────────────────────────────────────────────────
 

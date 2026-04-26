@@ -63,8 +63,9 @@ Examples:
     parser.add_argument(
         "--year",
         type=int,
-        default=2022,
-        help="Year of data to process (default: 2022)",
+        #default=2022, # Cambridge
+        default=2024,  # Manhattans
+        help="Year of data to process",
     )
 
     parser.add_argument(
@@ -178,7 +179,7 @@ def run_pipeline(config: PreprocessingConfig, steps: list, verbose: bool = False
     )
 
     step_mapping = {
-        "download": ("Downloading trip data", download_trips.run),
+        #"download": ("Downloading trip data", download_trips.run),
         "preprocess": ("Preprocessing trip data", preprocess_data.run),
         "interpolate": ("Interpolating data", interpolate_data.run),
         "grid": ("Preprocessing truck grid", preprocess_truck_grid.run),

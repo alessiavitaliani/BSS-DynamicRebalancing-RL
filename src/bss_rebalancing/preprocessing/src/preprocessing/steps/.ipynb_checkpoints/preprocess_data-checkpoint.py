@@ -53,8 +53,8 @@ def filter_and_map_stations(
         .rename({
             'start_station_id': 'id',
             'start_station_name': 'name',
-            'start_station_lat': 'latitude',
-            'start_station_lng': 'longitude',
+            'start_lat': 'latitude',
+            'start_lng': 'longitude',
         })
     )
 
@@ -69,8 +69,8 @@ def filter_and_map_stations(
         .rename({
             'end_station_id': 'id',
             'end_station_name': 'name',
-            'end_station_lat': 'latitude',
-            'end_station_lng': 'longitude',
+            'end_lat': 'latitude',
+            'end_lng': 'longitude',
         })
     )
 
@@ -81,6 +81,11 @@ def filter_and_map_stations(
         coalesce=True
     )
 
+    # For Manhattan
+    stations = stations.with_columns([
+        pl.col("latitude").cast(pl.Float64, strict=False),
+        pl.col("longitude").cast(pl.Float64, strict=False)
+    ]).drop_nulls(subset=["latitude", "longitude"])
     # Apply bbox filter if provided
     if bbox:
         north, south, east, west = bbox
@@ -155,21 +160,33 @@ def filter_trips_and_compute_timeslots(
         "%Y-%m-%d %H:%M:%S%.3f",
         "%Y-%m-%d %H:%M:%S%.4f",
     ]
-
+    
     filtered_trips = (
-        trip_df
-        .filter(
-            pl.col("start station id").is_in(valid_station_ids) |
-            pl.col("end station id").is_in(valid_station_ids)
+    trip_df
+       .filter(
+           # Cambridge
+           # pl.col("start station id").is_in(valid_station_ids) |
+           # pl.col("end station id").is_in(valid_station_ids)
+           # Manhattan
+           pl.col("start_station_id").is_in(valid_station_ids) |
+           pl.col("end_station_id").is_in(valid_station_ids)
         )
         .with_columns([
             # Replace invalid stations with external node marker (10000)
-            pl.when(pl.col("start station id").is_in(valid_station_ids))
-              .then(pl.col("start station id"))
+            # Cambridge
+            #pl.when(pl.col("start station id").is_in(valid_station_ids))
+            # .then(pl.col("start station id"))
+            # Manhattan 
+            pl.when(pl.col("start_station_id").is_in(valid_station_ids))
+              .then(pl.col("start_station_id"))
               .otherwise(10000)
               .alias("start station id"),
-            pl.when(pl.col("end station id").is_in(valid_station_ids))
-              .then(pl.col("end station id"))
+            # Cambridge
+            #pl.when(pl.col("end station id").is_in(valid_station_ids))
+            #  .then(pl.col("end station id"))
+            # Manhattan
+            pl.when(pl.col("end_station_id").is_in(valid_station_ids))
+              .then(pl.col("end_station_id"))
               .otherwise(10000)
               .alias("end station id"),
             # Parse datetime columns.
@@ -178,11 +195,17 @@ def filter_trips_and_compute_timeslots(
             # with_columns() against the input state, so overwriting "starttime"
             # here does not affect the "startday" coalesce below.
             pl.coalesce([
-                pl.col("starttime").str.to_datetime(format=fmt, strict=False)
+                # Cambridge
+                #pl.col("starttime").str.to_datetime(format=fmt, strict=False)
+                # Manhattan
+                pl.col("started_at").str.to_datetime(format=fmt, strict=False)
                 for fmt in datetime_formats
             ]).alias("starttime"),
             pl.coalesce([
-                pl.col("starttime").str.to_date(format=fmt, strict=False)
+                # Cambridge
+                #pl.col("starttime").str.to_date(format=fmt, strict=False)
+                # Manhattan
+                pl.col("started_at").str.to_date(format=fmt, strict=False)
                 for fmt in datetime_formats
             ]).alias("startday"),
         ])
@@ -321,10 +344,21 @@ def build_rate_matrix(
         (pl.col('timeslot') == timeslot)
     )
 
+    # Cambridge
+    #for row in filtered_rates.iter_rows(named=True):
+    #    i = node_to_idx[stations_dict.get(row['start station id'])]
+    #    j = node_to_idx[stations_dict.get(row['end station id'])]
+    #    rate_matrix[i, j] = row['rate']
+    # Manhattan
+    external_node_idx = node_to_idx.get(10000)
+
     for row in filtered_rates.iter_rows(named=True):
-        i = node_to_idx[stations_dict.get(row['start station id'])]
-        j = node_to_idx[stations_dict.get(row['end station id'])]
-        rate_matrix[i, j] = row['rate']
+        start_node = stations_dict.get(row['start station id'], 10000)
+        end_node = stations_dict.get(row['end station id'], 10000)
+        i = node_to_idx.get(start_node, external_node_idx)
+        j = node_to_idx.get(end_node, external_node_idx)
+        if i is not None and j is not None:
+            rate_matrix[i, j] = row['rate']
 
     return rate_matrix
 
@@ -366,7 +400,7 @@ def run(config: PreprocessingConfig) -> None:
         )
         if os.path.isfile(path):
             #monthly_data = pl.read_csv(path) # Cambridge
-            monthly_data = pl.read_csv(path, infer_schema_length=0, dtypes={"start_station_id": pl.Utff8, "end_station_id": pl.Utf8}) # Manhattan
+            monthly_data = pl.read_csv(path, infer_schema_length=0, dtypes={"start_station_id": pl.Utf8, "end_station_id": pl.Utf8}) # Manhattan
             trip_df = pl.concat([trip_df, monthly_data]) if trip_df.height > 0 else monthly_data
         else:
             print(f"Warning: Trip data for month {month} not found. Skipping...")

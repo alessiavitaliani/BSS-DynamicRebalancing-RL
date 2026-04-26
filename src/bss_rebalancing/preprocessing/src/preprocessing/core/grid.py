@@ -104,6 +104,7 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
         cell_dict: Dictionary of Cell objects (modified in place).
     """
     tbar = tqdm(total=len(cell_dict), desc="Setting adjacent cells", dynamic_ncols=True)
+    cell_size = 500
 
     for cell in cell_dict.values():
         center_coords = cell.get_boundary().centroid.coords[0]
