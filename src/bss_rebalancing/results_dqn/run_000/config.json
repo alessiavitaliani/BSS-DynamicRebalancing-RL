@@ -1,0 +1,33 @@
+{
+  "run_id": 0,
+  "hyperparameters": {
+    "seed": 42,
+    "num_episodes": 10,
+    "batch_size": 64,
+    "replay_buffer_capacity": 100000,
+    "gamma": 0.95,
+    "epsilon_start": 1.0,
+    "epsilon_delta": 0.05,
+    "epsilon_end": 0.01,
+    "epsilon_decay": 49030.10982894951,
+    "exploration_time": 0.6,
+    "lr": 0.0001,
+    "soft_update": true,
+    "tau": 0.005,
+    "total_timeslots": 56,
+    "maximum_number_of_bikes": 500,
+    "minimum_number_of_bikes": 1,
+    "enable_repositioning": false,
+    "use_net_flow": false,
+    "depot_position_id": 18,
+    "initial_cell_id": 18
+  },
+  "reward_parameters": {
+    "W_ZERO_BIKES": 1.0,
+    "W_CRITICAL_ZONES": 1.0,
+    "W_DROP_PICKUP": 0.9,
+    "W_MOVEMENT": 0.7,
+    "W_CHARGE_BIKE": 0.9,
+    "W_STAY": 0.7
+  }
+}
