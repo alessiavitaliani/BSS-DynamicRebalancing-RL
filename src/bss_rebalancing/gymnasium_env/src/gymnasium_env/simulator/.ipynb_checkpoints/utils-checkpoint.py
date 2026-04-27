@@ -1,18 +1,18 @@
 import os
 import math
 import pickle
+import json
+
 import numpy as np
 import osmnx as ox
 import polars as pl
 import networkx as nx
-import hashlib
-import json
+import multiprocessing as mp
 
 from dataclasses import dataclass
 from typing import Dict, Tuple, FrozenSet
 from scipy.stats import truncnorm
 from enum import Enum
-from tqdm import tqdm
 
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.bike import Bike
@@ -29,7 +29,8 @@ class EnvPaths:
 
     All paths are relative to the data_path provided to the environment.
     """
-    graph_file: str = 'utils/cambridge_network.graphml'
+    #graph_file: str = 'utils/cambridge_network.graphml' #Cambridge
+    graph_file: str = 'utils/manhattan_network.graphml' #Manhattan
     cell_file: str = 'utils/cell_data.pkl'
     nearby_nodes_file: str = 'utils/nearby_nodes.pkl'
     global_rates_file: str = 'utils/global_rates.pkl'
@@ -126,19 +127,25 @@ def logistic_penalty_function(m=1, k=1, b=1, x=0):
     return m / (1 + math.exp(k * (b - x)))
 
 
-def generate_poisson_events(rate, time_duration) -> list[int]:
+def generate_poisson_events(rate, time_duration, rng: np.random.Generator | None = None) -> list[int]:
     """
     Generate Poisson events within a specified time duration.
 
     Parameters:
         - rate (float): The average rate of events per unit time.
         - time_duration (float): The total time duration in which events can occur.
+        - rng: Optional numpy Generator for thread-safe reproducible sampling.
+               If None, uses np.random.exponential (original behaviour).
 
     Returns:
         - list: A list of event times occurring within the specified time duration.
     """
-    # uniform distribution of arrival times
-    inter_arrival_times = np.random.exponential(1 / rate, int(rate * time_duration) + 100)
+    n_samples = int(rate * time_duration) + 100
+    if rng is not None:
+        inter_arrival_times = rng.exponential(1 / rate, n_samples)
+    else:
+        inter_arrival_times = np.random.exponential(1 / rate, n_samples)
+
     event_times = np.cumsum(inter_arrival_times)
     event_times = event_times[event_times < time_duration]
 
@@ -152,7 +159,7 @@ def convert_seconds_to_hours_minutes_day(day, seconds) -> str:
     return f"{day} AT {hours:02}:{minutes:02}:{seconds:02}"
 
 
-def truncated_gaussian(lower=5, upper=25, mean=15, std_dev=5):
+def truncated_gaussian(lower=5, upper=25, mean=15, std_dev=5, rng: np.random.Generator | None = None):
     """
     Samples one point from a truncated gaussian.
 
@@ -161,13 +168,20 @@ def truncated_gaussian(lower=5, upper=25, mean=15, std_dev=5):
         - upper (int): The upper bound of the truncation.
         - mean (int): The mean value of the gaussian.
         - std_dev (int): The standard deviation of the gaussian.
+        - rng: Optional numpy Generator for thread-safe reproducible sampling.
+               If None, falls back to scipy's default (original behaviour).
 
     Returns:
-        - speed (int): The sampled value form the truncated gaussian
+        - speed (int): The sampled value from the truncated gaussian
     """
     a, b = (lower - mean) / std_dev, (upper - mean) / std_dev
-    truncated_normal = truncnorm(a, b, loc=mean, scale=std_dev)
-    speed = truncated_normal.rvs()
+    if rng is not None:
+        # scipy truncnorm accepts a numpy Generator via the `random_state` parameter
+        truncated_normal = truncnorm(a, b, loc=mean, scale=std_dev)
+        speed = truncated_normal.rvs(random_state=rng)
+    else:
+        truncated_normal = truncnorm(a, b, loc=mean, scale=std_dev)
+        speed = truncated_normal.rvs()
     return speed
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -184,9 +198,11 @@ def initialize_graph(graph_path: str = None) -> nx.MultiDiGraph:
         - nx.Graph: The graph representing the road network.
     """
     if os.path.isfile(graph_path):
-        print("Network file already exists. Loading the network data: ", end="")
+        if mp.current_process().name == "MainProcess":
+            print("Network file already exists. Loading the network data: ", end="")
         graph = ox.load_graphml(graph_path)
-        print("network data loaded successfully.")
+        if mp.current_process().name == "MainProcess":
+            print("network data loaded successfully.")
     else:
         # Raise an error if the graph file does not exist
         raise FileNotFoundError("Network file does not exist. Please check the file path.")
@@ -307,21 +323,56 @@ def flatten_pmf_matrix(pmf_matrix: pl.DataFrame) -> pl.DataFrame:  # TODO: preco
 
 # ==============================================================================
 
-def cache_precomputed_buffers(buffer: dict[int, list[TripSample]], cache_file: str) -> None:
-    if cache_file is None:
-        return
+def cache_episode_zero(
+    buffers: dict[int, list],
+    cache_dir: str,
+    seed: int,
+) -> None:
+    os.makedirs(cache_dir, exist_ok=True)
 
-    cache_dir = os.path.dirname(cache_file)
-    if cache_dir and not os.path.exists(cache_dir):
-        os.makedirs(cache_dir, exist_ok=True)
+    # Write buffer
+    buffer_file = os.path.join(cache_dir, "episode_0.pkl")
+    with open(buffer_file, "wb") as f:
+        pickle.dump(buffers, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    with open(cache_file, 'wb') as f:
-        pickle.dump(buffer, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # Write metadata
+    meta_file = os.path.join(cache_dir, "episode_0_meta.json")
+    meta = {
+        "seed": seed,
+        "num_timeslots": len(buffers),
+    }
+    with open(meta_file, "w") as f:
+        json.dump(meta, f, indent=2)
 
 
-def load_cached_buffers(cache_file: str) -> dict[int, list[TripSample]]:
-    if cache_file is None or not os.path.exists(cache_file):
-        return {}
+def load_episode_zero(
+    cache_dir: str,
+    seed: int,
+    expected_timeslots: int,
+) -> dict[int, list] | None:
+    """
+    Returns the cached buffer dict if the cache exists and the seed matches,
+    otherwise returns None (caller must recompute).
+    """
+    buffer_file = os.path.join(cache_dir, "episode_0.pkl")
+    meta_file   = os.path.join(cache_dir, "episode_0_meta.json")
 
-    with open(cache_file, 'rb') as f:
-        return pickle.load(f)
+    if not os.path.exists(buffer_file) or not os.path.exists(meta_file):
+        return None
+
+    with open(meta_file) as f:
+        meta = json.load(f)
+
+    if (
+        meta.get("seed") != seed
+        or meta.get("num_timeslots") != expected_timeslots
+    ):
+        print(
+            f"[cache] Episode 0 cache mismatch "
+            f"(cached seed={meta.get('seed')}, want seed={seed}) — recomputing."
+        )
+        return None
+
+    with open(buffer_file, "rb") as f:
+        buffers = pickle.load(f)
+    return buffers

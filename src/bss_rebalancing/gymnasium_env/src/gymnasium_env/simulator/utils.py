@@ -29,7 +29,8 @@ class EnvPaths:
 
     All paths are relative to the data_path provided to the environment.
     """
-    graph_file: str = 'utils/cambridge_network.graphml'
+    #graph_file: str = 'utils/cambridge_network.graphml' #Cambridge
+    graph_file: str = 'utils/manhattan_network.graphml' #Manhattan
     cell_file: str = 'utils/cell_data.pkl'
     nearby_nodes_file: str = 'utils/nearby_nodes.pkl'
     global_rates_file: str = 'utils/global_rates.pkl'
