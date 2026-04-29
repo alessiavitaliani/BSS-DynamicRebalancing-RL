@@ -8,49 +8,53 @@ and periodic system-wide rebalancing operations.
 Author: Edoardo Scarpel
 """
 
-import os
-import logging
 import heapq
+import logging
 import multiprocessing
+import os
+from collections import deque
+from dataclasses import dataclass, field
 
 import gymnasium as gym
 import numpy as np
 import osmnx as ox
 import polars as pl
-
-from gymnasium.utils import seeding
 from gymnasium import spaces
-from dataclasses import dataclass, field
+from gymnasium.utils import seeding
 from tqdm import tqdm
-from collections import deque
 
 from gymnasium_env.simulator.bike import Bike
-from gymnasium_env.simulator.truck import Truck
+from gymnasium_env.simulator.bike_simulator import (
+    build_events,
+    event_handler,
+    simulate_events,
+)
+from gymnasium_env.simulator.env_logger import EnvLogger
+from gymnasium_env.simulator.event import Event
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.trip import TripSample
-from gymnasium_env.simulator.event import Event
+from gymnasium_env.simulator.truck import Truck
+from gymnasium_env.simulator.truck_simulator import tsp_rebalancing
 from gymnasium_env.simulator.utils import (
     DAYS_TO_NUM,
     DEFAULT_PATHS,
     NUM_TO_DAYS,
     Actions,
+    cache_episode_zero,
+    convert_seconds_to_hours_minutes_day,
+    flatten_pmf_matrix,
     initialize_bikes,
     initialize_graph,
     initialize_stations,
-    truncated_gaussian,
-    load_preprocessed_data,
-    flatten_pmf_matrix,
-    cache_episode_zero,
     load_episode_zero,
-    convert_seconds_to_hours_minutes_day
+    load_preprocessed_data,
+    truncated_gaussian,
 )
-from gymnasium_env.simulator.env_logger import EnvLogger
-from gymnasium_env.simulator.bike_simulator import event_handler, simulate_events, build_events
-from gymnasium_env.simulator.truck_simulator import tsp_rebalancing
 
 # =============================================================================
 # Environment Constants
 # =============================================================================
+
 
 class EnvDefaults:
     """Default configuration values for the environment."""
@@ -77,7 +81,7 @@ class EnvDefaults:
     BORDER_ELIGIBILITY_DECAY = 0.99
 
     # Default starting conditions
-    DEFAULT_DAY = 'monday'
+    DEFAULT_DAY = "monday"
     DEFAULT_TIMESLOT = 0
     DEFAULT_TOTAL_TIMESLOTS = 56
     DEFAULT_DEPOT_ID = 1
@@ -85,7 +89,7 @@ class EnvDefaults:
 
     # Simulation parameters
     PRECOMPUTED_EPISODE_TIMESLOTS = 56  # 7 days × 8 slots
-    FINGERPRINT_FILE = 'event_buffer_fingerprint.json'
+    FINGERPRINT_FILE = "event_buffer_fingerprint.json"
 
 
 @dataclass
@@ -93,18 +97,20 @@ class Depot:
     id: int | None = None
     bikes: dict[int, Bike] = field(default_factory=dict)
 
+
 # =============================================================================
 # Episode Worker
 # =============================================================================
 
+
 def _compute_buffer_logic(
-        seed: int,
-        data_path: str,
-        global_rate_dict: dict,
-        distance_lookup: dict,
-        first_episode: bool = False,
-        cache_dir: str | None = None,
-        show_pbar: bool = False,
+    seed: int,
+    data_path: str,
+    global_rate_dict: dict,
+    distance_lookup: dict,
+    first_episode: bool = False,
+    cache_dir: str | None = None,
+    show_pbar: bool = False,
 ) -> dict:
     """Pure function — all the actual computation. No queue, no process."""
 
@@ -122,22 +128,30 @@ def _compute_buffer_logic(
     rng = np.random.default_rng(seed)
     day = EnvDefaults.DEFAULT_DAY
     buffers = {}
-    pbar = tqdm(
-        total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-        desc="Computing episode",
-        unit="slot",
-        position=1,
-        leave=False,
-        dynamic_ncols=True
-    ) if show_pbar else None
+    pbar = (
+        tqdm(
+            total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+            desc="Computing episode",
+            unit="slot",
+            position=1,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        if show_pbar
+        else None
+    )
 
     for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
         timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
         matrix_path = os.path.join(data_path, DEFAULT_PATHS.matrices_folder)
-        pmf_matrix = pl.read_csv(os.path.join(matrix_path, day.lower(), str(timeslot).zfill(2) + '-pmf-matrix.csv'))
+        pmf_matrix = pl.read_csv(
+            os.path.join(
+                matrix_path, day.lower(), str(timeslot).zfill(2) + "-pmf-matrix.csv"
+            )
+        )
         global_rate = global_rate_dict[(day.lower(), timeslot)]
         flattened_pmf = flatten_pmf_matrix(pmf_matrix)
-        slot_seed = int(rng.integers(0, 2 ** 31))
+        slot_seed = int(rng.integers(0, 2**31))
         buffers[slot_index] = simulate_events(
             duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
             timeslot=timeslot,
@@ -146,11 +160,13 @@ def _compute_buffer_logic(
             distance_lookup=distance_lookup,
             seed=slot_seed,
         )
-        if pbar is not None: pbar.update(1)
+        if pbar is not None:
+            pbar.update(1)
         if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
             day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
 
-    if pbar is not None: pbar.close()
+    if pbar is not None:
+        pbar.close()
 
     # ── Cache save (first episode only) ─────────────────────────────────────
     if first_episode and cache_dir is not None:
@@ -158,7 +174,10 @@ def _compute_buffer_logic(
 
     return buffers
 
-def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_queue, show_pbar):
+
+def _episode_worker(
+    seed, data_path, global_rate_dict, distance_lookup, result_queue, show_pbar
+):
     """Thin process entry point — just calls the logic and puts result in queue."""
     try:
         result = _compute_buffer_logic(
@@ -166,11 +185,12 @@ def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_q
             data_path=data_path,
             global_rate_dict=global_rate_dict,
             distance_lookup=distance_lookup,
-            show_pbar=show_pbar
+            show_pbar=show_pbar,
         )
         result_queue.put(result)
     except Exception:
         import traceback
+
         with open(os.path.join(data_path, "tmp", "bg_worker_crash.log"), "w") as f:
             traceback.print_exc(file=f)
         raise  # still propagate
@@ -179,6 +199,7 @@ def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_q
 # =============================================================================
 # Main Environment Class
 # =============================================================================
+
 
 class StaticEnv(gym.Env):
     """
@@ -194,7 +215,13 @@ class StaticEnv(gym.Env):
     # Initialization
     # -------------------------------------------------------------------------
 
-    def __init__(self, data_path: str, results_path: str, seed: int = 42, logging_enabled: bool = False):
+    def __init__(
+        self,
+        data_path: str,
+        results_path: str,
+        seed: int = 42,
+        logging_enabled: bool = False,
+    ):
         """
         Initialize the static bike-sharing environment.
 
@@ -208,7 +235,9 @@ class StaticEnv(gym.Env):
         self._results_path = results_path
 
         # Env logger: lazy init, like FullyDynamicEnv
-        log_dir = os.path.join(results_path, "logs") if results_path is not None else None
+        log_dir = (
+            os.path.join(results_path, "logs") if results_path is not None else None
+        )
         self._env_logger = EnvLogger(name="static-env")
         self._env_logger.init(
             log_dir=log_dir,
@@ -222,13 +251,17 @@ class StaticEnv(gym.Env):
         # -------------------------------------------------------------------------
 
         # Load the OSMnx graph
-        self._graph = initialize_graph(os.path.join(self._data_path, DEFAULT_PATHS.graph_file))
+        self._graph = initialize_graph(
+            os.path.join(self._data_path, DEFAULT_PATHS.graph_file)
+        )
 
         # Compute bounding box for coordinate normalization
         nodes_gdf = ox.graph_to_gdfs(self._graph, edges=False)
-        self._min_lat, self._max_lat = nodes_gdf['y'].min(), nodes_gdf['y'].max()
-        self._min_lon, self._max_lon = nodes_gdf['x'].min(), nodes_gdf['x'].max()
-        self._nodes_dict = {nid: (row['y'], row['x']) for nid, row in nodes_gdf.iterrows()}
+        self._min_lat, self._max_lat = nodes_gdf["y"].min(), nodes_gdf["y"].max()
+        self._min_lon, self._max_lon = nodes_gdf["x"].min(), nodes_gdf["x"].max()
+        self._nodes_dict = {
+            nid: (row["y"], row["x"]) for nid, row in nodes_gdf.iterrows()
+        }
 
         # -------------------------------------------------------------------------
         # Load precomputed data
@@ -247,18 +280,15 @@ class StaticEnv(gym.Env):
         )
 
         self._distance_lookup = {
-            row["node_id"]: row
-            for row in self._distance_matrix.iter_rows(named=True)
+            row["node_id"]: row for row in self._distance_matrix.iter_rows(named=True)
         }
 
         self._velocity_lookup = {
-            row["hour"]: row
-            for row in self._velocity_matrix.iter_rows(named=True)
+            row["hour"]: row for row in self._velocity_matrix.iter_rows(named=True)
         }
 
         self._consumption_lookup = {
-            row["hour"]: row
-            for row in self._consumption_matrix.iter_rows(named=True)
+            row["hour"]: row for row in self._consumption_matrix.iter_rows(named=True)
         }
 
         self._sorted_cell_ids = sorted(self._cells.keys())
@@ -277,9 +307,12 @@ class StaticEnv(gym.Env):
             for node in cell.get_nodes():
                 stations[node].set_cell(cell)
 
-        all_stations_have_a_cell = all(stn.get_cell() is not None for stn in stations.values())
-        assert all_stations_have_a_cell, \
+        all_stations_have_a_cell = all(
+            stn.get_cell() is not None for stn in stations.values()
+        )
+        assert all_stations_have_a_cell, (
             "Not all stations were assigned a cell. Check cell definitions and station locations."
+        )
 
         # Virtual station 10000
         stations[10000] = Station(10000, 0.0, 0.0)
@@ -296,10 +329,7 @@ class StaticEnv(gym.Env):
         # Observation space
         obs_dim = 17 + 2 * len(self._cells)
         self.observation_space = spaces.Box(
-            low=0.0,
-            high=np.inf,
-            shape=(obs_dim,),
-            dtype=np.float16
+            low=0.0, high=np.inf, shape=(obs_dim,), dtype=np.float16
         )
 
         # -------------------------------------------------------------------------
@@ -307,9 +337,9 @@ class StaticEnv(gym.Env):
         # -------------------------------------------------------------------------
 
         # Bike storage
-        self._system_bikes = None
-        self._outside_system_bikes = None
-        self._travelling_bikes = None
+        self._system_bikes: dict[int, Bike] = {}
+        self._outside_system_bikes: dict[int, Bike] = {}
+        self._travelling_bikes: dict[int, Bike] = {}
         self._depot = Depot()
 
         # Fleet parameters
@@ -319,7 +349,7 @@ class StaticEnv(gym.Env):
         self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
 
         # Station and truck objects
-        self._truck = None
+        self.__truck: Truck | None = None
 
         # Time tracking
         self._env_time = 0
@@ -329,7 +359,7 @@ class StaticEnv(gym.Env):
 
         # Rebalancing configuration
         self._num_rebalancing_events = EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
-        self._rebalancing_hours = None
+        self._rebalancing_hours = []
         self._prediction_window = None
         self._enable_repositioning = EnvDefaults.BASE_REPOSITIONING
         self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
@@ -353,6 +383,18 @@ class StaticEnv(gym.Env):
 
         self._bg_process: multiprocessing.Process | None = None
         self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
+
+    @property
+    def _truck(self) -> Truck:
+        if self.__truck is None:
+            raise RuntimeError(
+                "Environment not initialized — call reset() before step()."
+            )
+        return self.__truck
+
+    @_truck.setter
+    def _truck(self, value: Truck | None) -> None:
+        self.__truck = value
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Reset
@@ -388,9 +430,15 @@ class StaticEnv(gym.Env):
                 show_pbar=True,
             )
         else:
-            if self._bg_process is not None and not self._bg_process.is_alive() and self._result_queue.empty():
+            if (
+                self._bg_process is not None
+                and not self._bg_process.is_alive()
+                and self._result_queue.empty()
+            ):
                 # Process died without delivering — recompute synchronously
-                self._env_logger.warning("Background result missing — recomputing synchronously.")
+                self._env_logger.warning(
+                    "Background result missing — recomputing synchronously."
+                )
                 self._precomputed_buffers = self._compute_episode_buffer(
                     seed=self._episode_seed,
                     show_pbar=True,
@@ -412,58 +460,62 @@ class StaticEnv(gym.Env):
             self._env_logger.set_enabled(False)
 
         # Time configuration
-        self._day = options.get('day', EnvDefaults.DEFAULT_DAY)
-        self._timeslot = options.get('timeslot', EnvDefaults.DEFAULT_TIMESLOT)
-        self._total_timeslots = options.get('total_timeslots', EnvDefaults.DEFAULT_TOTAL_TIMESLOTS)
+        self._day = options.get("day", EnvDefaults.DEFAULT_DAY)
+        self._timeslot = options.get("timeslot", EnvDefaults.DEFAULT_TIMESLOT)
+        self._total_timeslots = options.get(
+            "total_timeslots", EnvDefaults.DEFAULT_TOTAL_TIMESLOTS
+        )
 
         # Fleet configuration
         self._maximum_number_of_bikes = options.get(
-            'maximum_number_of_bikes',
-            self._maximum_number_of_bikes
+            "maximum_number_of_bikes", self._maximum_number_of_bikes
         )
         self._min_bikes_per_cell = options.get(
-            'minimum_number_of_bikes',
-            self._min_bikes_per_cell
+            "minimum_number_of_bikes", self._min_bikes_per_cell
         )
 
         # Reset all cells
-        for cell in self._cells.values(): cell.reset()
+        for cell in self._cells.values():
+            cell.reset()
 
         # Reset all stations
-        for stn in self._stations.values(): stn.reset()
+        for stn in self._stations.values():
+            stn.reset()
 
         # Extract cell and truck configuration from options
         cell_id_list = list(self._cells.keys())
-        truck_cell_id = options.get('initial_cell', self.np_random.choice(cell_id_list))
-        max_truck_load = options.get('max_truck_load', EnvDefaults.MAX_TRUCK_LOAD)
-        depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
-        self._enable_repositioning = options.get('enable_repositioning', EnvDefaults.BASE_REPOSITIONING)
-        self._use_net_flow = options.get('use_net_flow', EnvDefaults.NET_FLOW_BASED_REPOSITIONING)
+        truck_cell_id = options.get("initial_cell", self.np_random.choice(cell_id_list))
+        max_truck_load = options.get("max_truck_load", EnvDefaults.MAX_TRUCK_LOAD)
+        depot_id = options.get("depot_id", EnvDefaults.DEFAULT_DEPOT_ID)
+        self._enable_repositioning = options.get(
+            "enable_repositioning", EnvDefaults.BASE_REPOSITIONING
+        )
+        self._use_net_flow = options.get(
+            "use_net_flow", EnvDefaults.NET_FLOW_BASED_REPOSITIONING
+        )
 
         # Initialize depot and bike fleet
         if depot_id not in self._cells:
             raise ValueError(f"Depot cell ID {depot_id} not found in cells.")
-        self._depot.id = self._cells.get(depot_id).get_center_node()
+        self._depot.id = self._cells[depot_id].get_center_node()
         self._depot.bikes = initialize_bikes(n=self._maximum_number_of_bikes)
         self._travelling_bikes = {}
 
         # Rebalancing configuration
         self._num_rebalancing_events = options.get(
-            'num_rebalancing_events',
-            EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
+            "num_rebalancing_events", EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
         )
 
         # Set rebalancing hours
         if self._num_rebalancing_events > 0:
             interval = 24 // self._num_rebalancing_events
-            self._rebalancing_hours = [
-                (i + 3) % 24 for i in range(0, 24, interval)
-            ]
+            self._rebalancing_hours = [(i + 3) % 24 for i in range(0, 24, interval)]
             self._rebalancing_hours = sorted(self._rebalancing_hours)
 
         self._prediction_window = (
             24 // self._num_rebalancing_events * 3600
-            if self._num_rebalancing_events > 0 else None
+            if self._num_rebalancing_events > 0
+            else None
         )
 
         # -------------------------------------------------------------------------
@@ -481,7 +533,9 @@ class StaticEnv(gym.Env):
         # Initialize truck
         # -------------------------------------------------------------------------
         # Load initial bikes onto truck from depot
-        initial_bike_keys = list(self._depot.bikes.keys())[:EnvDefaults.INITIAL_TRUCK_BIKES]
+        initial_bike_keys = list(self._depot.bikes.keys())[
+            : EnvDefaults.INITIAL_TRUCK_BIKES
+        ]
         bikes = {key: self._depot.bikes.pop(key) for key in initial_bike_keys}
 
         truck_cell = self._cells[truck_cell_id]
@@ -489,7 +543,7 @@ class StaticEnv(gym.Env):
             position=truck_cell.get_center_node(),
             cell=truck_cell,
             bikes=bikes,
-            max_load=max_truck_load
+            max_load=max_truck_load,
         )
 
         # -------------------------------------------------------------------------
@@ -504,7 +558,7 @@ class StaticEnv(gym.Env):
             min_bikes=self._min_bikes_per_cell,
             max_bikes=self._maximum_number_of_bikes - self._truck.get_load(),
             enable_repositioning=self._enable_repositioning,
-            use_net_flow=self._use_net_flow
+            use_net_flow=self._use_net_flow,
         )
 
         # Convert cell-based distribution to station-based
@@ -517,26 +571,25 @@ class StaticEnv(gym.Env):
         self._system_bikes, self._outside_system_bikes = initialize_stations(
             stations=self._stations,
             depot_bikes=self._depot.bikes,
-            bikes_per_station=bikes_per_station
+            bikes_per_station=bikes_per_station,
         )
 
         info = {
-            'cell_dict': self._cells,
-            'nodes_dict': self._nodes_dict,
-            'steps': 0,
-            'failures': [],
-            'depot_bikes': len(self._depot.bikes),
-            'truck_bikes': self._truck.get_load(),
-            'number_of_system_bikes': len(self._system_bikes),
-            'number_of_outside_bikes': len(self._outside_system_bikes),
-            'distance_lookup': self._distance_lookup,
+            "cell_dict": self._cells,
+            "nodes_dict": self._nodes_dict,
+            "steps": 0,
+            "failures": [],
+            "depot_bikes": len(self._depot.bikes),
+            "truck_bikes": self._truck.get_load(),
+            "number_of_system_bikes": len(self._system_bikes),
+            "number_of_outside_bikes": len(self._outside_system_bikes),
+            "distance_lookup": self._distance_lookup,
         }
 
         # Log number of bikes in the system, in the truck, in the depot and in the outside system
         self._env_logger.set_env_time(
             convert_seconds_to_hours_minutes_day(
-                day=self._day.upper(),
-                seconds=3600 + self._env_time
+                day=self._day.upper(), seconds=3600 + self._env_time
             )
         )
         self._env_logger.info(
@@ -556,7 +609,9 @@ class StaticEnv(gym.Env):
     # Episode buffer management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_episode_buffer(self, seed: int, first_episode: bool = False, show_pbar: bool = False) -> dict:
+    def _compute_episode_buffer(
+        self, seed: int, first_episode: bool = False, show_pbar: bool = False
+    ) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
         # Reuse a temporary queue just to get the return value through the same code path
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
@@ -595,7 +650,7 @@ class StaticEnv(gym.Env):
                 self._global_rate_dict,
                 self._distance_lookup,
                 self._result_queue,
-                True    # show progress bar
+                True,  # show progress bar
             ),
             daemon=True,
         )
@@ -603,7 +658,7 @@ class StaticEnv(gym.Env):
             self._bg_process.start()
         else:
             raise RuntimeError(
-                f"Background episode precomputation not started for unknown reason."
+                "Background episode precomputation not started for unknown reason."
             )
 
     def _acquire_next_episode_buffer(self) -> dict:
@@ -645,8 +700,7 @@ class StaticEnv(gym.Env):
             self._env_time += EnvDefaults.STEP_DURATION_SECONDS
             self._env_logger.set_env_time(
                 convert_seconds_to_hours_minutes_day(
-                    day=self._day.upper(),
-                    seconds=3600 + self._env_time
+                    day=self._day.upper(), seconds=3600 + self._env_time
                 )
             )
 
@@ -667,7 +721,7 @@ class StaticEnv(gym.Env):
                     logging_state_and_trips=False,
                     depot=self._depot,
                     maximum_number_of_bikes=self._maximum_number_of_bikes,
-                    truck_load=self._truck.get_load()
+                    truck_load=self._truck.get_load(),
                 )
                 failures_this_timeslot += failure
 
@@ -702,19 +756,19 @@ class StaticEnv(gym.Env):
 
         # Build info dictionary
         info = {
-            'time': self._env_time + (self._timeslot * 3 + 1) * 3600,
-            'day': self._day,
-            'week': int(self._days_completed // 7),
-            'year': self._days_completed // 365,
-            'failures': failures_this_timeslot,
-            'global_critic_score': global_critic_score,
-            'cell_dict': self._cells,
-            'depot_bikes': len(self._depot.bikes),
-            'truck_bikes': self._truck.get_load(),
-            'number_of_system_bikes': len(self._system_bikes),
-            'number_of_outside_bikes': len(self._outside_system_bikes),
-            'number_of_traveling_bikes': len(self._travelling_bikes),
-            'rebalance_times': rebalance_times
+            "time": self._env_time + (self._timeslot * 3 + 1) * 3600,
+            "day": self._day,
+            "week": int(self._days_completed // 7),
+            "year": self._days_completed // 365,
+            "failures": failures_this_timeslot,
+            "global_critic_score": global_critic_score,
+            "cell_dict": self._cells,
+            "depot_bikes": len(self._depot.bikes),
+            "truck_bikes": self._truck.get_load(),
+            "number_of_system_bikes": len(self._system_bikes),
+            "number_of_outside_bikes": len(self._outside_system_bikes),
+            "number_of_traveling_bikes": len(self._travelling_bikes),
+            "rebalance_times": rebalance_times,
         }
 
         # Check if episode is complete
@@ -743,13 +797,11 @@ class StaticEnv(gym.Env):
         #    (_compute_rebalancing_time reads cell.get_total_bikes(),
         #    which reflects current station state — this must run first)
         # -----------------------------------------------------------------
-        available_bikes = (
-                sum(
-                    s.get_number_of_bikes() for s in self._stations.values()
-                    if s.get_station_id() != 10000
-                )
-                + len(self._depot.bikes)
-        )
+        available_bikes = sum(
+            s.get_number_of_bikes()
+            for s in self._stations.values()
+            if s.get_station_id() != 10000
+        ) + len(self._depot.bikes)
         max_bikes = min(available_bikes, self._maximum_number_of_bikes)
 
         bikes_per_cell = self._bike_repositioning(
@@ -839,10 +891,10 @@ class StaticEnv(gym.Env):
 
         # Invariant check (debug-friendly)
         total = (
-                len(self._system_bikes)
-                + len(self._depot.bikes)
-                + len(self._outside_system_bikes)
-                + self._truck.get_load()
+            len(self._system_bikes)
+            + len(self._depot.bikes)
+            + len(self._outside_system_bikes)
+            + self._truck.get_load()
         )
         if total != self._maximum_number_of_bikes:
             self._env_logger.warning(
@@ -879,10 +931,7 @@ class StaticEnv(gym.Env):
 
         # Compute TSP distance
         distance, _ = tsp_rebalancing(
-            surplus_nodes,
-            deficit_nodes,
-            self._depot.id,
-            self._distance_lookup
+            surplus_nodes, deficit_nodes, self._depot.id, self._distance_lookup
         )
 
         # Compute time based on distance and velocity
@@ -917,7 +966,9 @@ class StaticEnv(gym.Env):
             day_events: list[Event] = []
 
             for slot_offset in range(EnvDefaults.TIMESLOTS_PER_DAY):
-                slot_index = (first_slot_index + slot_offset) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
+                slot_index = (
+                    first_slot_index + slot_offset
+                ) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
                 time_offset = slot_offset * EnvDefaults.TIMESLOT_DURATION_SECONDS
 
                 slot_events = build_events(
@@ -941,7 +992,9 @@ class StaticEnv(gym.Env):
             # 2) Build all events for the new day, appended after leftovers
             new_day_events: list[Event] = []
             for slot_offset in range(EnvDefaults.TIMESLOTS_PER_DAY):
-                slot_index = (first_slot_index + slot_offset) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
+                slot_index = (
+                    first_slot_index + slot_offset
+                ) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
                 # Time offset starts after the leftover horizon
                 time_offset = slot_offset * EnvDefaults.TIMESLOT_DURATION_SECONDS
 
@@ -962,8 +1015,12 @@ class StaticEnv(gym.Env):
     def _load_pmf_matrix(self, day: str, timeslot: int) -> pl.DataFrame:
         """Load the PMF matrix and global rate for a given day and timeslot."""
         # Construct file path
-        matrix_path = os.path.join(self._data_path, DEFAULT_PATHS.matrices_folder, day.lower())
-        pmf_matrix = pl.read_csv(os.path.join(matrix_path, str(timeslot).zfill(2) + '-pmf-matrix.csv'))
+        matrix_path = os.path.join(
+            self._data_path, DEFAULT_PATHS.matrices_folder, day.lower()
+        )
+        pmf_matrix = pl.read_csv(
+            os.path.join(matrix_path, str(timeslot).zfill(2) + "-pmf-matrix.csv")
+        )
 
         return pmf_matrix
 
@@ -997,11 +1054,11 @@ class StaticEnv(gym.Env):
     # -------------------------------------------------------------------------
 
     def _bike_repositioning(
-            self,
-            min_bikes: int,
-            max_bikes: int,
-            enable_repositioning: bool = False,
-            use_net_flow: bool = False,
+        self,
+        min_bikes: int,
+        max_bikes: int,
+        enable_repositioning: bool = False,
+        use_net_flow: bool = False,
     ) -> dict:
         """
         Compute initial bike distribution.
@@ -1062,6 +1119,11 @@ class StaticEnv(gym.Env):
         if use_net_flow:
             net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
 
+            if self._event_buffer is None:
+                raise RuntimeError(
+                    "Event buffer not initialized — cannot compute net flow."
+                )
+
             for event in self._event_buffer:
                 if event.time > EnvDefaults.TIMESLOT_DURATION_SECONDS:
                     break  # buffer is sorted — stop at next-timeslot events
@@ -1076,9 +1138,7 @@ class StaticEnv(gym.Env):
                         cell = self._stations[station_id].get_cell()
                         net_flow_per_cell[cell.get_id()] += 1
 
-            total_negative_flow = sum(
-                f for f in net_flow_per_cell.values() if f < 0
-            )
+            total_negative_flow = sum(f for f in net_flow_per_cell.values() if f < 0)
 
             if total_negative_flow < 0:  # guard: at least one cell has net outflow
                 for cell_id, flow in net_flow_per_cell.items():

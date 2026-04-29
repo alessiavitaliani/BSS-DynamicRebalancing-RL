@@ -1,11 +1,11 @@
 import networkx as nx
-
 from networkx.algorithms.approximation import traveling_salesman_problem
 
+from gymnasium_env.simulator.bike import Bike
 from gymnasium_env.simulator.cell import Cell
-from gymnasium_env.simulator.utils import truncated_gaussian, Actions
-from gymnasium_env.simulator.truck import Truck
 from gymnasium_env.simulator.station import Station
+from gymnasium_env.simulator.truck import Truck
+from gymnasium_env.simulator.utils import Actions, truncated_gaussian
 
 # TODO: Move all the code into a class "TruckSimulator" to avoid the use of global variables and to make the code more modular and testable.
 
@@ -29,10 +29,10 @@ from gymnasium_env.simulator.station import Station
 
 # Maps directional Actions to the corresponding adjacent cell key
 ACTION_TO_DIRECTION: dict[int, str] = {
-    Actions.UP.value: 'up',
-    Actions.DOWN.value: 'down',
-    Actions.LEFT.value: 'left',
-    Actions.RIGHT.value: 'right',
+    Actions.UP.value: "up",
+    Actions.DOWN.value: "down",
+    Actions.LEFT.value: "left",
+    Actions.RIGHT.value: "right",
 }
 
 
@@ -41,7 +41,7 @@ def move(
     truck: Truck,
     distance_lookup: dict[int, dict],
     cell_dict: dict[int, Cell],
-    mean_velocity: int
+    mean_velocity: int,
 ) -> tuple[int, int, bool]:
     """
     Move the truck in the direction specified by the action and compute the time and distance costs.
@@ -60,10 +60,16 @@ def move(
     """
     direction = ACTION_TO_DIRECTION.get(action)
     if direction is None:
-        raise ValueError(f"Action {action} is not a valid move action. Expected one of {list(ACTION_TO_DIRECTION.keys())}")
+        raise ValueError(
+            f"Action {action} is not a valid move action. Expected one of {list(ACTION_TO_DIRECTION.keys())}"
+        )
 
     cell = truck.get_cell()
-    target_cell = cell_dict.get(cell.get_adjacent_cells().get(direction))
+    adjacent_cells = cell.get_adjacent_cells()
+    adjacent_cell_key = adjacent_cells.get(direction)
+    if adjacent_cell_key is None:
+        return 0, 0, True
+    target_cell = cell_dict.get(adjacent_cell_key)
 
     if target_cell is None:
         return 0, 0, True
@@ -79,13 +85,13 @@ def move(
 
 
 def drop_bike(
-        truck: Truck,
-        distance_lookup: dict[int, dict],
-        mean_velocity: int,
-        depot,
-        system_bikes: dict,
-        maximum_number_of_bikes: int,
-        node: int = None
+    truck: Truck,
+    distance_lookup: dict[int, dict],
+    mean_velocity: int,
+    depot,
+    system_bikes: dict[int, Bike],
+    maximum_number_of_bikes: int,
+    node: int = 0,
 ) -> tuple[int, int, bool]:
     """
     Unloads a bike to the center_node of the cell where the truck is located or a specified station "node".
@@ -101,10 +107,10 @@ def drop_bike(
         - distance_lookup (dict[int, dict]): Dictionary of the distance between two stations, with station IDs as keys
         - mean_velocity (int): Mean velocity of the truck moving to the next cell
         - depot (Depot): class instance of the depot
-        - node (int): Station ID for the bike drop. 
+        - node (int): Station ID for the bike drop.
 
     Returns:
-        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0
         - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
     """
     time = 0
@@ -127,7 +133,10 @@ def drop_bike(
         position = depot.id
 
         bikes_to_load = min(truck.max_load // 2, len(depot.bikes))
-        bikes = {key: depot.bikes.pop(key) for key in list(depot.bikes.keys())[:bikes_to_load]}
+        bikes = {
+            key: depot.bikes.pop(key)
+            for key in list(depot.bikes.keys())[:bikes_to_load]
+        }
         truck.set_load(bikes)
 
     if position != target_node:
@@ -152,7 +161,7 @@ def pick_up_bike(
     distance_lookup: dict[int, dict],
     mean_velocity: int,
     depot,
-    system_bikes: dict
+    system_bikes: dict,
 ) -> tuple[int, int, bool]:
     """
     Picks up a bike from a station based on the lowest "bike_metric".
@@ -167,7 +176,7 @@ def pick_up_bike(
         - system_bikes (dict): Dictionary of bikes inside the system.
 
     Returns:
-        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0
         - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
         - bool = True
     """
@@ -181,7 +190,8 @@ def pick_up_bike(
         bike_dict.update(station_dict[station_id].get_bikes())
 
     occupied_stations = [
-        station_id for station_id in cell.get_nodes()
+        station_id
+        for station_id in cell.get_nodes()
         if station_dict[station_id].get_number_of_bikes() > 0
     ]
     if not occupied_stations:
@@ -209,11 +219,12 @@ def pick_up_bike(
             bikes_metric[bike_id] = 0.6 * norm_batt + 0.4 * norm_distance
 
     # Find the lowest metric bike
-    bike_id = min(bikes_metric, key=bikes_metric.get)
+    bike_id = min(bikes_metric, key=lambda k: bikes_metric[k])
 
     # Go get the chosen bike
-    time, distance = _collect_bike(truck, distance_lookup, mean_velocity,
-                                   depot, system_bikes, bike_id, bike_dict)
+    time, distance = _collect_bike(
+        truck, distance_lookup, mean_velocity, depot, system_bikes, bike_id, bike_dict
+    )
 
     return time, distance, False
 
@@ -224,7 +235,7 @@ def charge_bike(
     distance_lookup: dict[int, dict],
     mean_velocity: int,
     depot,
-    system_bikes: dict
+    system_bikes: dict,
 ) -> tuple[int, int, bool]:
     """
     Picks up a bike with the lowest battery.
@@ -241,13 +252,13 @@ def charge_bike(
         - system_bikes (dict): Dictionary of bikes inside the system.
 
     Returns:
-        - int: Value of the time round trip to the depot if more bikes are needed, else = 0 
+        - int: Value of the time round trip to the depot if more bikes are needed, else = 0
         - int: Value of the total distance round trip to the depot if more bikes are needed, else = 0
         - bool = True
     """
 
     cell = truck.get_cell()
-    
+
     # Flag no bike picked up
     if cell.get_total_bikes() == 0:
         return 0, 0, True
@@ -260,8 +271,9 @@ def charge_bike(
     bike_id = min(bike_dict, key=lambda bid: bike_dict[bid].get_battery())
 
     # Go get the chosen bike
-    time, distance = _collect_bike(truck, distance_lookup, mean_velocity,
-                                   depot, system_bikes, bike_id, bike_dict)
+    time, distance = _collect_bike(
+        truck, distance_lookup, mean_velocity, depot, system_bikes, bike_id, bike_dict
+    )
 
     # If you are asking where the "lock_bike" action is,
     # this can be found in the simulator after the advancing of the simulation time.
@@ -275,7 +287,9 @@ def stay(truck: Truck) -> int:
     truck.leaving_cell = truck.get_cell()
     return 60
 
+
 # ----------------------------------------------------------------------------------------------------------------------
+
 
 def _collect_bike(
     truck: Truck,
@@ -283,8 +297,8 @@ def _collect_bike(
     mean_velocity: int,
     depot,
     system_bikes: dict,
-    bike_id: int,        # already selected by the caller
-    bike_dict: dict,     # flat {bike_id: bike} for the whole cell
+    bike_id: int,  # already selected by the caller
+    bike_dict: dict,  # flat {bike_id: bike} for the whole cell
 ) -> tuple[int, int]:
     """
     Shared logic: travel to bike, unlock it, load it (dumping to depot if full).
@@ -318,9 +332,16 @@ def _collect_bike(
     truck.leaving_cell = truck.get_cell()
     return time, distance
 
+
 # ----------------------------------------------------------------------------------------------------------------------
 
-def tsp_rebalancing(surplus_nodes: dict, deficit_nodes: dict, starting_node, distance_lookup: dict[int, dict]):
+
+def tsp_rebalancing(
+    surplus_nodes: dict,
+    deficit_nodes: dict,
+    starting_node,
+    distance_lookup: dict[int, dict],
+):
     """
     Computes the system rebalancing using the traveling_salesman_problem algorithm to calculate the total time and the total path of the truck.
 

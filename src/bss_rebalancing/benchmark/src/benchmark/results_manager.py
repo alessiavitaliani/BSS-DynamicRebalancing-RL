@@ -113,18 +113,18 @@ class ResultsManager:
     @classmethod
     def create_with_auto_increment(cls, results_path: str) -> 'ResultsManager':
         """Create a ResultsManager with auto-incremented run_id to avoid conflicts."""
-        results_path = Path(results_path)
-        results_path.mkdir(parents=True, exist_ok=True)
+        results_path_obj = Path(results_path)
+        results_path_obj.mkdir(parents=True, exist_ok=True)
 
         existing_runs = [
             int(d.name.split('_')[1])
-            for d in results_path.iterdir()
+            for d in results_path_obj.iterdir()
             if d.is_dir() and d.name.startswith('run_')
         ]
         next_run_id = max(existing_runs, default=-1) + 1
 
         print(f"Auto-assigned run_id: {next_run_id}")
-        return cls(str(results_path), next_run_id, overwrite=False)
+        return cls(results_path, next_run_id, overwrite=False)
 
     def save_episode(self, results: EpisodeResults):
         """Save results for a single benchmark episode."""
