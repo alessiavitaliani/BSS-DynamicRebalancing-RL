@@ -80,6 +80,7 @@ class EnvDefaults:
     DEFAULT_TOTAL_TIMESLOTS = 56
     DEFAULT_DEPOT_ID = 1
     DEFAULT_NUM_REBALANCING_EVENTS = 2
+    DEFAULT_STARTING_REBALANCING_EVENT = 1  # hour at which first rebalancing event occurs (e.g. 1 = 1am, 6 = 6am, etc.)
 
     # Simulation parameters
     PRECOMPUTED_EPISODE_TIMESLOTS = 56  # 7 days × 8 slots
@@ -255,6 +256,7 @@ class StaticEnv(gym.Env):
 
         # Rebalancing configuration
         self._num_rebalancing_events = EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
+        self._starting_rebalancing_event = EnvDefaults.DEFAULT_STARTING_REBALANCING_EVENT
         self._rebalancing_hours = []
         self._prediction_window = None
         self._enable_repositioning = EnvDefaults.BASE_REPOSITIONING
@@ -402,10 +404,16 @@ class StaticEnv(gym.Env):
             "num_rebalancing_events", EnvDefaults.DEFAULT_NUM_REBALANCING_EVENTS
         )
 
+        self._starting_rebalancing_event = options.get(
+            "starting_rebalancing_event", EnvDefaults.DEFAULT_STARTING_REBALANCING_EVENT
+        )
+
         # Set rebalancing hours
         if self._num_rebalancing_events > 0:
             interval = 24 // self._num_rebalancing_events
-            self._rebalancing_hours = [(i + 3) % 24 for i in range(0, 24, interval)]
+            self._rebalancing_hours = [
+                (i + EnvDefaults.DEFAULT_STARTING_REBALANCING_EVENT) % 24 for i in range(0, 24, interval)
+            ]
             self._rebalancing_hours = sorted(self._rebalancing_hours)
 
         self._prediction_window = (
