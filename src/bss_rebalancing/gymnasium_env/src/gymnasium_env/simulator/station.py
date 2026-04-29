@@ -6,8 +6,18 @@ if TYPE_CHECKING:
 
 
 class Station:
-    def __init__(self, station_id: int, lat: float, lon: float, name: str = None, capacity: int = 1000,
-                 bikes: dict[int, 'Bike'] = None, request_rate: float = 0.0, arrival_rate: float = 0.0, cell: 'Cell' = None):
+    def __init__(
+        self,
+        station_id: int,
+        lat: float,
+        lon: float,
+        name: str | None = None,
+        capacity: int = 1000,
+        bikes: dict[int, "Bike"] | None = None,
+        request_rate: float = 0.0,
+        arrival_rate: float = 0.0,
+        cell: "Cell | None" = None,
+    ):
         """
         Initialize a Station object.
 
@@ -40,9 +50,9 @@ class Station:
         Returns:
         str: A string describing the station with its ID, name, latitude, and longitude.
         """
-        return f"Station {self.station_id} (Locked Bikes: {len(self.bikes)})" # Position ({self.lat}, {self.lon}),
+        return f"Station {self.station_id} (Locked Bikes: {len(self.bikes)})"  # Position ({self.lat}, {self.lon}),
 
-    def set_bikes(self, bikes: dict[int, 'Bike']):
+    def set_bikes(self, bikes: dict[int, "Bike"]):
         """
         Set the list of bikes at the station and upates the respective flags.
 
@@ -67,7 +77,7 @@ class Station:
     def set_capacity(self, capacity: int):
         self.capacity = capacity
 
-    def set_cell(self, cell: 'Cell'):
+    def set_cell(self, cell: "Cell"):
         """
         Set the cell of the station.
 
@@ -76,7 +86,7 @@ class Station:
         """
         self.cell = cell
 
-    def unlock_bike(self, bike_id: int = None) -> 'Bike':
+    def unlock_bike(self, bike_id: int | None = None) -> "Bike":
         """
         Unlock a bike from the station and upates the respective flags.
 
@@ -94,7 +104,7 @@ class Station:
         else:
             raise ValueError("Station is empty. Cannot unlock bike.")
 
-    def lock_bike(self, bike: 'Bike'):
+    def lock_bike(self, bike: "Bike"):
         """
         Lock a bike at the station and upates the respective flags.
 
@@ -107,7 +117,12 @@ class Station:
             self.bikes[bike.get_bike_id()] = bike
             self.cell.set_total_bikes(self.cell.get_total_bikes() + 1)
         else:
-            raise ValueError("Station is full. Cannot lock bike. Dimension: " + str(len(self.bikes)) + "/" + str(self.capacity))
+            raise ValueError(
+                "Station is full. Cannot lock bike. Dimension: "
+                + str(len(self.bikes))
+                + "/"
+                + str(self.capacity)
+            )
 
     def get_station_id(self) -> int:
         return self.station_id
@@ -118,7 +133,7 @@ class Station:
     def get_coordinates(self) -> tuple[float, float]:
         return self.lat, self.lon
 
-    def get_bikes(self) -> dict[int, 'Bike']:
+    def get_bikes(self) -> dict[int, "Bike"]:
         return self.bikes
 
     def get_demand_rate(self) -> float:
@@ -127,7 +142,7 @@ class Station:
     def get_arrival_rate(self) -> float:
         return self.arrival_rate
 
-    def get_cell(self) -> 'Cell':
+    def get_cell(self) -> "Cell | None":
         return self.cell
 
     def get_capacity(self) -> int:

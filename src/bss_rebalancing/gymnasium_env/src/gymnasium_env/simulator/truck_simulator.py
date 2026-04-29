@@ -1,7 +1,6 @@
 import networkx as nx
 from networkx.algorithms.approximation import traveling_salesman_problem
 
-from gymnasium_env.simulator.bike import Bike
 from gymnasium_env.simulator.cell import Cell
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.truck import Truck
@@ -66,10 +65,10 @@ def move(
 
     cell = truck.get_cell()
     adjacent_cells = cell.get_adjacent_cells()
-    adjacent_cell_key = adjacent_cells.get(direction)
-    if adjacent_cell_key is None:
+    adjacent_key = adjacent_cells.get(direction)
+    if adjacent_key is None:
         return 0, 0, True
-    target_cell = cell_dict.get(adjacent_cell_key)
+    target_cell = cell_dict.get(adjacent_key)
 
     if target_cell is None:
         return 0, 0, True
@@ -89,9 +88,9 @@ def drop_bike(
     distance_lookup: dict[int, dict],
     mean_velocity: int,
     depot,
-    system_bikes: dict[int, Bike],
+    system_bikes: dict,
     maximum_number_of_bikes: int,
-    node: int = 0,
+    node: int | None = None,
 ) -> tuple[int, int, bool]:
     """
     Unloads a bike to the center_node of the cell where the truck is located or a specified station "node".
@@ -219,7 +218,7 @@ def pick_up_bike(
             bikes_metric[bike_id] = 0.6 * norm_batt + 0.4 * norm_distance
 
     # Find the lowest metric bike
-    bike_id = min(bikes_metric, key=lambda k: bikes_metric[k])
+    bike_id = min(bikes_metric, key=lambda bid: bikes_metric[bid])
 
     # Go get the chosen bike
     time, distance = _collect_bike(

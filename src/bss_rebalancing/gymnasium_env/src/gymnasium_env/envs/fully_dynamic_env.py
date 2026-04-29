@@ -24,10 +24,7 @@ from gymnasium import spaces
 from gymnasium.utils import seeding
 
 from gymnasium_env.simulator import Bike
-from gymnasium_env.simulator.bike_simulator import (
-    build_events,
-    event_handler,
-)
+from gymnasium_env.simulator.bike_simulator import build_events, event_handler
 from gymnasium_env.simulator.env_logger import EnvLogger
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.trip import TripSample
@@ -1391,11 +1388,6 @@ class FullyDynamicEnv(gym.Env):
         expected_max_departure: dict[int, int] = {}
         expected_after_arrival: dict[int, int] = {}
 
-        if self._event_buffer is None:
-            raise ValueError(
-                "Event buffer is not initialized. Cannot compute net flow for repositioning."
-            )
-
         for event in self._event_buffer:
             if event.time > self._env_time + EnvDefaults.TIMESLOT_DURATION_SECONDS:
                 break
@@ -1405,6 +1397,10 @@ class FullyDynamicEnv(gym.Env):
                 loc = event.get_trip().get_start_location()
                 if loc.get_station_id() != 10000:
                     cell = loc.get_cell()
+                    if cell is None:
+                        raise ValueError(
+                            f"Departure event with invalid cell for station {loc.get_station_id()}"
+                        )
                     cell_id = cell.get_id()
                     expected_departures[cell_id] = (
                         expected_departures.get(cell_id, 0) + 1
@@ -1413,6 +1409,10 @@ class FullyDynamicEnv(gym.Env):
                 loc = event.get_trip().get_end_location()
                 if loc.get_station_id() != 10000:
                     cell = loc.get_cell()
+                    if cell is None:
+                        raise ValueError(
+                            f"Arrival event with invalid cell for station {loc.get_station_id()}"
+                        )
                     cell_id = cell.get_id()
                     expected_departures[cell_id] = (
                         expected_departures.get(cell_id, 0) - 1
@@ -1517,11 +1517,6 @@ class FullyDynamicEnv(gym.Env):
         if use_net_flow:
             net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
 
-            if self._event_buffer is None:
-                raise ValueError(
-                    "Event buffer is not initialized. Cannot compute net flow for repositioning."
-                )
-
             for event in self._event_buffer:
                 if event.time > EnvDefaults.TIMESLOT_DURATION_SECONDS:
                     break  # buffer is sorted — stop at next-timeslot events
@@ -1529,11 +1524,19 @@ class FullyDynamicEnv(gym.Env):
                     station_id = event.trip.get_start_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Departure event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] -= 1
                 elif event.is_arrival():
                     station_id = event.trip.get_end_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Arrival event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] += 1
 
             total_negative_flow = sum(f for f in net_flow_per_cell.values() if f < 0)

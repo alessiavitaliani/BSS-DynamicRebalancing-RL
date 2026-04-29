@@ -1,28 +1,29 @@
-import polars as pl
 import numpy as np
+import polars as pl
 
-from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.bike import Bike
-from gymnasium_env.simulator.trip import Trip, TripSample
-from gymnasium_env.simulator.event import EventType, Event
-from gymnasium_env.simulator.utils import generate_poisson_events, truncated_gaussian
 from gymnasium_env.simulator.env_logger import EnvLogger
+from gymnasium_env.simulator.event import Event, EventType
+from gymnasium_env.simulator.station import Station
+from gymnasium_env.simulator.trip import Trip, TripSample
+from gymnasium_env.simulator.utils import generate_poisson_events, truncated_gaussian
 
 # ----------------------------------------------------------------------------------------------------------------------
 
+
 def event_handler(
-        event: Event,
-        station_dict: dict[int, Station],
-        nearby_nodes_dict: dict[int, list[int]],
-        distance_lookup: dict[int, dict],
-        system_bikes: dict[int, Bike],
-        outside_system_bikes: dict[int, Bike],
-        traveling_bikes: dict[int, Bike],
-        depot,
-        maximum_number_of_bikes: int,
-        truck_load: int,
-        logger: EnvLogger = None,
-        logging_state_and_trips: bool = False
+    event: Event,
+    station_dict: dict[int, Station],
+    nearby_nodes_dict: dict[int, list[int]],
+    distance_lookup: dict[int, dict],
+    system_bikes: dict[int, Bike],
+    outside_system_bikes: dict[int, Bike],
+    traveling_bikes: dict[int, Bike],
+    depot,
+    maximum_number_of_bikes: int,
+    truck_load: int,
+    logger: EnvLogger | None = None,
+    logging_state_and_trips: bool = False,
 ) -> int:
     """
     Handle the event based on its type.
@@ -48,14 +49,16 @@ def event_handler(
             distance_lookup=distance_lookup,
             outside_system_bikes=outside_system_bikes,
             traveling_bikes=traveling_bikes,
-            depot=depot
+            depot=depot,
         )
-        if logging_state_and_trips:
+        if logging_state_and_trips and logger is not None:
             logger.log_trip(trip)
         if trip.is_failed():
             failure = 1
             if logger is not None:
-                logger.log_no_available_bikes(trip.get_start_location(), trip.get_end_location())
+                logger.log_no_available_bikes(
+                    trip.get_start_location(), trip.get_end_location()
+                )
     else:
         arrival_handler(
             trip=event.get_trip(),
@@ -64,20 +67,20 @@ def event_handler(
             depot=depot,
             maximum_number_of_bikes=maximum_number_of_bikes,
             traveling_bikes=traveling_bikes,
-            truck_load=truck_load
+            truck_load=truck_load,
         )
 
     return failure
 
 
 def departure_handler(
-        trip: Trip,
-        station_dict: dict,
-        nearby_nodes_dict: dict[int, list[int]],
-        distance_lookup: dict[int, dict],
-        outside_system_bikes: dict[int, Bike],
-        traveling_bikes: dict[int, Bike],
-        depot
+    trip: Trip,
+    station_dict: dict,
+    nearby_nodes_dict: dict[int, list[int]],
+    distance_lookup: dict[int, dict],
+    outside_system_bikes: dict[int, Bike],
+    traveling_bikes: dict[int, Bike],
+    depot,
 ) -> Trip:
     """
     Handle the departure of a trip from the starting station.
@@ -115,7 +118,7 @@ def departure_handler(
     # Check if there are any bikes available at the starting station
     if start_station.get_number_of_bikes() > 0:
         bike = start_station.unlock_bike()
-        if bike.get_battery() > trip.get_distance()/1000:
+        if bike.get_battery() > trip.get_distance() / 1000:
             trip.set_bike(bike)
             trip.set_failed(False)
             traveling_bikes[bike.get_bike_id()] = bike
@@ -132,7 +135,7 @@ def departure_handler(
     for node_id, _ in sorted(nodes_dist_dict.items(), key=lambda item: item[1]):
         if station_dict[node_id].get_number_of_bikes() > 0:
             bike = station_dict[node_id].unlock_bike()
-            if bike.get_battery() > trip.get_distance()/1000:
+            if bike.get_battery() > trip.get_distance() / 1000:
                 trip.set_deviated_location(station_dict[node_id])
                 trip.set_bike(bike)
                 trip.set_failed(False)
@@ -150,13 +153,13 @@ def departure_handler(
 
 
 def arrival_handler(
-        trip: Trip,
-        system_bikes: dict[int, Bike],
-        outside_system_bikes: dict[int, Bike],
-        depot,
-        maximum_number_of_bikes: int,
-        traveling_bikes: dict[int, Bike],
-        truck_load: int
+    trip: Trip,
+    system_bikes: dict[int, Bike],
+    outside_system_bikes: dict[int, Bike],
+    depot,
+    maximum_number_of_bikes: int,
+    traveling_bikes: dict[int, Bike],
+    truck_load: int,
 ):
     """
     Handle the arrival of a trip at the destination station.
@@ -172,7 +175,7 @@ def arrival_handler(
 
     bike = trip.get_bike()
     # TURN OFF THIS TO DISABLE BATTERY CHARGE
-    bike.set_battery(bike.get_battery() - trip.get_distance()/1000)
+    bike.set_battery(bike.get_battery() - trip.get_distance() / 1000)
     traveling_bikes.pop(bike.get_bike_id())
 
     # Move the bike to the outside system if the destination station is outside the system
@@ -194,15 +197,17 @@ def arrival_handler(
 
     end_station.lock_bike(bike)
 
+
 # ----------------------------------------------------------------------------------------------------------------------
 
+
 def simulate_events(
-        duration: int,
-        timeslot: int,
-        global_rate: float,
-        pmf: pl.DataFrame,
-        distance_lookup: dict[int, dict],
-        seed: int | None = None
+    duration: int,
+    timeslot: int,
+    global_rate: float,
+    pmf: pl.DataFrame,
+    distance_lookup: dict[int, dict],
+    seed: int | None = None,
 ) -> list[TripSample]:
     """
     Sample trip requests for a timeslot via Poisson process.
@@ -220,9 +225,9 @@ def simulate_events(
 
     for event_time in event_times:
         idx = np.searchsorted(cumsum_values, rng.random())
-        row = pmf_data[idx]['id']
-        origin_id = row['node_id']
-        dest_id = row['col_id']
+        row = pmf_data[idx]["id"]
+        origin_id = row["node_id"]
+        dest_id = row["col_id"]
 
         if origin_id == 10000 or dest_id == 10000:
             distance = 0
@@ -234,14 +239,16 @@ def simulate_events(
 
         abs_start = event_time + 3600 * (3 * timeslot + 1)
 
-        samples.append(TripSample(
-            dep_time=event_time,
-            travel_time=travel_time,
-            start_station_id=origin_id,
-            end_station_id=dest_id,
-            distance=distance,
-            abs_start_time=abs_start,
-        ))
+        samples.append(
+            TripSample(
+                dep_time=event_time,
+                travel_time=travel_time,
+                start_station_id=origin_id,
+                end_station_id=dest_id,
+                distance=distance,
+                abs_start_time=abs_start,
+            )
+        )
 
     samples.sort(key=lambda s: s.dep_time)
     return samples
@@ -268,16 +275,20 @@ def build_events(
             bike=None,
             distance=s.distance,
         )
-        events.append(Event(
-            time=s.dep_time + time_offset,
-            event_type=EventType.DEPARTURE,
-            trip=trip,
-        ))
-        events.append(Event(
-            time=s.dep_time + s.travel_time + time_offset,
-            event_type=EventType.ARRIVAL,
-            trip=trip,
-        ))
+        events.append(
+            Event(
+                time=s.dep_time + time_offset,
+                event_type=EventType.DEPARTURE,
+                trip=trip,
+            )
+        )
+        events.append(
+            Event(
+                time=s.dep_time + s.travel_time + time_offset,
+                event_type=EventType.ARRIVAL,
+                trip=trip,
+            )
+        )
 
     events.sort(key=lambda e: e.time)
     return events

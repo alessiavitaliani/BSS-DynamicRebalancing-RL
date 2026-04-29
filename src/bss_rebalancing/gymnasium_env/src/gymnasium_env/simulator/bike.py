@@ -8,7 +8,12 @@ class Bike:
     # Class variable to track the next available bike_id
     _next_bike_id = 0
 
-    def __init__(self, station: 'Station' = None, max_battery: float = 50.0, bike_id: int = None):
+    def __init__(
+        self,
+        station: "Station | None" = None,
+        max_battery: float = 50.0,
+        bike_id: int | None = None,
+    ):
         """
         Initialize a Bike object.
 
@@ -61,7 +66,7 @@ class Bike:
         """
         self.available = available
 
-    def set_station(self, station: 'Station'):
+    def set_station(self, station: "Station | None"):
         """
         Set the station where the bike is located.
 
@@ -79,7 +84,7 @@ class Bike:
         """
         self.battery = battery
 
-    def get_station(self) -> 'Station':
+    def get_station(self) -> "Station | None":
         """
         Get the station where the bike is located.
 
@@ -124,7 +129,12 @@ class Bike:
         """
         return self.max_battery
 
-    def reset(self, station: 'Station' = None, battery: float = None, available: bool = False):
+    def reset(
+        self,
+        station: "Station | None" = None,
+        battery: float | None = None,
+        available: bool = False,
+    ):
         # Reset the bike to its initial state
         self.battery = self.max_battery if battery is None else battery
         self.available = available

@@ -16,7 +16,6 @@ from scipy.stats import truncnorm
 from tqdm import tqdm
 
 from gymnasium_env.simulator.bike import Bike
-from gymnasium_env.simulator.bike_simulator import simulate_events
 from gymnasium_env.simulator.station import Station
 
 # ==============================================================================
@@ -162,11 +161,14 @@ def generate_poisson_events(
     return np.floor(event_times).astype(int).tolist()
 
 
-def convert_seconds_to_hours_minutes_day(day, seconds) -> str:
+def convert_seconds_to_hours_minutes_day(seconds, day=None) -> str:
     hours, remainder = divmod(seconds, 3600)
     hours = hours % 24
     minutes, seconds = divmod(remainder, 60)
-    return f"{day} AT {hours:02}:{minutes:02}:{seconds:02}"
+    if day is not None:
+        return f"{day} AT {hours:02}:{minutes:02}:{seconds:02}"
+    else:
+        return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
 def truncated_gaussian(
@@ -225,10 +227,7 @@ def initialize_bikes(station: Station | None = None, n: int = 0) -> dict[int, Bi
     """Initialize bikes at a station with auto-incrementing IDs."""
     bikes = {}
     for i in range(n):
-        if station is not None:
-            bike = Bike(station=station)
-        else:
-            raise ValueError("Station must be provided to initialize bikes.")
+        bike = Bike(station=station)
         bikes[bike.get_bike_id()] = bike
         if station is not None:
             station.lock_bike(bike)
@@ -237,7 +236,7 @@ def initialize_bikes(station: Station | None = None, n: int = 0) -> dict[int, Bi
 
 def initialize_stations(
     stations: dict, depot_bikes: dict, bikes_per_station: dict
-) -> tuple[dict[int, Bike], dict[int, Bike]]:
+) -> tuple[dict, dict]:
     """
     Initialize a list of stations based on the nodes of the graph.
 
@@ -264,9 +263,8 @@ def initialize_stations(
             system_bikes.update(bikes)
 
     outside_system_bikes = initialize_bikes(n=1000)
-    outside_station = stations[10000]
     for bike in outside_system_bikes.values():
-        bike.set_station(outside_station)
+        bike.set_station(stations[10000])
 
     return system_bikes, outside_system_bikes
 
@@ -447,6 +445,8 @@ def compute_buffer_logic(
     Returns:
         Dict mapping slot_index (int) → list of TripSample objects.
     """
+    from gymnasium_env.simulator.bike_simulator import simulate_events
+
     # ── Cache load (first episode only) ─────────────────────────────────────
     if first_episode and cache_dir is not None:
         cached = load_episode_zero(

@@ -1,14 +1,15 @@
-from typing import TYPE_CHECKING
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from gymnasium_env.simulator.station import Station
     from gymnasium_env.simulator.bike import Bike
+    from gymnasium_env.simulator.station import Station
 
 
 @dataclass
 class TripSample:
     """Lightweight record of a sampled trip. No bike, no Event objects."""
+
     dep_time: int
     travel_time: int
     start_station_id: int
@@ -18,11 +19,20 @@ class TripSample:
 
 
 class Trip:
-
     trip_id = 0
 
-    def __init__(self, start_time: int, end_time: int, start_location: 'Station', end_location: 'Station', bike: 'Bike' = None,
-                 distance: int = 0, failed = False, deviated = False, deviated_location = None):
+    def __init__(
+        self,
+        start_time: int,
+        end_time: int,
+        start_location: "Station",
+        end_location: "Station",
+        bike: "Bike | None" = None,
+        distance: int = 0,
+        failed=False,
+        deviated=False,
+        deviated_location=None,
+    ):
         """
         Initialize a Trip object.
 
@@ -54,14 +64,18 @@ class Trip:
         """
         Return a string representation of the Trip object.
         """
-        from gymnasium_env.simulator.utils import convert_seconds_to_hours_minutes
-        log = f"TRIP {self.trip_id}: from {self.start_location} to {self.end_location} - Time: {convert_seconds_to_hours_minutes(self.start_time)} to {convert_seconds_to_hours_minutes(self.end_time)}"
+        from gymnasium_env.simulator.utils import convert_seconds_to_hours_minutes_day
+
+        log = (
+            f"TRIP {self.trip_id}: from {self.start_location} to {self.end_location}"
+            f" - Time: {convert_seconds_to_hours_minutes_day(self.start_time)} to {convert_seconds_to_hours_minutes_day(self.end_time)}"
+        )
         if self.deviated and not self.failed:
             return log + f"\n - Starting station deviated to {self.deviated_location}"
 
         return log
 
-    def set_bike(self, bike: 'Bike'):
+    def set_bike(self, bike: "Bike"):
         self.bike = bike
 
     def set_failed(self, failed: bool):
@@ -70,7 +84,7 @@ class Trip:
     def set_deviated(self, deviated: bool):
         self.deviated = deviated
 
-    def set_deviated_location(self, deviated_location: 'Station'):
+    def set_deviated_location(self, deviated_location: "Station"):
         self.deviated_location = deviated_location
 
     def is_failed(self):

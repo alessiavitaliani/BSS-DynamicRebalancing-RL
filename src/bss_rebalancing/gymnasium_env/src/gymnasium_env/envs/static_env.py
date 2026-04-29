@@ -21,14 +21,9 @@ import osmnx as ox
 import polars as pl
 from gymnasium import spaces
 from gymnasium.utils import seeding
-from tqdm import tqdm
 
 from gymnasium_env.simulator.bike import Bike
-from gymnasium_env.simulator.bike_simulator import (
-    build_events,
-    event_handler,
-    simulate_events,
-)
+from gymnasium_env.simulator.bike_simulator import build_events, event_handler
 from gymnasium_env.simulator.env_logger import EnvLogger
 from gymnasium_env.simulator.event import Event
 from gymnasium_env.simulator.station import Station
@@ -40,13 +35,12 @@ from gymnasium_env.simulator.utils import (
     DEFAULT_PATHS,
     NUM_TO_DAYS,
     Actions,
-    cache_episode_zero,
+    compute_buffer_logic,
     convert_seconds_to_hours_minutes_day,
-    flatten_pmf_matrix,
+    episode_worker,
     initialize_bikes,
     initialize_graph,
     initialize_stations,
-    load_episode_zero,
     load_preprocessed_data,
     truncated_gaussian,
 )
@@ -96,104 +90,6 @@ class EnvDefaults:
 class Depot:
     id: int | None = None
     bikes: dict[int, Bike] = field(default_factory=dict)
-
-
-# =============================================================================
-# Episode Worker
-# =============================================================================
-
-
-def _compute_buffer_logic(
-    seed: int,
-    data_path: str,
-    global_rate_dict: dict,
-    distance_lookup: dict,
-    first_episode: bool = False,
-    cache_dir: str | None = None,
-    show_pbar: bool = False,
-) -> dict:
-    """Pure function — all the actual computation. No queue, no process."""
-
-    # ── Cache load (first episode only) ─────────────────────────────────────
-    if first_episode and cache_dir is not None:
-        cached = load_episode_zero(
-            cache_dir=cache_dir,
-            seed=seed,
-            expected_timeslots=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-        )
-        if cached is not None:
-            return cached
-
-    # ── Compute ─────────────────────────────────────────────────────────────
-    rng = np.random.default_rng(seed)
-    day = EnvDefaults.DEFAULT_DAY
-    buffers = {}
-    pbar = (
-        tqdm(
-            total=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
-            desc="Computing episode",
-            unit="slot",
-            position=1,
-            leave=False,
-            dynamic_ncols=True,
-        )
-        if show_pbar
-        else None
-    )
-
-    for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
-        timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
-        matrix_path = os.path.join(data_path, DEFAULT_PATHS.matrices_folder)
-        pmf_matrix = pl.read_csv(
-            os.path.join(
-                matrix_path, day.lower(), str(timeslot).zfill(2) + "-pmf-matrix.csv"
-            )
-        )
-        global_rate = global_rate_dict[(day.lower(), timeslot)]
-        flattened_pmf = flatten_pmf_matrix(pmf_matrix)
-        slot_seed = int(rng.integers(0, 2**31))
-        buffers[slot_index] = simulate_events(
-            duration=EnvDefaults.TIMESLOT_DURATION_SECONDS,
-            timeslot=timeslot,
-            global_rate=global_rate,
-            pmf=flattened_pmf,
-            distance_lookup=distance_lookup,
-            seed=slot_seed,
-        )
-        if pbar is not None:
-            pbar.update(1)
-        if timeslot == EnvDefaults.TIMESLOTS_PER_DAY - 1:
-            day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
-
-    if pbar is not None:
-        pbar.close()
-
-    # ── Cache save (first episode only) ─────────────────────────────────────
-    if first_episode and cache_dir is not None:
-        cache_episode_zero(buffers, cache_dir=cache_dir, seed=seed)
-
-    return buffers
-
-
-def _episode_worker(
-    seed, data_path, global_rate_dict, distance_lookup, result_queue, show_pbar
-):
-    """Thin process entry point — just calls the logic and puts result in queue."""
-    try:
-        result = _compute_buffer_logic(
-            seed=seed,
-            data_path=data_path,
-            global_rate_dict=global_rate_dict,
-            distance_lookup=distance_lookup,
-            show_pbar=show_pbar,
-        )
-        result_queue.put(result)
-    except Exception:
-        import traceback
-
-        with open(os.path.join(data_path, "tmp", "bg_worker_crash.log"), "w") as f:
-            traceback.print_exc(file=f)
-        raise  # still propagate
 
 
 # =============================================================================
@@ -613,13 +509,16 @@ class StaticEnv(gym.Env):
         self, seed: int, first_episode: bool = False, show_pbar: bool = False
     ) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
-        # Reuse a temporary queue just to get the return value through the same code path
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
-        return _compute_buffer_logic(
+        return compute_buffer_logic(
             seed=seed,
             data_path=self._data_path,
             global_rate_dict=self._global_rate_dict,
             distance_lookup=self._distance_lookup,
+            precomputed_episode_timeslots=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+            timeslots_per_day=EnvDefaults.TIMESLOTS_PER_DAY,
+            timeslot_duration_seconds=EnvDefaults.TIMESLOT_DURATION_SECONDS,
+            default_day=EnvDefaults.DEFAULT_DAY,
             first_episode=first_episode,
             cache_dir=cache_dir,
             show_pbar=show_pbar,
@@ -643,12 +542,16 @@ class StaticEnv(gym.Env):
 
         next_seed = self._episode_seed + 1
         self._bg_process = multiprocessing.Process(
-            target=_episode_worker,
+            target=episode_worker,
             args=(
                 next_seed,
                 self._data_path,
                 self._global_rate_dict,
                 self._distance_lookup,
+                EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+                EnvDefaults.TIMESLOTS_PER_DAY,
+                EnvDefaults.TIMESLOT_DURATION_SECONDS,
+                EnvDefaults.DEFAULT_DAY,
                 self._result_queue,
                 True,  # show progress bar
             ),
@@ -1119,11 +1022,6 @@ class StaticEnv(gym.Env):
         if use_net_flow:
             net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
 
-            if self._event_buffer is None:
-                raise RuntimeError(
-                    "Event buffer not initialized — cannot compute net flow."
-                )
-
             for event in self._event_buffer:
                 if event.time > EnvDefaults.TIMESLOT_DURATION_SECONDS:
                     break  # buffer is sorted — stop at next-timeslot events
@@ -1131,11 +1029,19 @@ class StaticEnv(gym.Env):
                     station_id = event.trip.get_start_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Departure event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] -= 1
                 elif event.is_arrival():
                     station_id = event.trip.get_end_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Arrival event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] += 1
 
             total_negative_flow = sum(f for f in net_flow_per_cell.values() if f < 0)
