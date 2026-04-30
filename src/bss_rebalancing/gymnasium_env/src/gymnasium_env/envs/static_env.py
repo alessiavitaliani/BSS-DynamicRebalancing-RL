@@ -12,13 +12,15 @@ import heapq
 import logging
 import multiprocessing
 import os
-from collections import deque
-from dataclasses import dataclass, field
 
 import gymnasium as gym
 import numpy as np
 import osmnx as ox
 import polars as pl
+
+from collections import deque
+from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
 from gymnasium import spaces
 from gymnasium.utils import seeding
 
@@ -279,8 +281,8 @@ class StaticEnv(gym.Env):
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
         self._apply_seed(seed)
 
-        self._bg_process: multiprocessing.Process | None = None
-        self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
+        self._bg_process: BaseProcess | None = None
+        self._result_queue: multiprocessing.Queue = multiprocessing.get_context("spawn").Queue(maxsize=1)
 
     @property
     def _truck(self) -> Truck:
@@ -514,7 +516,7 @@ class StaticEnv(gym.Env):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _compute_episode_buffer(
-        self, seed: int, first_episode: bool = False, show_pbar: bool = False
+            self, seed: int, first_episode: bool = False, show_pbar: bool = False
     ) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
@@ -549,7 +551,8 @@ class StaticEnv(gym.Env):
                 break
 
         next_seed = self._episode_seed + 1
-        self._bg_process = multiprocessing.Process(
+        _spawn_ctx = multiprocessing.get_context("spawn")
+        self._bg_process = _spawn_ctx.Process(
             target=episode_worker,
             args=(
                 next_seed,
@@ -561,9 +564,9 @@ class StaticEnv(gym.Env):
                 EnvDefaults.TIMESLOT_DURATION_SECONDS,
                 EnvDefaults.DEFAULT_DAY,
                 self._result_queue,
-                True,  # show progress bar
+                True
             ),
-            daemon=True,
+            daemon=True,  # dies if main process dies
         )
         if self._bg_process is not None:
             self._bg_process.start()
@@ -586,6 +589,12 @@ class StaticEnv(gym.Env):
         if self._bg_process is not None:
             self._bg_process.join(timeout=5)
             self._bg_process = None
+        # Worker may have put the exception itself into the queue on crash
+        if isinstance(result, BaseException):
+            raise RuntimeError(
+                f"Background episode worker crashed (seed={self._episode_seed}). "
+                f"Check {self._data_path}/tmp/bg_worker_crash.log for the full traceback."
+            ) from result
         return result
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -13,13 +13,15 @@ import logging
 import math
 import multiprocessing
 import os.path
-from collections import deque
-from dataclasses import dataclass, field
 
 import gymnasium as gym
 import numpy as np
 import osmnx as ox
 import polars as pl
+
+from collections import deque
+from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
 from gymnasium import spaces
 from gymnasium.utils import seeding
 
@@ -362,8 +364,8 @@ class FullyDynamicEnv(gym.Env):
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
         self._apply_seed(seed)
 
-        self._bg_process: multiprocessing.Process | None = None
-        self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
+        self._bg_process: BaseProcess | None = None
+        self._result_queue: multiprocessing.Queue = multiprocessing.get_context("spawn").Queue(maxsize=1)
 
     @property
     def _truck(self) -> Truck:
@@ -594,7 +596,7 @@ class FullyDynamicEnv(gym.Env):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _compute_episode_buffer(
-        self, seed: int, first_episode: bool = False, show_pbar: bool = False
+            self, seed: int, first_episode: bool = False, show_pbar: bool = False
     ) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
@@ -629,7 +631,8 @@ class FullyDynamicEnv(gym.Env):
                 break
 
         next_seed = self._episode_seed + 1
-        self._bg_process = multiprocessing.Process(
+        _spawn_ctx = multiprocessing.get_context("spawn")
+        self._bg_process = _spawn_ctx.Process(
             target=episode_worker,
             args=(
                 next_seed,
@@ -641,6 +644,7 @@ class FullyDynamicEnv(gym.Env):
                 EnvDefaults.TIMESLOT_DURATION_SECONDS,
                 EnvDefaults.DEFAULT_DAY,
                 self._result_queue,
+                True
             ),
             daemon=True,  # dies if main process dies
         )
@@ -653,18 +657,24 @@ class FullyDynamicEnv(gym.Env):
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=120)
+            result = self._result_queue.get(timeout=300)
         except Exception:
             if self._bg_process is not None:
                 self._bg_process.kill()
                 self._bg_process = None
             raise RuntimeError(
-                f"Background episode precomputation timed out after 120s "
+                f"Background episode precomputation timed out after 300s "
                 f"(seed={self._episode_seed}). Episode buffer unavailable."
             )
         if self._bg_process is not None:
             self._bg_process.join(timeout=5)
             self._bg_process = None
+        # Worker may have put the exception itself into the queue on crash
+        if isinstance(result, BaseException):
+            raise RuntimeError(
+                f"Background episode worker crashed (seed={self._episode_seed}). "
+                f"Check {self._data_path}/tmp/bg_worker_crash.log for the full traceback."
+            ) from result
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -796,10 +806,11 @@ class FullyDynamicEnv(gym.Env):
         )
 
         if not self._invalid_action:
+            truck_cell.set_ops(truck_cell.get_ops() + 1)
             if action == Actions.PICK_UP_BIKE.value:
-                truck_cell.set_ops(truck_cell.get_ops() + 1)
+                truck_cell.set_pick_ups(truck_cell.get_pick_ups() + 1)
             elif action == Actions.DROP_BIKE.value:
-                truck_cell.set_ops(truck_cell.get_ops() - 1)
+                truck_cell.set_drops(truck_cell.get_drops() + 1)
 
         if action in {
             Actions.UP.value,

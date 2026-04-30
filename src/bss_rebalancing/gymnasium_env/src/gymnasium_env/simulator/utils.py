@@ -410,19 +410,18 @@ def load_episode_zero(
 # Episode Precomputation (shared between envs)
 # ==============================================================================
 
-
 def compute_buffer_logic(
-    seed: int,
-    data_path: str,
-    global_rate_dict: dict,
-    distance_lookup: dict,
-    precomputed_episode_timeslots: int,
-    timeslots_per_day: int,
-    timeslot_duration_seconds: int,
-    default_day: str,
-    first_episode: bool = False,
-    cache_dir: str | None = None,
-    show_pbar: bool = False,
+        seed: int,
+        data_path: str,
+        global_rate_dict: dict,
+        distance_lookup: dict,
+        precomputed_episode_timeslots: int,
+        timeslots_per_day: int,
+        timeslot_duration_seconds: int,
+        default_day: str,
+        first_episode: bool = False,
+        cache_dir: str | None = None,
+        show_pbar: bool = False,
 ) -> dict:
     """
     Pure function — compute a full episode buffer of presampled trip events.
@@ -484,7 +483,7 @@ def compute_buffer_logic(
         )
         global_rate = global_rate_dict[(day.lower(), timeslot)]
         flattened_pmf = flatten_pmf_matrix(pmf_matrix)
-        slot_seed = int(rng.integers(0, 2**31))
+        slot_seed = int(rng.integers(0, 2 ** 31))
         buffers[slot_index] = simulate_events(
             duration=timeslot_duration_seconds,
             timeslot=timeslot,
@@ -495,6 +494,7 @@ def compute_buffer_logic(
         )
         if pbar is not None:
             pbar.update(1)
+            pbar.set_postfix({'seed': seed})
         if timeslot == timeslots_per_day - 1:
             day = NUM_TO_DAYS[(DAYS_TO_NUM[day] + 1) % 7]
 
@@ -509,16 +509,16 @@ def compute_buffer_logic(
 
 
 def episode_worker(
-    seed: int,
-    data_path: str,
-    global_rate_dict: dict,
-    distance_lookup: dict,
-    precomputed_episode_timeslots: int,
-    timeslots_per_day: int,
-    timeslot_duration_seconds: int,
-    default_day: str,
-    result_queue: multiprocessing.Queue,
-    show_pbar: bool = False,
+        seed: int,
+        data_path: str,
+        global_rate_dict: dict,
+        distance_lookup: dict,
+        precomputed_episode_timeslots: int,
+        timeslots_per_day: int,
+        timeslot_duration_seconds: int,
+        default_day: str,
+        result_queue: multiprocessing.Queue,
+        show_pbar: bool = False,
 ) -> None:
     """
     Thin subprocess entry point — calls compute_buffer_logic and puts the
@@ -540,9 +540,17 @@ def episode_worker(
             show_pbar=show_pbar,
         )
         result_queue.put(result)
-    except Exception:
+    except Exception as exc:
+        # Write crash log so there's a file to inspect
         crash_log = os.path.join(data_path, "tmp", "bg_worker_crash.log")
         os.makedirs(os.path.dirname(crash_log), exist_ok=True)
+        tb = traceback.format_exc()
         with open(crash_log, "w") as f:
-            traceback.print_exc(file=f)
+            f.write(tb)
+        # Also push the exception into the queue so _acquire_next_episode_buffer
+        # can surface it in the main process instead of silently timing out
+        try:
+            result_queue.put(exc)
+        except Exception:
+            pass  # queue itself is broken — crash log is the only record
         raise
