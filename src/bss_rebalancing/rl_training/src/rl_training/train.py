@@ -590,6 +590,8 @@ def train_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['pick_ups_sum'] = cell_dict[cell_id].get_pick_ups()
+        nx_attrs['drops_sum'] = cell_dict[cell_id].get_drops()
         nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
@@ -653,7 +655,7 @@ def main():
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
-    # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
+    # At X% of the total timeslots (X% of the training) the epsilon should be 0.1
     params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params[
         "total_timeslots"]) ** 2) / np.log(10)
     # TODO: check this above
