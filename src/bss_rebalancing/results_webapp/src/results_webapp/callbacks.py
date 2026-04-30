@@ -3,18 +3,18 @@
 from pathlib import Path
 
 import dash_bootstrap_components as dbc
-import plotly.graph_objects as go
 import numpy as np
+import plotly.graph_objects as go
 from dash import Input, Output, State, html
 
 from results_webapp.data_loader import (
     discover_runs,
     get_available_episodes,
+    load_base_graph,
+    load_best_model_metadata,
     load_episode_data,
     load_run_config,
     load_summary_data,
-    load_base_graph,
-    load_best_model_metadata,
 )
 from results_webapp.plotting import (
     COLORS,
@@ -185,7 +185,7 @@ def register_callbacks(app):
     )
     def render_mode_tabs(mode):
         """Swap the entire tab tree when the mode changes."""
-        from results_webapp.app import _training_tabs, _validation_tabs, _benchmark_tabs
+        from results_webapp.app import _benchmark_tabs, _training_tabs, _validation_tabs
         if mode == 'training':
             return _training_tabs()
         elif mode == 'validation':
@@ -499,6 +499,17 @@ def register_callbacks(app):
         if timeslot_df is not None and 'failures' in timeslot_df.columns and total_failures == 0:
             total_failures = int(timeslot_df['failures'].sum())
 
+        total_demand = (
+            int(timeslot_df['demand'].sum())
+            if timeslot_df is not None and 'demand' in timeslot_df.columns
+            else 0
+        )
+        failure_rate = (
+            total_failures / total_demand
+            if isinstance(total_failures, (int, float)) and total_demand
+            else 0
+        )
+
         num_days   = len(timeslot_df) // 8 if timeslot_df is not None else 0
         mean_daily = total_failures / num_days if num_days > 0 else 0.0
 
@@ -512,19 +523,23 @@ def register_callbacks(app):
             dbc.Col(dbc.Card(dbc.CardBody([
                 html.H4(f"{total_failures}", className='text-danger'),
                 html.P('Total Failures', className='text-muted mb-0'),
-            ])), width=3),
+            ]))),
             dbc.Col(dbc.Card(dbc.CardBody([
                 html.H4(f"{mean_daily:.1f}", className='text-warning'),
                 html.P('Mean Daily Failures', className='text-muted mb-0'),
-            ])), width=3),
+            ]))),
             dbc.Col(dbc.Card(dbc.CardBody([
                 html.H4(f"{num_days}", className='text-info'),
                 html.P('Days Simulated', className='text-muted mb-0'),
-            ])), width=3),
+            ]))),
             dbc.Col(dbc.Card(dbc.CardBody([
                 html.H4(f"{total_demand}", className='text-secondary'),
                 html.P('Total Demand', className='text-muted mb-0'),
-            ])), width=3),
+            ]))),
+            dbc.Col(dbc.Card(dbc.CardBody([
+                html.H4(f"{failure_rate:.2%}", className='text-primary'),
+                html.P('Failure Rate', className='text-muted mb-0')
+            ]))),
         ])
 
         # Failures — timeslot line plot
@@ -542,7 +557,7 @@ def register_callbacks(app):
             rebal_fig = create_timeslot_plot(
                 timeslot_df=timeslot_df,
                 metric='rebalance_times',
-                title=f'Benchmark Rebalance Time per Timeslot',
+                title='Benchmark Rebalance Time per Timeslot',
                 yaxis_label='Rebalance Duration (min)',
                 scale=1/60
             )
@@ -615,11 +630,18 @@ def register_callbacks(app):
                 assets_dir.mkdir(exist_ok=True)
                 out_path = assets_dir / f'{prefix}_heatmap.png'
 
+                normalized, percentage = (
+                    (metric in ['visits_sum', 'bikes_mean', 'failure_sum', 'ops_sum'],) * 2
+                    if metric != 'failure_rate' else (False, True)
+                )
+
                 create_graph_heatmap_plot(
                     base_graph=base_graph,
                     cell_subgraph=cell_subgraph,
                     metric=metric,
                     out_path=out_path,
+                    normalized=normalized,
+                    percentage=percentage,
                 )
 
                 ts = int(time.time())
