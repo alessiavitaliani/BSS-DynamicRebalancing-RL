@@ -78,7 +78,7 @@ Examples:
     parser.add_argument(
         "--cell-size",
         type=int,
-        default=500,
+        default=1000,
         help="Cell size in meters for truck grid (default: 500)",
     )
 

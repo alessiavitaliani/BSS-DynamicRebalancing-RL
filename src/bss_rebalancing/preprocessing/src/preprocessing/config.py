@@ -53,7 +53,7 @@ class PreprocessingConfig:
 
     # Grid settings
     #cell_size: int = 300  # meters (Cambridge)
-    cell_size: int = 500  # meters (Manhattan)
+    cell_size: int = 1000  # meters (Manhattan)
 
     # Radius settings
     interpolation_radius: int = 500  # meters for PMF interpolation

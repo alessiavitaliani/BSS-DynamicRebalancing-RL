@@ -61,7 +61,7 @@ def main():
     """CLI entry point for preprocess_truck_grid."""
     parser = argparse.ArgumentParser(description="Preprocess the truck grid data.")
     parser.add_argument("--data-path", type=str, default=DEFAULT_CONFIG.data_path, help="Path to data directory.")
-    parser.add_argument("--cell-size", type=int, default=300, help="Cell size in meters.")
+    parser.add_argument("--cell-size", type=int, default=1000, help="Cell size in meters.")
     parser.add_argument("--plot", action="store_true", help="Plot the grid after processing.")
     parser.add_argument("--plot-path", type=str, default=None, help="Path to save the plot figure.")
 
