@@ -554,7 +554,7 @@ class StaticEnv(gym.Env):
 
     def acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=120)
+            result = self._result_queue.get(timeout=600)
         except Exception:
             if self._bg_process is not None:
                 self._bg_process.kill()

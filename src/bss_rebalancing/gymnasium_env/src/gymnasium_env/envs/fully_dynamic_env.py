@@ -662,13 +662,13 @@ class FullyDynamicEnv(gym.Env):
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=120)
+            result = self._result_queue.get(timeout=1000)
         except Exception:
             if self._bg_process is not None:
                 self._bg_process.kill()
                 self._bg_process = None
             raise RuntimeError(
-                f"Background episode precomputation timed out after 120s "
+                f"Background episode precomputation timed out after 1000s "
                 f"(seed={self._episode_seed}). Episode buffer unavailable."
             )
         if self._bg_process is not None:
