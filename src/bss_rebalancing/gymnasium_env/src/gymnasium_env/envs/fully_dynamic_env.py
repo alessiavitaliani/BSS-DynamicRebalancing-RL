@@ -664,13 +664,16 @@ class FullyDynamicEnv(gym.Env):
         try:
             result = self._result_queue.get(timeout=1000)
         except Exception:
+            print(f"DEBUG: Background loading timed out. Computing synchronously for seed={self._episode_seed}")
+            result = self._compute_episode_buffer(seed=self._episode_seed)
+            
             if self._bg_process is not None:
                 self._bg_process.kill()
                 self._bg_process = None
-            raise RuntimeError(
-                f"Background episode precomputation timed out after 1000s "
-                f"(seed={self._episode_seed}). Episode buffer unavailable."
-            )
+            #raise RuntimeError(
+            #    f"Background episode precomputation timed out after 1000s "
+            #    f"(seed={self._episode_seed}). Episode buffer unavailable."
+            #)
         if self._bg_process is not None:
             self._bg_process.join(timeout=5)
             self._bg_process = None
