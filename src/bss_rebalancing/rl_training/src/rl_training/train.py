@@ -661,6 +661,7 @@ def train_ppo(
     total_failures_per_timeslot = 0
     timeslots_completed = 0
     iterations = 0
+    last_cumulative_demand = 0
 
     # ============================================================================
     # Environment setup and reset
@@ -796,6 +797,10 @@ def train_ppo(
             outside_system_bikes.append(info['number_of_outside_bikes'])
             traveling_bikes.append(info['number_of_traveling_bikes'])
 
+            current = sum(cell.get_total_demand() for cell in cell_dict.values())
+            demand_per_timeslot.append(current - last_cumulative_demand)
+            last_cumulative_demand = current
+            
             # Reset accumulators
             total_reward_per_timeslot = 0.0
             total_failures_per_timeslot = 0
@@ -874,6 +879,7 @@ def train_ppo(
         "depot_load": depot_load,
         "outside_system_bikes": outside_system_bikes,
         "traveling_bikes": traveling_bikes,
+        "demand_per_timeslot": demand_per_timeslot,
         "cell_subgraph": cell_graph,
         # PPO specific metrics to track training health
         "policy_loss": pg_loss,
