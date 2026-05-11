@@ -37,12 +37,13 @@ def create_controls():
                     dcc.RadioItems(
                         id='mode-selector',
                         options=[
-                            {'label': ' Training', 'value': 'training'},
-                            {'label': ' Validation', 'value': 'validation'}
+                            {'label': ' Training',   'value': 'training'},
+                            {'label': ' Validation', 'value': 'validation'},
+                            {'label': ' Benchmark',  'value': 'benchmark'},
                         ],
                         value='training',
                         inline=True,
-                        inputStyle={'margin-right': '8px'},  # Space between radio and label
+                        inputStyle={'margin-right': '8px'},
                         labelStyle={'margin-right': '20px'}
                     )
                 ])

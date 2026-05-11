@@ -10,11 +10,24 @@ import pickle
 import networkx as nx
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    """Serialise numpy scalars and arrays to native Python types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):   # catches float16, float32, float64
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 @dataclass
 class EpisodeResults:
     """Container for all metrics from a single episode."""
     episode: int
     mode: str  # 'train' or 'validation'
+    seed: int
 
     # Episode-level scalars
     total_reward: float = 0.0
@@ -28,6 +41,7 @@ class EpisodeResults:
     rewards_per_timeslot: List[float] = field(default_factory=list)
     failures_per_timeslot: List[int] = field(default_factory=list)
     epsilon_per_timeslot: List[float] = field(default_factory=list)
+    demand_per_timeslot: List[float] = field(default_factory=list)
     deployed_bikes: List[int] = field(default_factory=list)
     truck_load: List[int] = field(default_factory=list)
     depot_load: List[int] = field(default_factory=list)
@@ -47,41 +61,69 @@ class EpisodeResults:
 class ResultsManager:
     """Centralized manager for training and validation results."""
 
-    def __init__(self, results_path: str, run_id: int, overwrite: bool = False, interactive: bool = True):
+    def __init__(
+            self,
+            results_path: str,
+            run_id: int,
+            overwrite: bool = False,
+            interactive: bool = True,
+            val_tag: str | None = None,
+            mode: str = 'train',
+    ):
         self.results_path = Path(results_path)
         self.run_id = run_id
         self.run_dir = self.results_path / f"run_{run_id:03d}"
         self.training_path = self.run_dir / "training"
         self.validation_path = self.run_dir / "validation"
         self.models_path = self.run_dir / "models"
+        self.mode = mode
+
+        # Determine which directories this instance actually owns
+        _val_base = self.run_dir / "validation"
+        _val_path = _val_base / val_tag if val_tag else _val_base
+
+        if mode == 'train':
+            self._owned_dirs = [self.training_path, self.models_path]
+        else:
+            self._owned_dirs = [_val_path]
 
         # Check if results already exist
         if self.run_dir.exists() and not overwrite:
             if interactive:
                 self._handle_existing_results()
             else:
-                raise Exception(
-                    f"Results directory already exists: {self.run_dir}. "
-                    f"Use overwrite=True or change run_id."
-                )
+                # Only raise if the owned directories actually exist
+                existing = [d for d in self._owned_dirs if d.exists()]
+                if existing:
+                    raise Exception(
+                        f"Results already exist: {existing}. "
+                        f"Use overwrite=True or change run_id."
+                    )
 
-        # Create directories
-        self.training_path.mkdir(parents=True, exist_ok=True)
-        self.validation_path.mkdir(parents=True, exist_ok=True)
-        self.models_path.mkdir(parents=True, exist_ok=True)
+        # Create only the directories this instance owns
+        for d in self._owned_dirs:
+            d.mkdir(parents=True, exist_ok=True)
+
+        self.validation_path = _val_path
+
+        self._active_path = self.training_path if mode == 'train' else self.validation_path
 
         # Initialize aggregated DataFrames
         self.training_summary = pd.DataFrame()
         self.validation_summary = pd.DataFrame()
-
-        # Track best models
         self.best_models = []
 
+
     def _handle_existing_results(self):
-        """Handle case where results directory already exists."""
-        print(f"⚠️  WARNING: Results folder for run {self.run_id} already exists.")
-        print(f"   Path: {self.run_dir}")
-        print("   Data will be overwritten with new results.")
+        """Handle case where results directory already exists — only touches owned subdirs."""
+        existing = [d for d in self._owned_dirs if d.exists()]
+        if not existing:
+            return  # nothing to overwrite, proceed silently
+
+        print(f"⚠️  WARNING: Results already exist for run {self.run_id}.")
+        for d in existing:
+            print(f"   {d}")
+        print("   These directories will be deleted and recreated.")
 
         try:
             proceed = input("Are you sure you want to continue? (y/n) ").strip().lower()
@@ -90,13 +132,15 @@ class ResultsManager:
             print("Invalid input! Please enter 'y' or 'n'.")
 
         if proceed in ['y', 'yes']:
-            print(f"Removing existing results at {self.run_dir}...")
-            shutil.rmtree(self.run_dir)
+            for d in existing:
+                print(f"Removing {d}...")
+                shutil.rmtree(d)
         else:
             raise Exception(
                 f"Aborted: Change the 'run_id' (current: {self.run_id}) "
                 f"or the 'results_path' (current: {self.results_path})."
             )
+
 
     @classmethod
     def create_with_auto_increment(cls, results_path: str) -> 'ResultsManager':
@@ -115,18 +159,37 @@ class ResultsManager:
         print(f"Auto-assigned run_id: {next_run_id}")
         return cls(str(results_path), next_run_id, overwrite=False)
 
+
+    @staticmethod
+    def build_val_tag(model_type: str, model_episode: int | None = None) -> str:
+        """
+        Build a human-readable validation subdirectory tag.
+
+        Examples:
+            build_val_tag("best")          → "best"
+            build_val_tag("final")         → "final"
+            build_val_tag("episode", 42)   → "episode_042"
+        """
+        if model_type == "episode":
+            if model_episode is None:
+                raise ValueError("model_episode must be provided when model_type='episode'")
+            return f"episode_{model_episode:03d}"
+        return model_type
+
+
     def save_episode(self, results: EpisodeResults):
         """Save results for a single episode."""
         # Validate and fix results
+        if results.mode != self.mode:   # Optionally guard against misuse
+            raise ValueError(...)
         results = self._validate_episode_results(results)
-
-        path = self.training_path if results.mode == 'train' else self.validation_path
-        episode_dir = path / f"episode_{results.episode:03d}"
+        episode_dir = self._active_path / f"episode_{results.episode:03d}"
         episode_dir.mkdir(exist_ok=True)
 
         # 1. Save scalars as JSON (human-readable)
         scalars = {
             'episode': results.episode,
+            'seed': results.seed,
             'total_reward': results.total_reward,
             'mean_daily_failures': results.mean_daily_failures,
             'total_failures': results.total_failures,
@@ -134,7 +197,7 @@ class ResultsManager:
             'epsilon': results.epsilon,
         }
         with open(episode_dir / 'scalars.json', 'w') as f:
-            json.dump(scalars, f, indent=2)
+            json.dump(scalars, f, indent=2, cls=_NumpyEncoder)
 
         # 2. Save time-series as CSV (easy analysis)
         timeslot_df = pd.DataFrame({
@@ -142,6 +205,7 @@ class ResultsManager:
             'reward': results.rewards_per_timeslot,
             'failures': results.failures_per_timeslot,
             'epsilon': results.epsilon_per_timeslot,
+            'demand': results.demand_per_timeslot,
             'deployed_bikes': results.deployed_bikes,
             'truck_load': results.truck_load,
             'depot_load': results.depot_load,
@@ -168,6 +232,7 @@ class ResultsManager:
         # 5. Update aggregated summary
         self._update_summary(results)
 
+
     def _update_summary(self, results: EpisodeResults):
         """Append episode summary to aggregated DataFrame."""
         summary_row = {
@@ -190,34 +255,29 @@ class ResultsManager:
                 pd.DataFrame([summary_row])
             ], ignore_index=True)
 
+
     def save_run_summary(self):
         """Save aggregated summaries for the entire run."""
-        if not self.training_summary.empty:
-            self.training_summary.to_csv(
-                self.training_path / 'training_summary.csv',
-                index=False
-            )
-        if not self.validation_summary.empty:
-            self.validation_summary.to_csv(
-                self.validation_path / 'validation_summary.csv',
-                index=False
-            )
+        summary = self.training_summary if self.mode == 'train' else self.validation_summary
+        if not summary.empty:
+            summary.to_csv(self._active_path / f'{self.mode}_summary.csv', index=False)
 
-    def save_hyperparameters(self, params: dict, reward_params: dict, validation: bool):
+
+    def save_hyperparameters(self, params: dict, reward_params: dict):
         """Save hyperparameters and configuration."""
         config = {
             'run_id': self.run_id,
             'hyperparameters': params,
             'reward_parameters': reward_params,
         }
-        path = self.validation_path if validation else self.training_path / 'config.json'
+        path = self._active_path / 'config.json'
         with open(path, 'w') as f:
-            json.dump(config, f, indent=2)
+            json.dump(config, f, indent=2, cls=_NumpyEncoder)
 
-    def load_episode(self, episode: int, mode: str = 'train') -> EpisodeResults:
+
+    def load_episode(self, episode: int) -> EpisodeResults:
         """Load results for a specific episode."""
-        path = self.training_path if mode == 'train' else self.validation_path
-        episode_dir = path / f"episode_{episode:03d}"
+        episode_dir = self._active_path / f"episode_{episode:03d}"
 
         # Load scalars
         with open(episode_dir / 'scalars.json', 'r') as f:
@@ -241,7 +301,8 @@ class ResultsManager:
         # Reconstruct EpisodeResults
         return EpisodeResults(
             episode=scalars['episode'],
-            mode=mode,
+            mode=self.mode,
+            seed=scalars['seed'],
             total_reward=scalars['total_reward'],
             mean_daily_failures=scalars['mean_daily_failures'],
             total_failures=scalars['total_failures'],
@@ -250,6 +311,7 @@ class ResultsManager:
             rewards_per_timeslot=timeslot_df['reward'].tolist(),
             failures_per_timeslot=timeslot_df['failures'].tolist(),
             epsilon_per_timeslot=timeslot_df['epsilon'].tolist(),
+            demand_per_timeslot=timeslot_df['demand'].tolist(),
             deployed_bikes=timeslot_df['deployed_bikes'].tolist(),
             truck_load=timeslot_df['truck_load'].tolist(),
             depot_load=timeslot_df['depot_load'].tolist(),
@@ -262,62 +324,93 @@ class ResultsManager:
             cell_subgraph=cell_subgraph,
         )
 
-    def save_model(self, agent, episode: int, score: float,
-                   model_type: str = 'checkpoint', save_best: bool = False):
-        """
-        Save trained model.
 
-        Args:
-            agent: The agent to save
-            episode: Current episode number
-            score: Validation score (e.g., total_failures)
-            model_type: Type of model save ('checkpoint', 'best', 'final')
-            save_best: Whether to update best model tracker
+    def save_model(self, agent, episode: int, score: float, model_type: str = 'episode'):
         """
-        if model_type == 'checkpoint':
-            model_dir = self.models_path / 'checkpoints' / f"episode_{episode:03d}"
+        model_type: 'episode' | 'best' | 'final'
+        Passing model_type='best' or model_type='final' does NOT also save an episode snapshot.
+        If you want both, call this twice or use save_episode_and_maybe_best().
+        """
+        if self.mode != 'train':
+            raise RuntimeError("save_model called on a validation-mode ResultsManager.")
+
+        if model_type == 'episode':
+            model_dir = self.models_path / 'episodes' / f'episode_{episode:03d}'
         elif model_type == 'best':
-            model_dir = self.models_path / 'best' / f"episode_{episode:03d}"
+            model_dir = self.models_path / 'best'
         elif model_type == 'final':
             model_dir = self.models_path / 'final'
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
         model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / 'trained_agent.pt'
+        agent.save_model(str(model_dir / 'trained_agent.pt'))
 
-        # Save the model
-        agent.save_model(str(model_path))
-
-        # Save metadata
         metadata = {
             'episode': episode,
             'score': score,
             'model_type': model_type,
-            'saved_at': pd.Timestamp.now().isoformat(),
+            'saved_at': pd.Timestamp.now().isoformat()
         }
         with open(model_dir / 'metadata.json', 'w') as f:
-            json.dump(metadata, f, indent=2)
+            json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
 
-        # Update best models tracker
-        if save_best:
-            self.best_models.append((episode, score))
-            self.best_models.sort(key=lambda x: x[1])  # Sort by score (lower is better)
+        if model_type == 'best':
+            self._update_best_summary(episode, score)
 
-            # Save best models summary
-            best_df = pd.DataFrame(self.best_models, columns=['episode', 'score'])
-            best_df.to_csv(self.models_path / 'best_models_summary.csv', index=False)
+        return model_dir / 'trained_agent.pt'
 
-        return model_path
+
+    def _update_best_summary(self, episode: int, score: float):
+        self.best_models.append((episode, score))
+        self.best_models.sort(key=lambda x: x[1])
+        pd.DataFrame(self.best_models, columns=['episode', 'score']).to_csv(
+            self.models_path / 'best_models_summary.csv', index=False
+        )
+
+
+    def promote_episode_to_best(self, episode: int, score: float) -> Path:
+        """
+        Copy an already-saved episode snapshot to models/best/ without touching
+        the live agent.  Used when validation runs in parallel and the decision
+        to promote is made one episode after the model was saved.
+
+        Raises FileNotFoundError if the episode snapshot does not exist.
+        """
+        if self.mode != 'train':
+            raise RuntimeError("promote_episode_to_best called on a validation-mode ResultsManager.")
+
+        src = self.models_path / 'episodes' / f'episode_{episode:03d}' / 'trained_agent.pt'
+        if not src.exists():
+            raise FileNotFoundError(
+                f"Episode snapshot not found: {src}. "
+                "Make sure save_model(..., model_type='episode') was called before promoting."
+            )
+
+        best_dir = self.models_path / 'best'
+        best_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(best_dir / 'trained_agent.pt'))
+
+        metadata = {
+            'episode': episode,
+            'score': score,
+            'model_type': 'best',
+            'promoted_from': str(src),
+            'saved_at': pd.Timestamp.now().isoformat(),
+        }
+        with open(best_dir / 'metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2, cls=_NumpyEncoder)
+
+        self._update_best_summary(episode, score)
+        return best_dir / 'trained_agent.pt'
+
 
     def get_best_model_path(self) -> Optional[Path]:
-        """Get path to the best performing model."""
-        if not self.best_models:
-            return None
-        best_episode, _ = self.best_models[0]  # First element after sorting
-        return self.models_path / 'best' / f"episode_{best_episode:03d}" / 'trained_agent.pt'
+        p = self.models_path / 'best' / 'trained_agent.pt'
+        return p if p.exists() else None
 
-    def load_model(self, agent, episode: int = None, model_type: str = 'best'):
+
+    def load_model(self, agent, model_type: str = 'best', episode: int = None):
         """
         Load a saved model.
 
@@ -332,8 +425,8 @@ class ResultsManager:
                 raise FileNotFoundError("No best model found")
         elif model_type == 'final':
             model_path = self.models_path / 'final' / 'trained_agent.pt'
-        elif model_type == 'checkpoint' and episode is not None:
-            model_path = self.models_path / 'checkpoints' / f"episode_{episode:03d}" / 'trained_agent.pt'
+        elif model_type == 'episode' and episode is not None:
+            model_path = self.models_path / 'episodes' / f'episode_{episode:03d}' / 'trained_agent.pt'
         else:
             raise ValueError("Invalid combination of model_type and episode")
 
@@ -342,6 +435,7 @@ class ResultsManager:
 
         agent.load_model(str(model_path))
         return model_path
+
 
     @staticmethod
     def _validate_episode_results(results: EpisodeResults) -> EpisodeResults:
@@ -369,6 +463,7 @@ class ResultsManager:
         return EpisodeResults(
             episode=results.episode,
             mode=results.mode,
+            seed=results.seed,
             total_reward=results.total_reward,
             mean_daily_failures=results.mean_daily_failures,
             total_failures=results.total_failures,
@@ -379,6 +474,7 @@ class ResultsManager:
             rewards_per_timeslot=pad_to_length(results.rewards_per_timeslot, expected_length, 0.0),
             failures_per_timeslot=pad_to_length(results.failures_per_timeslot, expected_length, 0),
             epsilon_per_timeslot=pad_to_length(results.epsilon_per_timeslot, expected_length, results.epsilon),
+            demand_per_timeslot=pad_to_length(results.demand_per_timeslot, expected_length, 0),
             deployed_bikes=pad_to_length(results.deployed_bikes, expected_length, 0),
             truck_load=pad_to_length(results.truck_load, expected_length, 0),
             depot_load=pad_to_length(results.depot_load, expected_length, 0),

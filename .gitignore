@@ -33,6 +33,7 @@ results
 DuelingDQN.py
 /benchmarks/csv_converter.py
 /benchmarks/failures_comparison.csv
+paper_viz/
 *.svg
 *.png
 *.jpg

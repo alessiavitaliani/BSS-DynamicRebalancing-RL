@@ -1,6 +1,6 @@
 """Plotting utilities for the results webapp."""
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import io
 import base64
@@ -85,7 +85,7 @@ def create_metric_plot(
 
 
 def create_timeslot_plot(
-        timeslot_df: pd.DataFrame,
+        timeslot_df: pd.DataFrame | Any | None,
         metric: str,
         title: str,
         yaxis_label: str,

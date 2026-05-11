@@ -3,12 +3,11 @@
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 
 import networkx as nx
 import osmnx as ox
 import pandas as pd
-from pandas import DataFrame
 
 
 def discover_runs(base_path: Path) -> Dict[str, Path]:
@@ -33,27 +32,128 @@ def discover_runs(base_path: Path) -> Dict[str, Path]:
     return runs
 
 
-def load_run_config(run_dir: Path) -> Optional[Dict]:
+def load_run_config(run_dir: Path, mode: str) -> Optional[Dict]:
     """
     Load hyperparameters and config for a run.
 
+    For validation, each episode folder contains its own config.json — we load
+    the first available one.  For training/benchmark the old paths still apply.
+
     Args:
         run_dir: Path to run directory
+        mode: 'training', 'validation', or 'benchmark'
 
     Returns:
         Dictionary containing run configuration or None if not found
     """
-    config_path = run_dir / 'config.json'
+    if mode == 'validation':
+        val_dir = run_dir / 'validation'
+        if val_dir.exists():
+            for ep_dir in sorted(val_dir.iterdir()):
+                if ep_dir.is_dir() and ep_dir.name.startswith('episode_'):
+                    cfg = ep_dir / 'config.json'
+                    if cfg.exists():
+                        with open(cfg, 'r') as f:
+                            return json.load(f)
+        return None
+
+    config_path = run_dir / mode / 'config.json'
+    old_path = run_dir / 'config.json'
     if config_path.exists():
         with open(config_path, 'r') as f:
             return json.load(f)
+    elif old_path.exists():
+        with open(old_path, 'r') as f:
+            return json.load(f)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def _val_inner_dir(val_ep_dir: Path) -> Path:
+    """
+    Return the inner episode directory for a validation episode.
+
+    Structure: validation/episode_NNN/episode_000/
+    We always use episode_000 (the primary seed run).
+    """
+    return val_ep_dir / 'episode_000'
+
+
+def get_available_episodes(run_dir: Path, mode: str) -> List[int]:
+    """
+    Get list of available episode numbers for a run.
+
+    For validation the structure is:
+        validation/episode_NNN/episode_000/scalars.json
+
+    Args:
+        run_dir: Path to run directory
+        mode: 'training', 'validation', or 'benchmark'
+
+    Returns:
+        Sorted list of available episode numbers
+    """
+    if mode == 'benchmark':
+        # Structure: benchmark/episode_NNN/scalars.json
+        bench_dir = run_dir / 'benchmark'
+        if not bench_dir.exists():
+            return []
+        episodes = []
+        for ep_dir in bench_dir.iterdir():
+            if not ep_dir.is_dir() or not ep_dir.name.startswith('episode_'):
+                continue
+            try:
+                ep_num = int(ep_dir.name.split('_')[1])
+            except (IndexError, ValueError):
+                continue
+            if (ep_dir / 'scalars.json').exists():
+                episodes.append(ep_num)
+        return sorted(episodes)
+
+    if mode == 'validation':
+        val_dir = run_dir / 'validation'
+        if not val_dir.exists():
+            return []
+
+        episodes = []
+        for ep_dir in val_dir.iterdir():
+            if not ep_dir.is_dir() or not ep_dir.name.startswith('episode_'):
+                continue
+            try:
+                ep_num = int(ep_dir.name.split('_')[1])
+            except (IndexError, ValueError):
+                continue
+            # Only include if the inner episode_000/scalars.json is present
+            if (_val_inner_dir(ep_dir) / 'scalars.json').exists():
+                episodes.append(ep_num)
+        return sorted(episodes)
+
+    # --- training ---
+    mode_dir = run_dir / mode
+    if not mode_dir.exists():
+        return []
+
+    episodes = []
+    for ep_dir in mode_dir.iterdir():
+        if ep_dir.is_dir() and ep_dir.name.startswith('episode_'):
+            try:
+                ep_num = int(ep_dir.name.split('_')[1])
+            except (IndexError, ValueError):
+                continue
+            if (ep_dir / 'scalars.json').exists():
+                episodes.append(ep_num)
+
+    return sorted(episodes)
 
 
 def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFrame]:
     """
     Build summary DataFrame by aggregating data from individual episode folders.
-    This is used when the summary CSV doesn't exist yet (during training).
+
+    Works for training and validation (using the corrected inner paths).
 
     Args:
         run_dir: Path to run directory
@@ -62,23 +162,56 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
     Returns:
         DataFrame with episode-level summary data or None if no episodes found
     """
+    if mode == 'validation':
+        val_dir = run_dir / 'validation'
+        if not val_dir.exists():
+            return None
+
+        episodes_data = []
+        for ep_dir in sorted(val_dir.iterdir()):
+            if not ep_dir.is_dir() or not ep_dir.name.startswith('episode_'):
+                continue
+            try:
+                episode_num = int(ep_dir.name.split('_')[1])
+            except (IndexError, ValueError):
+                continue
+
+            scalars_path = _val_inner_dir(ep_dir) / 'scalars.json'
+            if not scalars_path.exists():
+                continue
+
+            with open(scalars_path, 'r') as f:
+                scalars = json.load(f)
+
+            episodes_data.append({
+                'episode': episode_num,
+                'total_reward': scalars.get('total_reward', 0.0),
+                'mean_daily_failures': scalars.get('mean_daily_failures', 0.0),
+                'total_failures': scalars.get('total_failures', 0),
+                'total_invalid_actions': scalars.get('total_invalid_actions', 0),
+                'epsilon': scalars.get('epsilon', 0.0),
+            })
+
+        if not episodes_data:
+            return None
+
+        df = pd.DataFrame(episodes_data)
+        return df.sort_values('episode').reset_index(drop=True)
+
+    # --- training ---
     mode_dir = run_dir / mode
     if not mode_dir.exists():
         return None
 
     episodes_data = []
-
-    # Iterate through episode folders
     for ep_dir in sorted(mode_dir.iterdir()):
         if not ep_dir.is_dir() or not ep_dir.name.startswith('episode_'):
             continue
-
         try:
             episode_num = int(ep_dir.name.split('_')[1])
         except (IndexError, ValueError):
             continue
 
-        # Load scalars.json for this episode
         scalars_path = ep_dir / 'scalars.json'
         if not scalars_path.exists():
             continue
@@ -86,7 +219,6 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
         with open(scalars_path, 'r') as f:
             scalars = json.load(f)
 
-        # Add to list
         episodes_data.append({
             'episode': episode_num,
             'total_reward': scalars.get('total_reward', 0.0),
@@ -99,17 +231,17 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
     if not episodes_data:
         return None
 
-    # Create DataFrame and sort by episode
     df = pd.DataFrame(episodes_data)
-    df = df.sort_values('episode').reset_index(drop=True)
-
-    return df
+    return df.sort_values('episode').reset_index(drop=True)
 
 
 def load_summary_data(run_dir: Path, mode: str = 'training') -> Optional[pd.DataFrame]:
     """
     Load aggregated summary CSV for training or validation.
     If CSV doesn't exist, builds it from individual episode folders.
+
+    For validation the summary CSV lives at validation/episode_NNN/validation_summary.csv
+    but since episodes are independent runs we just build from scalars.
 
     Args:
         run_dir: Path to run directory
@@ -118,13 +250,11 @@ def load_summary_data(run_dir: Path, mode: str = 'training') -> Optional[pd.Data
     Returns:
         DataFrame with episode-level summary data or None if not found
     """
-    summary_path = run_dir / mode / f'{mode}_summary.csv'
+    if mode == 'training':
+        summary_path = run_dir / mode / f'{mode}_summary.csv'
+        if summary_path.exists():
+            return pd.read_csv(summary_path)
 
-    # First, try to load the CSV (fast)
-    if summary_path.exists():
-        return pd.read_csv(summary_path)
-
-    # If CSV doesn't exist, build from episodes (slower but works during training)
     return build_summary_from_episodes(run_dir, mode)
 
 
@@ -132,15 +262,25 @@ def load_episode_data(run_dir: Path, mode: str, episode: int) -> Optional[Dict]:
     """
     Load detailed data for a specific episode.
 
+    For validation: path is validation/episode_NNN/episode_000/
+    For training:   path is training/episode_NNN/
+    For benchmark:  episode is ignored; reads from benchmark/ directly
+
     Args:
         run_dir: Path to run directory
-        mode: 'training' or 'validation'
-        episode: Episode number
+        mode: 'training', 'validation', or 'benchmark'
+        episode: Episode number (ignored for benchmark)
 
     Returns:
         Dictionary containing episode data or None if not found
     """
-    episode_dir = run_dir / mode / f"episode_{episode:03d}"
+    if mode == 'benchmark':
+        return _load_benchmark_episode(run_dir, episode)
+
+    if mode == 'validation':
+        episode_dir = _val_inner_dir(run_dir / 'validation' / f'episode_{episode:03d}')
+    else:
+        episode_dir = run_dir / mode / f'episode_{episode:03d}'
 
     if not episode_dir.exists():
         return None
@@ -171,10 +311,10 @@ def load_episode_data(run_dir: Path, mode: str, episode: int) -> Optional[Dict]:
         with open(step_data_path, 'rb') as f:
             data['step_data'] = pickle.load(f)
 
-    # Load cell subgraph (if needed)
+    # Load cell subgraph
     subgraph_path = episode_dir / 'cell_subgraph.gpickle'
     if subgraph_path.exists():
-        with open(episode_dir / 'cell_subgraph.gpickle', 'rb') as f:
+        with open(subgraph_path, 'rb') as f:
             data['cell_subgraph'] = pickle.load(f)
     else:
         data['cell_subgraph'] = None
@@ -182,36 +322,71 @@ def load_episode_data(run_dir: Path, mode: str, episode: int) -> Optional[Dict]:
     return data
 
 
-def get_available_episodes(run_dir: Path, mode: str) -> List[int]:
+def _load_benchmark_episode(run_dir: Path, episode: int) -> Optional[Dict]:
     """
-    Get list of available episode numbers for a run.
+    Load a single benchmark episode.
 
-    Args:
-        run_dir: Path to run directory
-        mode: 'training' or 'validation'
+    Structure: benchmark/episode_NNN/
+        scalars.json
+        timeslot_metrics.csv   — per-timeslot columns (failures, deployed_bikes, …)
+                                  also contains 'rebalance_times' column BUT that
+                                  column stores event durations padded to timeslot
+                                  length — for display we keep it as a raw list via
+                                  'rebalance_events' so the callback can histogram it.
+        cell_subgraph.gpickle  — optional
+
+    Note: benchmark has no step_data (no actions, no reward tracking, no Q-values).
+    """
+    episode_dir = run_dir / 'benchmark' / f'episode_{episode:03d}'
+    if not episode_dir.exists():
+        return None
+
+    data: Dict = {}
+
+    scalars_path = episode_dir / 'scalars.json'
+    if scalars_path.exists():
+        with open(scalars_path, 'r') as f:
+            data['scalars'] = json.load(f)
+
+    timeslot_path = episode_dir / 'timeslot_metrics.csv'
+    if timeslot_path.exists():
+        data['timeslot_metrics'] = pd.read_csv(timeslot_path)
+
+    subgraph_path = episode_dir / 'cell_subgraph.gpickle'
+    if subgraph_path.exists():
+        with open(subgraph_path, 'rb') as f:
+            data['cell_subgraph'] = pickle.load(f)
+    else:
+        data['cell_subgraph'] = None
+
+    return data if data else None
+
+
+# ---------------------------------------------------------------------------
+# Best model metadata
+# ---------------------------------------------------------------------------
+
+def load_best_model_metadata(run_dir: Path) -> Optional[Dict]:
+    """
+    Load metadata for the best saved model.
+
+    Path: models/best/metadata.json
+    Relevant key: 'episode' — the validation episode number that corresponds
+    to this best model.
 
     Returns:
-        Sorted list of available episode numbers
+        Dict with at least {'episode': int, 'score': float} or None
     """
-    mode_dir = run_dir / mode
-    if not mode_dir.exists():
-        return []
+    metadata_path = run_dir / 'models' / 'best' / 'metadata.json'
+    if not metadata_path.exists():
+        return None
+    with open(metadata_path, 'r') as f:
+        return json.load(f)
 
-    episodes = []
-    for ep_dir in mode_dir.iterdir():
-        if ep_dir.is_dir() and ep_dir.name.startswith('episode_'):
-            try:
-                ep_num = int(ep_dir.name.split('_')[1])
-            except (IndexError, ValueError):
-                continue
-            # Only include episodes that have completed — scalars.json is
-            # written at save time, so its absence means the episode is
-            # still in progress (only the log folder exists so far)
-            if (ep_dir / 'scalars.json').exists():
-                episodes.append(ep_num)
 
-    return sorted(episodes)
-
+# ---------------------------------------------------------------------------
+# Graph helpers
+# ---------------------------------------------------------------------------
 
 def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     """
@@ -229,16 +404,18 @@ def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     return ox.load_graphml(graph_path)
 
 
+# ---------------------------------------------------------------------------
+# Legacy benchmark loader (kept for any external callers)
+# ---------------------------------------------------------------------------
+
 def load_bench_data(
         run_dir: Path,
         mode: str = 'benchmark'
-) -> tuple[int | Any, dict[str, DataFrame], Any | None] | None:
+) -> Optional[tuple]:
     """
     Load benchmark results saved by ResultsManager.save_episode().
 
-    ResultsManager writes:
-      bench_path / scalars.json          — total_failures, mean_daily_failures
-      bench_path / timeslot_metrics.csv  — per-timeslot failures, truck_load, …
+    Returns (total_failures, dfs, subgraph) or None.
     """
     bench_dir = run_dir / mode
 
@@ -265,7 +442,8 @@ def load_bench_data(
                 total_failures = int(timeslot_df['failures'].sum())
 
         for col in ['truck_load', 'depot_load', 'deployed_bikes',
-                    'outside_system_bikes', 'traveling_bikes', 'rebalance_times']:
+                    'outside_system_bikes', 'traveling_bikes', 'rebalance_times',
+                    'demand']:
             if col in timeslot_df.columns:
                 dfs[col] = timeslot_df[['timeslot', col]].copy()
 

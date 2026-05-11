@@ -7,8 +7,9 @@ from torch.nn import functional as F
 from rl_training.networks import DQN
 
 class DQNAgent:
-    def __init__(self, num_actions, observation_space_len = 256, replay_buffer =  None, gamma=0.99, epsilon_start=1.0, epsilon_end=0.01,
-                 epsilon_decay=500, lr=0.1, device='cpu', tau=0.3, beta=0.01, soft_update=False):
+    def __init__(self, num_actions, observation_space_len = 256, replay_buffer =  None, gamma=0.99,
+                 epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=500, lr=0.1,
+                 device='cpu', tau=0.3, beta=0.01, soft_update=False, seed: int = None):
         """
         Initializes the DQNAgent.
         """
@@ -31,6 +32,16 @@ class DQNAgent:
         self.tau = tau
         self.beta = beta
         self.soft_update = soft_update
+
+        if seed is not None:
+            self.set_seed(seed)
+
+
+    @staticmethod
+    def set_seed(seed: int) -> None:
+        """Seed all RNG sources used by this agent."""
+        from rl_training.utils import set_seed
+        set_seed(seed)
 
 
     def select_action(self, state, epsilon_greedy=False, greedy=False, avoid_action: list = None):
