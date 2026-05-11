@@ -633,6 +633,7 @@ def train_ppo(
     logging_enabled: bool,
     tbar=None,
     episode_results_path: str | None = None,
+    seed: int = None,
 ) -> dict:
     # ============================================================================
     # Initialize metrics tracking
@@ -646,6 +647,7 @@ def train_ppo(
     depot_load = []
     outside_system_bikes = []
     traveling_bikes = []
+    demand_per_timeslot = []
 
     # Per-step metrics
     action_per_step = []
@@ -672,7 +674,6 @@ def train_ppo(
         'use_net_flow': params["use_net_flow"],
         'discount_factor': params["gamma"],
         'depot_id': params['depot_position_id'],
-        'reward_params': reward_params,
     }
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path
@@ -1306,6 +1307,7 @@ def main():
     # ------------------------------------------------------------------
     # Params
     # ------------------------------------------------------------------
+    validation_process = None
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
@@ -1328,10 +1330,10 @@ def main():
 
     # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
     #params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params["total_timeslots"])**2) / np.log(10) # only for DQN
-    print(f"\nParams in use: {params}\n")
-    print(f"Reward params in use: {reward_params}\n")
-    if one_validation:
-        print("one_validation = True")
+    #print(f"\nParams in use: {params}\n")
+    #print(f"Reward params in use: {reward_params}\n")
+    #if one_validation:
+    #    print("one_validation = True")
 
     results_manager = ResultsManager(
         results_path=results_path,
@@ -1339,7 +1341,7 @@ def main():
         overwrite=False,
         interactive=True
     )
-    results_manager.save_hyperparameters(params, reward_params, {})
+    #results_manager.save_hyperparameters(params, reward_params, {})
 
     # Init logging
     init_logging(LoggingConfig(
@@ -1361,9 +1363,9 @@ def main():
         seed=params['seed'],
         logging_enabled=logging_enabled
     )
-    env.unwrapped.seed(params['seed'])
-    env.action_space.seed(params['seed'])
-    env.observation_space.seed(params['seed'])
+    #env.unwrapped.seed(params['seed'])
+    #env.action_space.seed(params['seed'])
+    #env.observation_space.seed(params['seed'])
     print("4. Environment created")
 
     # Save hyperparameters
@@ -1410,7 +1412,7 @@ def main():
     ).to(device)
     
     agent = PPOAgent(
-        seed=int(params['seed']),
+        #seed=int(params['seed']),
         network=network,
         lr=params.get("lr", 3e-4),
         gamma=params.get("gamma", 0.99),
@@ -1490,6 +1492,11 @@ def main():
                 env=env,
                 agent=agent,
                 buffer=ppo_buffer,
+                episode=episode,
+                device=device,
+                run_id=run_id,
+                logging_enabled=logging_enabled,
+                tbar=tbar,
                 episode_results_path=os.path.join(str(results_manager.training_path), f"episode_{episode:03d}"),
                 seed=current_seed
             )
@@ -1647,8 +1654,8 @@ def main():
         raise
 
     print(f"\nTraining {run_id} completed.")
+    print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
 
 if __name__ == "__main__":
     print("1. Entered in the main section")
-    print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
     main()

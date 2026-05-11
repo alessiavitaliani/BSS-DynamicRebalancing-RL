@@ -1,8 +1,0 @@
-{
-  "episode": 0,
-  "total_reward": -22940.648674285716,
-  "mean_daily_failures": 92275.28571428571,
-  "total_failures": 645927,
-  "total_invalid_actions": 8952,
-  "epsilon": 0.0
-}
