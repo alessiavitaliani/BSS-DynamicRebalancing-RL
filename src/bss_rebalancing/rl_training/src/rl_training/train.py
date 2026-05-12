@@ -1540,8 +1540,9 @@ def main():
             # Save training episode results
             results_manager.save_episode(training_results)
 
-            if agent.epsilon < params['validation_epsilon_threshold']:
-
+            current_epsilon = getattr(agent, 'epsilon', 0.0)
+            #if current_epsilon < params['validation_epsilon_threshold']:
+            if False: # to not have validation for now
                 # ── Step A: collect the previous val subprocess (if any) ──────
                 # This is the only point where training may briefly wait, and
                 # only if val_N-1 hasn't finished by the time train_N is done.
@@ -1583,7 +1584,12 @@ def main():
                     score=training_results.mean_daily_failures,
                     model_type='episode'
                 )
-                logger.info(f"Episode {episode}: model snapshot saved (epsilon={agent.epsilon:.4f})")
+                logger.info(f"Episode {episode}: model snapshot saved (epsilon={current_epsilon:.4f})")
+                if 'training_results' in locals(): del training_results
+                if 'training_dict' in locals(): del training_dict
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # ── Step C: launch the new val subprocess (non-blocking) ──────
                 val_cmd = _build_validate_cmd(
@@ -1606,7 +1612,7 @@ def main():
                 f"Mean Failures = {training_results.mean_daily_failures:.2f}, "
                 f"Total Failures = {training_results.total_failures}, "
                 f"Invalid Actions = {training_results.total_invalid_actions}, "
-                f"Epsilon = {agent.epsilon:.4f}"
+                f"Epsilon = {current_epsilon:.4f}"
             )
 
             gc.collect()

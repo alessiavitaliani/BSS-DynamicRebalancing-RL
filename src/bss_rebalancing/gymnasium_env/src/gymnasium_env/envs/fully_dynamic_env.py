@@ -653,27 +653,30 @@ class FullyDynamicEnv(gym.Env):
                 break
 
         next_seed = self._episode_seed + 1
-        self._bg_process = multiprocessing.Process(
-            target=_episode_worker,
-            args=(
-                next_seed,
-                self._data_path,
-                self._global_rate_dict,
-                self._distance_lookup,
-                self._result_queue,
-            ),
-            daemon=True,  # dies if main process dies
-        )
-        if self._bg_process is not None:
-            self._bg_process.start()
-        else:
-            raise RuntimeError(
-                f"Background episode precomputation not started for unknown reason."
-            )
+        #self._bg_process = multiprocessing.Process(
+        #    target=_episode_worker,
+        #    args=(
+        #        next_seed,
+        #        self._data_path,
+        #        self._global_rate_dict,
+        #        self._distance_lookup,
+        #         self._result_queue,
+        #    ),
+        #    daemon=True,  # dies if main process dies
+        #)
+        #if self._bg_process is not None:
+        #    self._bg_process.start()
+        #else:
+        #    raise RuntimeError(
+        #        f"Background episode precomputation not started for unknown reason."
+        #    )
+        self._bg_process = None
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=1000)
+            print("DEBUG: Waiting for data of next episode")
+            result = self._result_queue.get(timeout=1)
+            print("DEBUG: Received data")
         except Exception:
             print(f"DEBUG: Background loading timed out. Computing synchronously for seed={self._episode_seed}")
             result = self._compute_episode_buffer(seed=self._episode_seed)
@@ -682,7 +685,7 @@ class FullyDynamicEnv(gym.Env):
                 self._bg_process.kill()
                 self._bg_process = None
             #raise RuntimeError(
-            #    f"Background episode precomputation timed out after 1000s "
+            #    f"Background episode precomputation timed out after 3600s "
             #    f"(seed={self._episode_seed}). Episode buffer unavailable."
             #)
         if self._bg_process is not None:
