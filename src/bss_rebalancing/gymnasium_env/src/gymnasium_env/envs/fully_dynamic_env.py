@@ -206,6 +206,7 @@ def _compute_buffer_logic(
     ) if show_pbar else None
 
     for slot_index in range(EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS):
+        print(f"DEBUG: Slot elaboration {slot_index + 1}/{EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS}")
         timeslot = slot_index % EnvDefaults.TIMESLOTS_PER_DAY
         matrix_path = os.path.join(data_path, DEFAULT_PATHS.matrices_folder)
         pmf_matrix = pl.read_csv(os.path.join(matrix_path, day.lower(), str(timeslot).zfill(2) + '-pmf-matrix.csv'))
@@ -679,7 +680,7 @@ class FullyDynamicEnv(gym.Env):
             print("DEBUG: Received data")
         except Exception:
             print(f"DEBUG: Background loading timed out. Computing synchronously for seed={self._episode_seed}")
-            result = self._compute_episode_buffer(seed=self._episode_seed)
+            result = self._compute_episode_buffer(seed=self._episode_seed, show_pbar=True)
             
             if self._bg_process is not None:
                 self._bg_process.kill()
