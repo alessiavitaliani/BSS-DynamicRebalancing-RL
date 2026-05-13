@@ -82,7 +82,7 @@ params = {
     "minimum_number_of_bikes": 1,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 18,                # ID (cell) of the depot position
+    "depot_position_id": 1,                # ID (cell) of the depot position
     "initial_cell_id": 18,                  # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
