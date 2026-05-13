@@ -5,9 +5,9 @@ import math
 from pathlib import Path
 from typing import Optional
 
-from gymnasium_env.simulator.truck import Truck
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.trip import Trip
+from gymnasium_env.simulator.truck import Truck
 
 
 class EnvLogger:
@@ -85,7 +85,9 @@ class EnvLogger:
         self.init(
             log_dir=log_dir,
             filename=filename,
-            level=level if level is not None else (self._logger.level if self._logger else logging.INFO),
+            level=level
+            if level is not None
+            else (self._logger.level if self._logger else logging.INFO),
             enabled=self._enabled,
             overwrite=True,
         )
@@ -150,7 +152,9 @@ class EnvLogger:
         if invalid:
             self._logger.info(self._prefix(f"### ACTION IS INVALID ### - Time: {time}"))
         else:
-            self._logger.info(self._prefix(f"Action completed successfully - Time: {time}"))
+            self._logger.info(
+                self._prefix(f"Action completed successfully - Time: {time}")
+            )
 
     def log_state(self, step: int, time: str) -> None:
         if not self.can_log(logging.INFO):

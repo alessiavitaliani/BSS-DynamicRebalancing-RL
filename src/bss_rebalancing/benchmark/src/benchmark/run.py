@@ -33,6 +33,7 @@ params = {
     "total_timeslots": 56,                          # Total number of time slots in one episode
 
     "num_rebalancing_events": 2,                    # Number of rebalancing events per episode
+    "starting_rebalancing_event": 1,                # Hour to start rebalancing (0-23)
     "enable_repositioning": False,                  # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                          # Use net flow repositioning strategy at the start of each episode
 
@@ -105,8 +106,7 @@ def run_simulation(
         'enable_repositioning': params['enable_repositioning'],
         'use_net_flow': params['use_net_flow'],
         'depot_id': params['depot_position_id'],
-        # 'initial_cell': params['initial_cell_id'],
-
+        'starting_rebalancing_event': params['starting_rebalancing_event'],
     }
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path

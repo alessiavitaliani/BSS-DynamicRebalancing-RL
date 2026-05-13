@@ -8,52 +8,51 @@ bike trips, truck movements, and the state of the entire network.
 Author: Edoardo Scarpel
 """
 
-import math
-import os.path
 import heapq
 import logging
+import math
 import multiprocessing
+import os.path
 
 import gymnasium as gym
 import numpy as np
 import osmnx as ox
 import polars as pl
 
+from collections import deque
+from dataclasses import dataclass, field
+from multiprocessing.process import BaseProcess
 from gymnasium import spaces
 from gymnasium.utils import seeding
-from dataclasses import dataclass, field
-from collections import deque
-from tqdm import tqdm
 
 from gymnasium_env.simulator import Bike
+from gymnasium_env.simulator.bike_simulator import build_events, event_handler
+from gymnasium_env.simulator.env_logger import EnvLogger
 from gymnasium_env.simulator.station import Station
 from gymnasium_env.simulator.trip import TripSample
-from gymnasium_env.simulator.bike_simulator import event_handler, simulate_events, build_events
 from gymnasium_env.simulator.truck import Truck
 from gymnasium_env.simulator.truck_simulator import (
+    ACTION_TO_DIRECTION,
     charge_bike,
     drop_bike,
     move,
     pick_up_bike,
     stay,
-    ACTION_TO_DIRECTION,
 )
 from gymnasium_env.simulator.utils import (
     DAYS_TO_NUM,
     DEFAULT_PATHS,
     NUM_TO_DAYS,
     Actions,
+    compute_buffer_logic,
     convert_seconds_to_hours_minutes_day,
     detect_self_loops,
+    episode_worker,
     initialize_bikes,
     initialize_graph,
     initialize_stations,
     load_preprocessed_data,
-    flatten_pmf_matrix,
-    cache_episode_zero,
-    load_episode_zero
 )
-from gymnasium_env.simulator.env_logger import EnvLogger
 
 # =============================================================================
 # Module-Level Configuration
@@ -66,6 +65,7 @@ logging_state_and_trips = False
 # =============================================================================
 # Environment Constants
 # =============================================================================
+
 
 class EnvDefaults:
     """Default configuration values for the environment."""
@@ -92,7 +92,7 @@ class EnvDefaults:
     BORDER_ELIGIBILITY_DECAY = 0.99
 
     # Default starting conditions
-    DEFAULT_DAY = 'monday'
+    DEFAULT_DAY = "monday"
     DEFAULT_TIMESLOT = 0
     DEFAULT_TOTAL_TIMESLOTS = 56
     DEFAULT_DEPOT_ID = 1
@@ -106,10 +106,11 @@ class EnvDefaults:
 
 class BorderType:
     """Cell border classification based on number of missing adjacent cells."""
-    NORMAL = 0          # All 4 adjacent cells exist
-    EDGE = 1            # 1 adjacent cell missing
-    CORNER = 2          # 2 adjacent cells missing
-    DEAD_END = 3        # 3 adjacent cells missing
+
+    NORMAL = 0  # All 4 adjacent cells exist
+    EDGE = 1  # 1 adjacent cell missing
+    CORNER = 2  # 2 adjacent cells missing
+    DEAD_END = 3  # 3 adjacent cells missing
 
 
 class RewardComponents:
@@ -159,9 +160,11 @@ class RewardComponents:
     DEPLOY_WEIGHT = 0.02
     DEPOT_WEIGHT = 0.02
 
+
 # =============================================================================
 # Auxiliary classes
 # =============================================================================
+
 
 @dataclass
 class Depot:
@@ -242,6 +245,7 @@ def _episode_worker(seed, data_path, global_rate_dict, distance_lookup, result_q
 # Main Environment Class
 # =============================================================================
 
+
 class FullyDynamicEnv(gym.Env):
     """
     A Gymnasium environment for bike-sharing system dynamic rebalancing.
@@ -255,7 +259,13 @@ class FullyDynamicEnv(gym.Env):
     # Initialization
     # ─────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, data_path: str, results_path: str, seed: int = 42, logging_enabled: bool = False):
+    def __init__(
+        self,
+        data_path: str,
+        results_path: str,
+        seed: int = 42,
+        logging_enabled: bool = False,
+    ):
         """
         Initialize the bike-sharing environment.
 
@@ -270,7 +280,9 @@ class FullyDynamicEnv(gym.Env):
         self._results_path = results_path
 
         # Env logger: lazy init
-        log_dir = os.path.join(results_path, "logs") if results_path is not None else None
+        log_dir = (
+            os.path.join(results_path, "logs") if results_path is not None else None
+        )
         self._env_logger = EnvLogger(name="env")
         self._env_logger.init(
             log_dir=log_dir,
@@ -284,13 +296,17 @@ class FullyDynamicEnv(gym.Env):
         # -------------------------------------------------------------------------
 
         # Load the OSMnx graph
-        self._graph = initialize_graph(os.path.join(self._data_path, DEFAULT_PATHS.graph_file))
+        self._graph = initialize_graph(
+            os.path.join(self._data_path, DEFAULT_PATHS.graph_file)
+        )
 
         # Compute bounding box for coordinate normalization
         nodes_gdf = ox.graph_to_gdfs(self._graph, edges=False)
-        self._min_lat, self._max_lat = nodes_gdf['y'].min(), nodes_gdf['y'].max()
-        self._min_lon, self._max_lon = nodes_gdf['x'].min(), nodes_gdf['x'].max()
-        self._nodes_dict = {nid: (row['y'], row['x']) for nid, row in nodes_gdf.iterrows()}
+        self._min_lat, self._max_lat = nodes_gdf["y"].min(), nodes_gdf["y"].max()
+        self._min_lon, self._max_lon = nodes_gdf["x"].min(), nodes_gdf["x"].max()
+        self._nodes_dict = {
+            nid: (row["y"], row["x"]) for nid, row in nodes_gdf.iterrows()
+        }
 
         # -------------------------------------------------------------------------
         # Load precomputed data
@@ -309,18 +325,15 @@ class FullyDynamicEnv(gym.Env):
         )
 
         self._distance_lookup = {
-            row["node_id"]: row
-            for row in self._distance_matrix.iter_rows(named=True)
+            row["node_id"]: row for row in self._distance_matrix.iter_rows(named=True)
         }
 
         self._velocity_lookup = {
-            row["hour"]: row
-            for row in self._velocity_matrix.iter_rows(named=True)
+            row["hour"]: row for row in self._velocity_matrix.iter_rows(named=True)
         }
 
         self._consumption_lookup = {
-            row["hour"]: row
-            for row in self._consumption_matrix.iter_rows(named=True)
+            row["hour"]: row for row in self._consumption_matrix.iter_rows(named=True)
         }
 
         self._sorted_cell_ids = sorted(self._cells.keys())
@@ -332,16 +345,19 @@ class FullyDynamicEnv(gym.Env):
         # Build stations once
         stations: dict[int, Station] = {}
         for node_id, (lat, lon) in self._nodes_dict.items():
-            stations[node_id] = Station(node_id, lat, lon)      # type: ignore
+            stations[node_id] = Station(node_id, lat, lon)  # type: ignore
 
         # Assign cells to stations once
         for cell in self._cells.values():
             for node in cell.get_nodes():
                 stations[node].set_cell(cell)
 
-        all_stations_have_a_cell = all(stn.get_cell() is not None for stn in stations.values())
-        assert all_stations_have_a_cell, \
+        all_stations_have_a_cell = all(
+            stn.get_cell() is not None for stn in stations.values()
+        )
+        assert all_stations_have_a_cell, (
             "Not all stations were assigned a cell. Check cell definitions and station locations."
+        )
 
         # Virtual station 10000
         stations[10000] = Station(10000, 0.0, 0.0)
@@ -358,10 +374,7 @@ class FullyDynamicEnv(gym.Env):
         # Observation space
         obs_dim = 17 + 2 * len(self._cells)
         self.observation_space = spaces.Box(
-            low=0.0,
-            high=np.inf,
-            shape=(obs_dim,),
-            dtype=np.float16
+            low=0.0, high=np.inf, shape=(obs_dim,), dtype=np.float16
         )
 
         # -------------------------------------------------------------------------
@@ -369,9 +382,9 @@ class FullyDynamicEnv(gym.Env):
         # -------------------------------------------------------------------------
 
         # Bike storage
-        self._system_bikes = None
-        self._outside_system_bikes = None
-        self._travelling_bikes = None
+        self._system_bikes: dict[int, Bike] = {}
+        self._outside_system_bikes: dict[int, Bike] = {}
+        self._travelling_bikes: dict[int, Bike] = {}
         self._depot = Depot()
 
         # Fleet parameters
@@ -381,7 +394,7 @@ class FullyDynamicEnv(gym.Env):
         self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
 
         # Station and truck objects
-        self._truck = None
+        self.__truck: Truck | None = None
 
         # Time tracking
         self._env_time = 0
@@ -398,7 +411,7 @@ class FullyDynamicEnv(gym.Env):
         self._reward_params = None
 
         # Action tracking
-        self._last_move_action = None
+        self._last_move_action = 0
         self._invalid_action = False
         self._last_cell_border_type = BorderType.NORMAL
 
@@ -420,14 +433,26 @@ class FullyDynamicEnv(gym.Env):
         self._precomputed_buffers: dict[int, list[TripSample]] = {}
         self._apply_seed(seed)
 
-        self._bg_process: multiprocessing.Process | None = None
-        self._result_queue: multiprocessing.Queue = multiprocessing.Queue(maxsize=1)
+        self._bg_process: BaseProcess | None = None
+        self._result_queue: multiprocessing.Queue = multiprocessing.get_context("spawn").Queue(maxsize=1)
+
+    @property
+    def _truck(self) -> Truck:
+        if self.__truck is None:
+            raise RuntimeError(
+                "Environment not initialized — call reset() before step()."
+            )
+        return self.__truck
+
+    @_truck.setter
+    def _truck(self, value: Truck | None) -> None:
+        self.__truck = value
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Reset
     # ─────────────────────────────────────────────────────────────────────────
 
-    def reset(self, seed=None, options=None) -> tuple[np.array, dict]: # type: ignore
+    def reset(self, seed=None, options=None) -> tuple[np.array, dict]:  # type: ignore
         """
         Reset the environment to an initial state.
 
@@ -461,10 +486,16 @@ class FullyDynamicEnv(gym.Env):
                 show_pbar=True,
             )
         else:
-            if self._result_queue.empty() and (self._bg_process is None or not self._bg_process.is_alive()):
+            if self._result_queue.empty() and (
+                self._bg_process is None or not self._bg_process.is_alive()
+            ):
                 # Process died without delivering — recompute synchronously
-                self._env_logger.warning("Background result missing — recomputing synchronously.")
-                self._precomputed_buffers = self._compute_episode_buffer(self._episode_seed)
+                self._env_logger.warning(
+                    "Background result missing — recomputing synchronously."
+                )
+                self._precomputed_buffers = self._compute_episode_buffer(
+                    self._episode_seed
+                )
             else:
                 # Normal path (also covers: process still running but will deliver)
                 if self._bg_process is not None and self._bg_process.is_alive():
@@ -482,44 +513,52 @@ class FullyDynamicEnv(gym.Env):
             self._env_logger.set_enabled(False)
 
         # Time configuration
-        self._day = options.get('day', EnvDefaults.DEFAULT_DAY)
-        self._timeslot = options.get('timeslot', EnvDefaults.DEFAULT_TIMESLOT)
-        self._total_timeslots = options.get('total_timeslots', EnvDefaults.DEFAULT_TOTAL_TIMESLOTS)
+        self._day = options.get("day", EnvDefaults.DEFAULT_DAY)
+        self._timeslot = options.get("timeslot", EnvDefaults.DEFAULT_TIMESLOT)
+        self._total_timeslots = options.get(
+            "total_timeslots", EnvDefaults.DEFAULT_TOTAL_TIMESLOTS
+        )
 
         # Fleet configuration
         self._maximum_number_of_bikes = options.get(
-            'maximum_number_of_bikes',
-            self._maximum_number_of_bikes
+            "maximum_number_of_bikes", self._maximum_number_of_bikes
         )
         self._min_bikes_per_cell = options.get(
-            'minimum_number_of_bikes',
-            self._min_bikes_per_cell
+            "minimum_number_of_bikes", self._min_bikes_per_cell
         )
 
         # RL configuration
-        self._discount_factor = options.get('discount_factor', EnvDefaults.DISCOUNT_FACTOR)
-        self._reward_params = options.get('reward_params', None)
+        self._discount_factor = options.get(
+            "discount_factor", EnvDefaults.DISCOUNT_FACTOR
+        )
+        self._reward_params = options.get("reward_params", None)
 
         # Reset action state
         self._invalid_action = False
         self._global_critic_score = 0.0
         self._use_binary_critic = options.get(
-            'use_binary_critic', EnvDefaults.USE_BINARY_CRITIC
+            "use_binary_critic", EnvDefaults.USE_BINARY_CRITIC
         )
 
         # Reset all cells
-        for cell in self._cells.values(): cell.reset()
+        for cell in self._cells.values():
+            cell.reset()
 
         # Reset all stations
-        for stn in self._stations.values(): stn.reset()
+        for stn in self._stations.values():
+            stn.reset()
 
         # Extract cell and truck configuration from options
         cell_id_list = list(self._cells.keys())
-        truck_cell_id = options.get('initial_cell', self.np_random.choice(cell_id_list))
-        max_truck_load = options.get('max_truck_load', EnvDefaults.MAX_TRUCK_LOAD)
-        depot_id = options.get('depot_id', EnvDefaults.DEFAULT_DEPOT_ID)
-        self._enable_repositioning = options.get('enable_repositioning', EnvDefaults.BASE_REPOSITIONING)
-        self._use_net_flow = options.get('use_net_flow', EnvDefaults.NET_FLOW_BASED_REPOSITIONING)
+        truck_cell_id = options.get("initial_cell", self.np_random.choice(cell_id_list))
+        max_truck_load = options.get("max_truck_load", EnvDefaults.MAX_TRUCK_LOAD)
+        depot_id = options.get("depot_id", EnvDefaults.DEFAULT_DEPOT_ID)
+        self._enable_repositioning = options.get(
+            "enable_repositioning", EnvDefaults.BASE_REPOSITIONING
+        )
+        self._use_net_flow = options.get(
+            "use_net_flow", EnvDefaults.NET_FLOW_BASED_REPOSITIONING
+        )
 
         # Mark initial truck cell as visited
         self._cells[truck_cell_id].set_visits(1)
@@ -527,7 +566,7 @@ class FullyDynamicEnv(gym.Env):
         # Initialize depot and bike fleet
         if depot_id not in self._cells:
             raise ValueError(f"Depot cell ID {depot_id} not found in cells.")
-        self._depot.id= self._cells.get(depot_id).get_center_node()
+        self._depot.id = self._cells[depot_id].get_center_node()
         self._depot.bikes = initialize_bikes(n=self._maximum_number_of_bikes)
         self._travelling_bikes = {}
 
@@ -547,7 +586,9 @@ class FullyDynamicEnv(gym.Env):
         # Initialize truck
         # -------------------------------------------------------------------------
         # Load initial bikes onto truck from depot
-        initial_bike_keys = list(self._depot.bikes.keys())[:EnvDefaults.INITIAL_TRUCK_BIKES]
+        initial_bike_keys = list(self._depot.bikes.keys())[
+            : EnvDefaults.INITIAL_TRUCK_BIKES
+        ]
         bikes = {key: self._depot.bikes.pop(key) for key in initial_bike_keys}
 
         truck_cell = self._cells[truck_cell_id]
@@ -555,7 +596,7 @@ class FullyDynamicEnv(gym.Env):
             position=truck_cell.get_center_node(),
             cell=truck_cell,
             bikes=bikes,
-            max_load=max_truck_load
+            max_load=max_truck_load,
         )
 
         # -------------------------------------------------------------------------
@@ -581,7 +622,7 @@ class FullyDynamicEnv(gym.Env):
         self._system_bikes, self._outside_system_bikes = initialize_stations(
             stations=self._stations,
             depot_bikes=self._depot.bikes,
-            bikes_per_station=bikes_per_station
+            bikes_per_station=bikes_per_station,
         )
 
         # -------------------------------------------------------------------------
@@ -594,15 +635,15 @@ class FullyDynamicEnv(gym.Env):
         # -------------------------------------------------------------------------
         observation = self._get_obs()
         info = {
-            'cell_dict': self._cells,
-            'nodes_dict': self._nodes_dict,
-            'steps': 0,
-            'failures': [],
-            'depot_bikes': len(self._depot.bikes),
-            'truck_bikes': self._truck.get_load(),
-            'number_of_system_bikes': len(self._system_bikes),
-            'number_of_outside_bikes': len(self._outside_system_bikes),
-            'distance_lookup': self._distance_lookup,
+            "cell_dict": self._cells,
+            "nodes_dict": self._nodes_dict,
+            "steps": 0,
+            "failures": [],
+            "depot_bikes": len(self._depot.bikes),
+            "truck_bikes": self._truck.get_load(),
+            "number_of_system_bikes": len(self._system_bikes),
+            "number_of_outside_bikes": len(self._outside_system_bikes),
+            "distance_lookup": self._distance_lookup,
         }
 
         # Log number of bikes in the system, in the truck, in the depot and in the outside system
@@ -623,18 +664,23 @@ class FullyDynamicEnv(gym.Env):
     # Episode buffer management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _compute_episode_buffer(self, seed: int, first_episode: bool = False, show_pbar: bool = False) -> dict:
+    def _compute_episode_buffer(
+            self, seed: int, first_episode: bool = False, show_pbar: bool = False
+    ) -> dict:
         """Synchronous wrapper — runs the worker logic in-process."""
-        # Reuse a temporary queue just to get the return value through the same code path
         cache_dir = os.path.join(self._data_path, ".cache") if first_episode else None
-        return _compute_buffer_logic(
+        return compute_buffer_logic(
             seed=seed,
             data_path=self._data_path,
             global_rate_dict=self._global_rate_dict,
             distance_lookup=self._distance_lookup,
+            precomputed_episode_timeslots=EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+            timeslots_per_day=EnvDefaults.TIMESLOTS_PER_DAY,
+            timeslot_duration_seconds=EnvDefaults.TIMESLOT_DURATION_SECONDS,
+            default_day=EnvDefaults.DEFAULT_DAY,
             first_episode=first_episode,
             cache_dir=cache_dir,
-            show_pbar=show_pbar
+            show_pbar=show_pbar,
         )
 
     def _start_next_episode_precomputation(self) -> None:
@@ -654,30 +700,33 @@ class FullyDynamicEnv(gym.Env):
                 break
 
         next_seed = self._episode_seed + 1
-        #self._bg_process = multiprocessing.Process(
-        #    target=_episode_worker,
-        #    args=(
-        #        next_seed,
-        #        self._data_path,
-        #        self._global_rate_dict,
-        #        self._distance_lookup,
-        #         self._result_queue,
-        #    ),
-        #    daemon=True,  # dies if main process dies
-        #)
-        #if self._bg_process is not None:
-        #    self._bg_process.start()
-        #else:
-        #    raise RuntimeError(
-        #        f"Background episode precomputation not started for unknown reason."
-        #    )
-        self._bg_process = None
+        _spawn_ctx = multiprocessing.get_context("spawn")
+        self._bg_process = _spawn_ctx.Process(
+            target=episode_worker,
+            args=(
+                next_seed,
+                self._data_path,
+                self._global_rate_dict,
+                self._distance_lookup,
+                EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS,
+                EnvDefaults.TIMESLOTS_PER_DAY,
+                EnvDefaults.TIMESLOT_DURATION_SECONDS,
+                EnvDefaults.DEFAULT_DAY,
+                self._result_queue,
+                True
+            ),
+            daemon=True,  # dies if main process dies
+        )
+        if self._bg_process is not None:
+            self._bg_process.start()
+        else:
+            raise RuntimeError(
+                "Background episode precomputation not started for unknown reason."
+            )
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            print("DEBUG: Waiting for data of next episode")
-            result = self._result_queue.get(timeout=1)
-            print("DEBUG: Received data")
+            result = self._result_queue.get(timeout=300)
         except Exception:
             print(f"DEBUG: Background loading timed out. Computing synchronously for seed={self._episode_seed}")
             result = self._compute_episode_buffer(seed=self._episode_seed, show_pbar=True)
@@ -685,20 +734,26 @@ class FullyDynamicEnv(gym.Env):
             if self._bg_process is not None:
                 self._bg_process.kill()
                 self._bg_process = None
-            #raise RuntimeError(
-            #    f"Background episode precomputation timed out after 3600s "
-            #    f"(seed={self._episode_seed}). Episode buffer unavailable."
-            #)
+            raise RuntimeError(
+                f"Background episode precomputation timed out after 300s "
+                f"(seed={self._episode_seed}). Episode buffer unavailable."
+            )
         if self._bg_process is not None:
             self._bg_process.join(timeout=5)
             self._bg_process = None
+        # Worker may have put the exception itself into the queue on crash
+        if isinstance(result, BaseException):
+            raise RuntimeError(
+                f"Background episode worker crashed (seed={self._episode_seed}). "
+                f"Check {self._data_path}/tmp/bg_worker_crash.log for the full traceback."
+            ) from result
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Step
     # ─────────────────────────────────────────────────────────────────────────
 
-    def step(self, action) -> tuple[np.array, float, bool, bool, dict]: # type: ignore
+    def step(self, action) -> tuple[np.array, float, bool, bool, dict]:  # type: ignore
         """
         Execute one step in the environment.
 
@@ -727,7 +782,7 @@ class FullyDynamicEnv(gym.Env):
                 truck=self._truck,
                 distance_lookup=self._distance_lookup,
                 cell_dict=self._cells,
-                mean_velocity=mean_truck_velocity
+                mean_velocity=mean_truck_velocity,
             )
 
         elif action == Actions.DROP_BIKE.value:
@@ -737,7 +792,7 @@ class FullyDynamicEnv(gym.Env):
                 mean_velocity=mean_truck_velocity,
                 depot=self._depot,
                 system_bikes=self._system_bikes,
-                maximum_number_of_bikes=self._maximum_number_of_bikes
+                maximum_number_of_bikes=self._maximum_number_of_bikes,
             )
 
         elif action == Actions.PICK_UP_BIKE.value:
@@ -747,7 +802,7 @@ class FullyDynamicEnv(gym.Env):
                 distance_lookup=self._distance_lookup,
                 mean_velocity=mean_truck_velocity,
                 depot=self._depot,
-                system_bikes=self._system_bikes
+                system_bikes=self._system_bikes,
             )
 
         elif action == Actions.CHARGE_BIKE.value:
@@ -757,7 +812,7 @@ class FullyDynamicEnv(gym.Env):
                 distance_lookup=self._distance_lookup,
                 mean_velocity=mean_truck_velocity,
                 depot=self._depot,
-                system_bikes=self._system_bikes
+                system_bikes=self._system_bikes,
             )
 
         # Start new log line
@@ -790,10 +845,13 @@ class FullyDynamicEnv(gym.Env):
         failures = self._jump_to_next_state(steps)
 
         # Handle bike placement after movement
-        is_placement_action = action in {Actions.CHARGE_BIKE.value, Actions.DROP_BIKE.value}
+        is_placement_action = action in {
+            Actions.CHARGE_BIKE.value,
+            Actions.DROP_BIKE.value,
+        }
 
         if is_placement_action and not self._invalid_action:
-            station = self._stations.get(self._truck.get_position())
+            station = self._stations[self._truck.get_position()]
             bike = self._truck.unload_bike()
             station.lock_bike(bike)
             self._system_bikes[bike.get_bike_id()] = bike
@@ -811,7 +869,7 @@ class FullyDynamicEnv(gym.Env):
             step=steps,
             time=convert_seconds_to_hours_minutes_day(
                 day=self._day.upper(),
-                seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time
+                seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time,
             ),
         )
         self._env_logger.log_truck(
@@ -820,12 +878,18 @@ class FullyDynamicEnv(gym.Env):
         )
 
         if not self._invalid_action:
+            truck_cell.set_ops(truck_cell.get_ops() + 1)
             if action == Actions.PICK_UP_BIKE.value:
-                truck_cell.set_ops(truck_cell.get_ops() + 1)
+                truck_cell.set_pick_ups(truck_cell.get_pick_ups() + 1)
             elif action == Actions.DROP_BIKE.value:
-                truck_cell.set_ops(truck_cell.get_ops() - 1)
+                truck_cell.set_drops(truck_cell.get_drops() + 1)
 
-        if action in {Actions.UP.value, Actions.DOWN.value, Actions.LEFT.value, Actions.RIGHT.value}:
+        if action in {
+            Actions.UP.value,
+            Actions.DOWN.value,
+            Actions.LEFT.value,
+            Actions.RIGHT.value,
+        }:
             truck_cell.set_visits(truck_cell.get_visits() + 1)
             self._total_visits += 1
 
@@ -841,7 +905,7 @@ class FullyDynamicEnv(gym.Env):
             invalid=self._invalid_action,
             time=convert_seconds_to_hours_minutes_day(
                 day=self._day.upper(),
-                seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time
+                seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time,
             ),
         )
 
@@ -851,27 +915,29 @@ class FullyDynamicEnv(gym.Env):
             old_eligibility_score,
             old_critic_score,
             old_global_critic_score,
-            old_surplus_bikes
+            old_surplus_bikes,
         )
         observation = self._get_obs(action)
 
         # Build info dictionary
         info = {
-            'time': self._env_time + (self._timeslot * 3 + 1) * 3600,
-            'day': self._day if self._timeslot < EnvDefaults.TIMESLOTS_PER_DAY - 1 else NUM_TO_DAYS[(DAYS_TO_NUM[self._day] + 1) % 7],
-            'week': self._days_completed // 7,
-            'year': self._days_completed // 365,
-            'failures': failures,
-            'steps': steps,
-            'global_critic_score':self._global_critic_score,
-            'total_invalid_actions':self._total_invalid_actions,
-            'cell_dict': self._cells,
-            'distance': distance,
-            'depot_bikes': len(self._depot.bikes),
-            'truck_bikes': self._truck.get_load(),
-            'number_of_system_bikes': len(self._system_bikes),
-            'number_of_outside_bikes': len(self._outside_system_bikes),
-            'number_of_traveling_bikes': len(self._travelling_bikes)
+            "time": self._env_time + (self._timeslot * 3 + 1) * 3600,
+            "day": self._day
+            if self._timeslot < EnvDefaults.TIMESLOTS_PER_DAY - 1
+            else NUM_TO_DAYS[(DAYS_TO_NUM[self._day] + 1) % 7],
+            "week": self._days_completed // 7,
+            "year": self._days_completed // 365,
+            "failures": failures,
+            "steps": steps,
+            "global_critic_score": self._global_critic_score,
+            "total_invalid_actions": self._total_invalid_actions,
+            "cell_dict": self._cells,
+            "distance": distance,
+            "depot_bikes": len(self._depot.bikes),
+            "truck_bikes": self._truck.get_load(),
+            "number_of_system_bikes": len(self._system_bikes),
+            "number_of_outside_bikes": len(self._outside_system_bikes),
+            "number_of_traveling_bikes": len(self._travelling_bikes),
         }
 
         # Check for timeslot/episode termination
@@ -879,11 +945,11 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= (self._total_failures / self._total_timeslots) # / 10.0
+            reward -= self._total_failures / self._total_timeslots  # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
-                    seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time
+                    seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time,
                 )
             )
 
@@ -952,9 +1018,11 @@ class FullyDynamicEnv(gym.Env):
 
     def _initialize_day_timeslot(self) -> None:
         current_slot_index = (
-                DAYS_TO_NUM[self._day] * EnvDefaults.TIMESLOTS_PER_DAY + self._timeslot
+            DAYS_TO_NUM[self._day] * EnvDefaults.TIMESLOTS_PER_DAY + self._timeslot
         )
-        next_slot_index = (current_slot_index + 1) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
+        next_slot_index = (
+            current_slot_index + 1
+        ) % EnvDefaults.PRECOMPUTED_EPISODE_TIMESLOTS
 
         if self._event_buffer is None:
             # Cold start: build full 6-hour window
@@ -989,10 +1057,7 @@ class FullyDynamicEnv(gym.Env):
         pmf_matrix = self._load_pmf_matrix(self._day, self._timeslot)
         global_rate = self._global_rate_dict[(self._day.lower(), self._timeslot)]
 
-        pmf_lookup = {
-            row["node_id"]: row
-            for row in pmf_matrix.iter_rows(named=True)
-        }
+        pmf_lookup = {row["node_id"]: row for row in pmf_matrix.iter_rows(named=True)}
 
         for stn_id, stn in self._stations.items():
             row_data = pmf_lookup[stn_id]
@@ -1007,8 +1072,12 @@ class FullyDynamicEnv(gym.Env):
 
         for cell in self._cells.values():
             nodes = cell.get_nodes()
-            cell.set_demand_rate(sum(self._stations[n].get_demand_rate() for n in nodes))
-            cell.set_arrival_rate(sum(self._stations[n].get_arrival_rate() for n in nodes))
+            cell.set_demand_rate(
+                sum(self._stations[n].get_demand_rate() for n in nodes)
+            )
+            cell.set_arrival_rate(
+                sum(self._stations[n].get_arrival_rate() for n in nodes)
+            )
 
         # Reset environment clock
         self._env_time = 0
@@ -1016,13 +1085,17 @@ class FullyDynamicEnv(gym.Env):
     def _load_pmf_matrix(self, day: str, timeslot: int) -> pl.DataFrame:
         """Load the PMF matrix and global rate for a given day and timeslot."""
         # Construct file path
-        matrix_path = os.path.join(self._data_path, DEFAULT_PATHS.matrices_folder, day.lower())
-        pmf_matrix = pl.read_csv(os.path.join(matrix_path, str(timeslot).zfill(2) + '-pmf-matrix.csv'))
+        matrix_path = os.path.join(
+            self._data_path, DEFAULT_PATHS.matrices_folder, day.lower()
+        )
+        pmf_matrix = pl.read_csv(
+            os.path.join(matrix_path, str(timeslot).zfill(2) + "-pmf-matrix.csv")
+        )
 
         return pmf_matrix
 
     def _jump_to_next_state(self, steps: int = 0) -> list:
-        """ Advance the simulation by the given number of steps."""
+        """Advance the simulation by the given number of steps."""
         failures = []
 
         for step in range(steps):
@@ -1031,7 +1104,7 @@ class FullyDynamicEnv(gym.Env):
             self._env_logger.set_env_time(
                 convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
-                    seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time
+                    seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time,
                 )
             )
 
@@ -1073,7 +1146,7 @@ class FullyDynamicEnv(gym.Env):
                 logging_state_and_trips=logging_state_and_trips,
                 depot=self._depot,
                 maximum_number_of_bikes=self._maximum_number_of_bikes,
-                truck_load=self._truck.get_load()
+                truck_load=self._truck.get_load(),
             )
             total_step_failures += failure
 
@@ -1083,12 +1156,11 @@ class FullyDynamicEnv(gym.Env):
     # Observation Construction
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _get_obs(self, action: int = None) -> np.array: # type: ignore
+    def _get_obs(self, action: int = None) -> np.array:  # type: ignore
         """Construct the observation vector."""
         # Previous action encoding
         ohe_previous_action = np.array(
-            [1.0 if action == a.value else 0.0 for a in Actions],
-            dtype=np.float16
+            [1.0 if action == a.value else 0.0 for a in Actions], dtype=np.float16
         )
 
         # Truck cell position encoding
@@ -1097,13 +1169,13 @@ class FullyDynamicEnv(gym.Env):
 
         ohe_cell_position = np.array(
             [1.0 if truck_cell_id == cell_id else 0.0 for cell_id in sorted_cells_keys],
-            dtype=np.float16
+            dtype=np.float16,
         )
 
         # Critical cells encoding
         ohe_cell_critic = np.array(
             [1.0 if cell.is_critical() else 0.0 for cell in self._cells.values()],
-            dtype=np.float16
+            dtype=np.float16,
         )
 
         # Border flags
@@ -1113,29 +1185,35 @@ class FullyDynamicEnv(gym.Env):
         truck_cell = self._truck.get_cell()
 
         depot_load_ratio = len(self._depot.bikes) / self._maximum_number_of_bikes
-        system_ratio = (len(self._system_bikes) + self._truck.get_load()) / self._maximum_number_of_bikes
+        system_ratio = (
+            len(self._system_bikes) + self._truck.get_load()
+        ) / self._maximum_number_of_bikes
 
-        scalar_features = np.array([
-            system_ratio,
-            depot_load_ratio,
-            1.0 if truck_cell.get_surplus_bikes() > 0 else 0.0,     # Surplus flag
-            1.0 if truck_cell.get_total_bikes() == 0 else 0.0,      # Empty cell flag
-            self._global_critic_score / len(self._cells),           # Global critic score
-        ], dtype=np.float16)
+        scalar_features = np.array(
+            [
+                system_ratio,
+                depot_load_ratio,
+                1.0 if truck_cell.get_surplus_bikes() > 0 else 0.0,  # Surplus flag
+                1.0 if truck_cell.get_total_bikes() == 0 else 0.0,  # Empty cell flag
+                self._global_critic_score / len(self._cells),  # Global critic score
+            ],
+            dtype=np.float16,
+        )
 
         # Concatenate all features
-        observation = np.concatenate([
-            scalar_features,
-            ohe_previous_action,
-            ohe_cell_position,
-            ohe_cell_critic,
-            ohe_borders,
-        ])
+        observation = np.concatenate(
+            [
+                scalar_features,
+                ohe_previous_action,
+                ohe_cell_position,
+                ohe_cell_critic,
+                ohe_borders,
+            ]
+        )
 
         return observation
 
-
-    def _get_borders(self) -> np.array: # type: ignore
+    def _get_borders(self) -> np.array:  # type: ignore
         """
         Get border flags indicating which adjacent cells are missing.
 
@@ -1145,7 +1223,7 @@ class FullyDynamicEnv(gym.Env):
         adjacent_cells = self._truck.get_cell().get_adjacent_cells()
         return np.array(
             [1 if adj_cell is None else 0 for adj_cell in adjacent_cells.values()],
-            dtype=np.float16
+            dtype=np.float16,
         )
 
     def _get_truck_position(self) -> tuple[float, float]:
@@ -1157,8 +1235,12 @@ class FullyDynamicEnv(gym.Env):
         """
         truck_coords = self._nodes_dict[self._truck.get_position()]
 
-        normalized_lat = (truck_coords[0] - self._min_lat) / (self._max_lat - self._min_lat)
-        normalized_lon = (truck_coords[1] - self._min_lon) / (self._max_lon - self._min_lon)
+        normalized_lat = (truck_coords[0] - self._min_lat) / (
+            self._max_lat - self._min_lat
+        )
+        normalized_lon = (truck_coords[1] - self._min_lon) / (
+            self._max_lon - self._min_lon
+        )
 
         return normalized_lat, normalized_lon
 
@@ -1172,7 +1254,7 @@ class FullyDynamicEnv(gym.Env):
         old_eligibility_score: float,
         old_critic_score: float,
         old_global_critic_score: float,
-        old_surplus_bikes: float
+        old_surplus_bikes: float,
     ) -> float:
         """
         Compute the reward for the current step.
@@ -1211,7 +1293,9 @@ class FullyDynamicEnv(gym.Env):
 
         # Compute action-specific rewards
         if action == Actions.DROP_BIKE.value:
-            drop_reward = self._compute_drop_reward(was_critical, is_critical, was_surplus)
+            drop_reward = self._compute_drop_reward(
+                was_critical, is_critical, was_surplus
+            )
 
         elif action == Actions.PICK_UP_BIKE.value:
             pick_up_reward = self._compute_pickup_reward(
@@ -1222,8 +1306,12 @@ class FullyDynamicEnv(gym.Env):
             bike_charge_reward = self._compute_charge_reward(was_critical)
             # bike_charge_reward = 0.0  # Placeholder for future implementation
 
-        elif action in {Actions.UP.value, Actions.DOWN.value,
-                        Actions.LEFT.value, Actions.RIGHT.value}:
+        elif action in {
+            Actions.UP.value,
+            Actions.DOWN.value,
+            Actions.LEFT.value,
+            Actions.RIGHT.value,
+        }:
             eligibility_penalty = self._compute_movement_penalty(
                 old_eligibility_score, was_critical
             )
@@ -1243,16 +1331,16 @@ class FullyDynamicEnv(gym.Env):
 
         # Combine all reward components
         reward = (
-                RewardComponents.BASE_COST
-                + drop_reward
-                + pick_up_reward
-                + bike_charge_reward
-                + eligibility_penalty
-                + stay_penalty
-                + loop_penalty
-                + r_deploy
-                + r_depot
-                - 0.5 * delta_global
+            RewardComponents.BASE_COST
+            + drop_reward
+            + pick_up_reward
+            + bike_charge_reward
+            + eligibility_penalty
+            + stay_penalty
+            + loop_penalty
+            + r_deploy
+            + r_depot
+            - 0.5 * delta_global
         )
 
         self._env_logger.info(
@@ -1267,15 +1355,14 @@ class FullyDynamicEnv(gym.Env):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _compute_drop_reward(
-            self,
-            was_critical: bool,
-            is_critical: bool,
-            was_surplus: bool
+        self, was_critical: bool, is_critical: bool, was_surplus: bool
     ) -> float:
         """Compute reward for drop bike action."""
         drop_reward = RewardComponents.DROP_BASE
 
-        if was_critical and not is_critical:    # If the truck manages to rebalance the cell -> Big reward and (optional) reset all eligibility to 0.0
+        if (
+            was_critical and not is_critical
+        ):  # If the truck manages to rebalance the cell -> Big reward and (optional) reset all eligibility to 0.0
             # Successfully rebalanced a critical cell
             drop_reward = RewardComponents.DROP_REBALANCED_CRITICAL
             self._truck.get_cell().update_rebalanced_times()
@@ -1291,10 +1378,7 @@ class FullyDynamicEnv(gym.Env):
 
     @staticmethod
     def _compute_pickup_reward(
-            was_critical: bool,
-            is_critical: bool,
-            was_surplus: bool,
-            loop_detected: bool
+        was_critical: bool, is_critical: bool, was_surplus: bool, loop_detected: bool
     ) -> float:
         """Compute reward for pickup bike action."""
         pick_up_reward = 0.0
@@ -1326,14 +1410,15 @@ class FullyDynamicEnv(gym.Env):
                 return RewardComponents.CHARGE_USEFUL_NORMAL  # +0.3
 
     def _compute_movement_penalty(
-            self,
-            old_eligibility_score: float,
-            was_critical: bool
+        self, old_eligibility_score: float, was_critical: bool
     ) -> float:
         """Compute penalty for movement actions based on eligibility."""
         eligibility_penalty = 0.0
 
-        if old_eligibility_score > RewardComponents.ELIGIBILITY_HIGH_THRESHOLD and not was_critical:
+        if (
+            old_eligibility_score > RewardComponents.ELIGIBILITY_HIGH_THRESHOLD
+            and not was_critical
+        ):
             # Revisiting a recently visited cell
             eligibility_penalty = RewardComponents.ELIGIBILITY_REVISIT_PENALTY
             # Bonus for exiting border cells
@@ -1349,9 +1434,7 @@ class FullyDynamicEnv(gym.Env):
 
     @staticmethod
     def _compute_stay_penalty(
-            was_critical: bool,
-            old_global_critic_score: float,
-            loop_penalty: float
+        was_critical: bool, old_global_critic_score: float, loop_penalty: float
     ) -> tuple[float, float]:
         """Compute penalty for stay action."""
         stay_penalty = RewardComponents.STAY_BASE
@@ -1372,7 +1455,7 @@ class FullyDynamicEnv(gym.Env):
 
         self._env_logger.info(
             message=f" ---------> {self._truck.get_cell().get_id()} has been rebalanced. "
-                    f"All eligibility scores adjusted ###################################"
+            f"All eligibility scores adjusted ###################################"
         )
         self._truck.get_cell().set_eligibility_score(1.0)
 
@@ -1397,18 +1480,34 @@ class FullyDynamicEnv(gym.Env):
                 loc = event.get_trip().get_start_location()
                 if loc.get_station_id() != 10000:
                     cell = loc.get_cell()
+                    if cell is None:
+                        raise ValueError(
+                            f"Departure event with invalid cell for station {loc.get_station_id()}"
+                        )
                     cell_id = cell.get_id()
-                    expected_departures[cell_id] = expected_departures.get(cell_id, 0) + 1
+                    expected_departures[cell_id] = (
+                        expected_departures.get(cell_id, 0) + 1
+                    )
             elif event.is_arrival():
                 loc = event.get_trip().get_end_location()
                 if loc.get_station_id() != 10000:
                     cell = loc.get_cell()
+                    if cell is None:
+                        raise ValueError(
+                            f"Arrival event with invalid cell for station {loc.get_station_id()}"
+                        )
                     cell_id = cell.get_id()
-                    expected_departures[cell_id] = expected_departures.get(cell_id, 0) - 1
+                    expected_departures[cell_id] = (
+                        expected_departures.get(cell_id, 0) - 1
+                    )
             if cell is not None:
                 previous_max = expected_max_departure.get(cell_id, 0)
-                expected_max_departure[cell_id] = max(previous_max, expected_departures[cell_id])
-                expected_after_arrival[cell_id] = expected_max_departure[cell_id] - expected_departures[cell_id]
+                expected_max_departure[cell_id] = max(
+                    previous_max, expected_departures[cell_id]
+                )
+                expected_after_arrival[cell_id] = (
+                    expected_max_departure[cell_id] - expected_departures[cell_id]
+                )
 
         # ── Update each cell ──────────────────────────────────────────────────────
         self._global_critic_score = 0
@@ -1416,13 +1515,11 @@ class FullyDynamicEnv(gym.Env):
             expected = expected_max_departure.get(cell_id, 0) + self._min_bikes_per_cell
             aft_arrivals = expected_after_arrival.get(cell_id, 0)
             cell.update_metrics(
-                stations=self._stations,
-                expected=expected,
-                aft_arrivals=aft_arrivals
+                stations=self._stations, expected=expected, aft_arrivals=aft_arrivals
             )
             cell.set_metric(
-                'truck_cell',
-                1.0 if cell.get_id() == self._truck.get_cell().get_id() else 0.0
+                "truck_cell",
+                1.0 if cell.get_id() == self._truck.get_cell().get_id() else 0.0,
             )
 
             # FOR TEST
@@ -1442,9 +1539,9 @@ class FullyDynamicEnv(gym.Env):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _bike_repositioning(
-            self,
-            enable_repositioning: bool = False,
-            use_net_flow: bool = False,
+        self,
+        enable_repositioning: bool = False,
+        use_net_flow: bool = False,
     ) -> dict:
         """
         Compute initial bike distribution.
@@ -1510,16 +1607,22 @@ class FullyDynamicEnv(gym.Env):
                     station_id = event.trip.get_start_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Departure event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] -= 1
                 elif event.is_arrival():
                     station_id = event.trip.get_end_location().get_station_id()
                     if station_id != 10000:
                         cell = self._stations[station_id].get_cell()
+                        if cell is None:
+                            raise ValueError(
+                                f"Arrival event with invalid cell for station {station_id}"
+                            )
                         net_flow_per_cell[cell.get_id()] += 1
 
-            total_negative_flow = sum(
-                f for f in net_flow_per_cell.values() if f < 0
-            )
+            total_negative_flow = sum(f for f in net_flow_per_cell.values() if f < 0)
 
             if total_negative_flow < 0:  # guard: at least one cell has net outflow
                 for cell_id, flow in net_flow_per_cell.items():

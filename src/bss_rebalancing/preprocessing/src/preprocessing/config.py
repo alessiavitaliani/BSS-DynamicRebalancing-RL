@@ -47,8 +47,12 @@ class PreprocessingConfig:
     #    default_factory=lambda: (42.370, 42.353, -71.070, -71.117)
     #)
     # Bounding box (north, south, east, west) for Manhattan
+    #bbox: Optional[Tuple[float, float, float, float]] = field(
+    #    default_factory=lambda: (40.8822, 40.6970, -73.9067, -74.0205)
+    #)
+    # Bounding Box of a restricted area of Manhattan (Midtown-Union Square)
     bbox: Optional[Tuple[float, float, float, float]] = field(
-        default_factory=lambda: (40.8822, 40.6970, -73.9067, -74.0205)
+        default_factory=lambda: (40.7500, 40.7320, -73.9800, -74.0030)
     )
 
     # Grid settings

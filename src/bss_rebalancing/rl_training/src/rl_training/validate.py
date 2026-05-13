@@ -116,13 +116,7 @@ Examples:
         help="Path to the results folder (same root used during training)."
     )
 
-    # --- model source (mutually exclusive-ish: either --model-path or --model-type) ---
-    parser.add_argument(
-        "--model-path",
-        type=str,
-        default=None,
-        help="Direct path to a trained_agent.pt file. Takes priority over --model-type.",
-    )
+    # --- model source (mutually exclusive-ish: either --model-type or --model-path) ---
     parser.add_argument(
         "--model-type",
         type=str,
@@ -135,6 +129,12 @@ Examples:
         type=int,
         default=None,
         help="Episode number to load when --model-type=episode.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Direct path to a trained_agent.pt file. Takes priority over --model-type.",
     )
 
     # --- environment overrides ---
@@ -291,7 +291,7 @@ def validate_dqn(
         cell_id: {
             'critic_sum': 0.0,
             'bikes_sum': 0.0,
-            'bikes_dead_sum': 0.0
+            'bikes_dead_sum': 0.0,
         }
         for cell_id in cell_dict.keys()
     }
@@ -390,6 +390,8 @@ def validate_dqn(
         nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
         nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['pick_ups_sum'] = cell_dict[cell_id].get_pick_ups()
+        nx_attrs['drops_sum'] = cell_dict[cell_id].get_drops()
         nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
@@ -482,14 +484,17 @@ def main():
     if args.model_path is not None:
         # Direct path takes priority
         model_path = args.model_path
+        logger.info(f"Using model from direct path: {model_path}")
     else:
         # Derive from run directory via ResultsManager
         if args.model_type == "best":
             model_path = results_manager.get_best_model_path()
             if model_path is None:
                 raise FileNotFoundError(f"No best model found in {results_manager.models_path}")
+            logger.info(f"Using best model from {model_path}")
         elif args.model_type == "final":
             model_path = results_manager.models_path / "final" / "trained_agent.pt"
+            logger.info(f"Using final model from {model_path}")
         elif args.model_type == "episode":
             if args.model_episode is None:
                 raise ValueError("--model-episode must be specified when --model-type=episode")
@@ -499,6 +504,7 @@ def main():
                     / f"episode_{args.model_episode:03d}"
                     / "trained_agent.pt"
             )
+            logger.info(f"Using episode model from {model_path}")
         else:
             raise ValueError(f"Unknown --model-type: {args.model_type}")
         model_path = str(model_path)

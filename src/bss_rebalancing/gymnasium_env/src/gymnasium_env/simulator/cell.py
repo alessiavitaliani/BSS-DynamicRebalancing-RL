@@ -52,6 +52,8 @@ class Cell:
             # Operational counters (accumulate over episode)
             'visits': 0,
             'operations': 0,
+            'pick_ups': 0,
+            'drops': 0,
             'total_departures': 0,
             'total_rebalanced': 0,
             'failures': 0,
@@ -210,6 +212,8 @@ class Cell:
     def set_arrival_rate(self, rate: float)     -> None: self._metrics['arrival_rate'] = rate
     def set_visits(self, visits: int)           -> None: self._metrics['visits']       = visits
     def set_ops(self, ops: int)                 -> None: self._metrics['operations']   = ops
+    def set_pick_ups(self, pick_ups: int)       -> None: self._metrics['pick_ups']     = pick_ups
+    def set_drops(self, drops: int)             -> None: self._metrics['drops']        = drops
 
     # ── Getters ─────────────────────────────────────────────────────────────────
 
@@ -233,7 +237,9 @@ class Cell:
     # Operational counters
     def get_visits(self)           -> int:   return self._metrics['visits']
     def get_ops(self)              -> int:   return self._metrics['operations']
-    def get_total_demand(self)     -> int:   return self._metrics.get('total_demand', 0)
+    def get_pick_ups(self)         -> int:   return self._metrics['pick_ups']
+    def get_drops(self)            -> int:   return self._metrics['drops']
+    def get_total_demand(self)     -> int:   return self._metrics['total_demand']
     def get_total_departures(self) -> int:   return self._metrics['total_departures']
     def get_total_rebalanced(self) -> int:   return self._metrics['total_rebalanced']
     def get_failures(self)         -> int:   return self._metrics['failures']

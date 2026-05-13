@@ -307,11 +307,12 @@ GRAPH_METRIC_CONFIG = {
 _CMAP = 'viridis'
 
 def create_graph_heatmap_plot(
-    base_graph,
-    cell_subgraph,
-    metric: str,
-    percentage: bool = False,
-    out_path=None,
+        base_graph,
+        cell_subgraph,
+        metric: str,
+        normalized: bool = False,
+        percentage: bool = False,
+        out_path=None,
 ) -> str:
 
     # --- Layer 1: OSMnx base graph ---
@@ -328,53 +329,58 @@ def create_graph_heatmap_plot(
     # --- Layer 2: Cells grid + labels in single loop ---
     cell_geoms = []
     cell_values = []
-    vmin, vmax = float("inf"), float("-inf")
+    cell_data = []
 
-    total_visits = None
-    if metric == 'visits_sum':
-        # Special case: convert visits_sum to percentage of total visits
-        total_visits = sum(data.get('visits_sum', 0) for _, data in cell_subgraph.nodes(data=True))
-        percentage = True
+    total = None
+    if normalized:
+        total = sum(data.get(metric, 0) for _, data in cell_subgraph.nodes(data=True))
 
     for node, data in cell_subgraph.nodes(data=True):
         b = data.get('boundary')
         if b is None:
             continue
         v = data.get(metric)
-        val = float(v) if v is not None else 0.0
-        cell_geoms.append(b)
-        cell_values.append(val)
-        if val < vmin: vmin = val
-        if val > vmax: vmax = val
+        raw_val = float(v) if v is not None else 0.0
+        display_val = (raw_val / total) if (normalized and total) else raw_val
 
-        cx, cy = b.centroid.x, b.centroid.y
+        cell_geoms.append(b)
+        cell_values.append(display_val)
+
         fmt = GRAPH_METRIC_CONFIG.get(metric, {}).get('fmt', '.2f')
-        if metric == 'visits_sum' and total_visits:
-            val = val / total_visits if total_visits > 0 else 0.0
-        label = (f"{val * 100:.2f}%" if percentage
-                 else f"{int(val)}" if fmt == 'd'
-                 else f"{val:{fmt}}")
-        ax.text(cx, cy, label,
-                ha="center", va="center",
-                fontsize=8, color="black", fontweight='bold',
-                zorder=3)
+        label = (f"{display_val * 100:.2f}%" if percentage
+                 else f"{int(display_val)}" if fmt == 'd'
+        else f"{display_val:{fmt}}")
+        cell_data.append((b, display_val, label))
 
     if not cell_geoms:
         plt.close(fig)
         return ""
 
-    cell_gdf = gpd.GeoDataFrame({"value": cell_values, "geometry": cell_geoms}, crs="EPSG:4326")
-
-    norm = mcolors.Normalize(vmin=min(vmin, 0.0), vmax=max(vmax, 0.1))
+    vmin, vmax = min(cell_values), max(cell_values)
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
     cmap = plt.colormaps["viridis"]
 
+    for b, display_val, label in cell_data:
+        cx, cy = b.centroid.x, b.centroid.y
+        r, g, bl, _ = cmap(norm(display_val))
+        alpha = 0.7
+        # Blend with white background: c_rendered = c_viridis * alpha + 1.0 * (1 - alpha)
+        r_b = r * alpha + (1 - alpha)
+        g_b = g * alpha + (1 - alpha)
+        bl_b = bl * alpha + (1 - alpha)
+        luminance = 0.2126 * r_b + 0.7152 * g_b + 0.0722 * bl_b
+        label_color = "white" if luminance < 0.55 else "black"
+        ax.text(cx, cy, label, ha="center", va="center",
+                fontsize=10, color=label_color, fontweight='bold', zorder=3)
+
+    cell_gdf = gpd.GeoDataFrame({"value": cell_values, "geometry": cell_geoms}, crs="EPSG:4326")
     cell_gdf.plot(
         ax=ax,
         column="value",
         cmap="viridis",
         norm=norm,
-        alpha=0.6,
-        linewidth=1.5,
+        alpha=0.7,
+        linewidth=1.0,
         edgecolor=(0, 0, 0, 1.0),
         zorder=2,
         legend=False
@@ -386,27 +392,41 @@ def create_graph_heatmap_plot(
 
     # Extend view to fit all cells
     total_bounds = cell_gdf.total_bounds
-    pad = 0.0005
+    pad = 0.0001
     ax.set_xlim(total_bounds[0] - pad, total_bounds[2] + pad)
     ax.set_ylim(total_bounds[1] - pad, total_bounds[3] + pad)
 
-    # Colorbar
-    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=ax, fraction=0.02, pad=0.01, aspect=30)
-    cbar.set_label(
-        GRAPH_METRIC_CONFIG.get(metric, {}).get('label', metric),
-        fontsize=10, rotation=270, labelpad=14
-    )
-    cbar.ax.tick_params(labelsize=8)
+    # # Colorbar
+    # sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    # sm.set_array([])
+    # cbar = fig.colorbar(sm, ax=ax, fraction=0.02, pad=0.01, aspect=30)
+    # cbar.set_label(
+    #     GRAPH_METRIC_CONFIG.get(metric, {}).get('label', metric),
+    #     fontsize=10, rotation=270, labelpad=14
+    # )
+    # cbar.ax.tick_params(labelsize=8)
+    #
+    # fmt = GRAPH_METRIC_CONFIG.get(metric, {}).get('fmt', '.2f')
+    # if percentage:
+    #     cbar.ax.yaxis.set_major_formatter(
+    #         plt.FuncFormatter(lambda x, _: f"{x * 100:.2f}%")
+    #     )
+    # elif fmt == 'd':
+    #     cbar.ax.yaxis.set_major_formatter(
+    #         plt.FuncFormatter(lambda x, _: f"{int(x)}")
+    #     )
+    # else:
+    #     cbar.ax.yaxis.set_major_formatter(
+    #         plt.FuncFormatter(lambda x, _: f"{x:{fmt}}")
+    #     )
 
     if out_path is not None:
-        plt.savefig(out_path, format='png', bbox_inches='tight', dpi=150, facecolor='white')
+        plt.savefig(out_path, format='png', bbox_inches='tight', dpi=300, facecolor='white')
         plt.close(fig)
         return ""
     else:
         buf = io.BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=150, facecolor='white')
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, facecolor='white')
         plt.close(fig)
         buf.seek(0)
         return f"image/png;base64,{base64.b64encode(buf.getvalue()).decode()}"
