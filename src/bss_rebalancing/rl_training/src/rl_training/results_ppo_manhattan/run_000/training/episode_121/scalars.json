@@ -1,9 +1,9 @@
 {
   "episode": 121,
   "seed": 163,
-  "total_reward": -3212.9232057142863,
-  "mean_daily_failures": 1141.7142857142858,
-  "total_failures": 7992,
-  "total_invalid_actions": 1383,
+  "total_reward": -3961.240577142857,
+  "mean_daily_failures": 1343.142857142857,
+  "total_failures": 9402,
+  "total_invalid_actions": 2683,
   "epsilon": 0.0
 }
