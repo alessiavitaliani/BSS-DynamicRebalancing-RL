@@ -104,7 +104,7 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
         cell_dict: Dictionary of Cell objects (modified in place).
     """
     tbar = tqdm(total=len(cell_dict), desc="Setting adjacent cells", dynamic_ncols=True)
-    cell_size = 500
+    #cell_size = 300
 
     for cell in cell_dict.values():
         center_coords = cell.get_boundary().centroid.coords[0]
@@ -113,7 +113,8 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
             if adj_cell.get_id() != cell.get_id():
                 adj_center_coords = adj_cell.get_boundary().centroid.coords[0]
 
-                threshold = cell_size * 1.5
+                #threshold = cell_size * 1.5
+                threshold = 300
                 if haversine(center_coords, adj_center_coords, unit=Unit.METERS) < threshold:
                     lon_diff = center_coords[0] - adj_center_coords[0]
                     lat_diff = center_coords[1] - adj_center_coords[1]
