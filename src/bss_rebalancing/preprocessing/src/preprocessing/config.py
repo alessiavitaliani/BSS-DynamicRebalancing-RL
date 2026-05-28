@@ -11,14 +11,11 @@ class PreprocessingConfig:
     """Configuration for the preprocessing pipeline."""
 
     # Location settings
-    #place: List[str] = field(default_factory=lambda: ["Cambridge, Massachusetts, USA"])
     place: List[str] = field(default_factory=lambda: ["Manhattan, New York City, New York, USA"])
     network_type: str = "bike"
 
     # Path settings
-    #data_path: str = "data_cambridge/"
     data_path: str = "data_manhattan/"
-    #graph_file: str = "utils/cambridge_network.graphml"
     graph_file: str = "utils/manhattan_network.graphml"
     cell_data_path: str = "utils/cell_data.pkl"
     global_rates_path: str = "utils/global_rates.pkl"
@@ -26,7 +23,6 @@ class PreprocessingConfig:
     nearby_nodes_path: str = "utils/nearby_nodes.pkl"
 
     # Time settings
-    #year: int = 2022 # Cambridge
     year: int = 2024 # Manhattan
     months: List[int] = field(default_factory=lambda: [9, 10])
 
@@ -42,22 +38,12 @@ class PreprocessingConfig:
         default_factory=lambda: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     )
 
-    # Bounding box (north, south, east, west) for Cambridge
-    #bbox: Optional[Tuple[float, float, float, float]] = field(
-    #    default_factory=lambda: (42.370, 42.353, -71.070, -71.117)
-    #)
-    # Bounding box (north, south, east, west) for Manhattan
-    #bbox: Optional[Tuple[float, float, float, float]] = field(
-    #    default_factory=lambda: (40.8822, 40.6970, -73.9067, -74.0205)
-    #)
     # Bounding Box of a restricted area of Manhattan (Midtown-Union Square)
     bbox: Optional[Tuple[float, float, float, float]] = field(
-        default_factory=lambda: (40.7500, 40.7320, -73.9800, -74.0030)
-    )
+        default_factory=lambda: (40.7680, 40.7340, -73.9620, -74.0140))
 
     # Grid settings
     cell_size: int = 300  # meters (small area of Manhattan)
-    #cell_size: int = 1000  # meters (Manhattan)
 
     # Radius settings
     interpolation_radius: int = 500  # meters for PMF interpolation

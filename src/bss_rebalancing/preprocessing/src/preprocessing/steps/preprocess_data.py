@@ -44,9 +44,6 @@ def filter_and_map_stations(
     # Extract and merge starting and ending stations
     starting_stations = (
         trip_df
-        # Cambridge
-        #.select(['start station id', 'start station name',
-        #        'start station latitude', 'start station longitude'])
         # Manhattan 
         .select(['start_station_id', 'start_station_name', 'start_lat', 'start_lng'])
         .unique()
@@ -60,9 +57,6 @@ def filter_and_map_stations(
 
     ending_stations = (
         trip_df
-        # Cambridge
-        #.select(['end station id', 'end station name',
-        #        'end station latitude', 'end station longitude'])
         # Manhattan
         .select(['end_station_id', 'end_station_name', 'end_lat', 'end_lng'])
         .unique()
@@ -164,26 +158,18 @@ def filter_trips_and_compute_timeslots(
     filtered_trips = (
     trip_df
        .filter(
-           # Cambridge
-           # pl.col("start station id").is_in(valid_station_ids) |
-           # pl.col("end station id").is_in(valid_station_ids)
            # Manhattan
            pl.col("start_station_id").is_in(valid_station_ids) |
            pl.col("end_station_id").is_in(valid_station_ids)
         )
         .with_columns([
             # Replace invalid stations with external node marker (10000)
-            # Cambridge
-            #pl.when(pl.col("start station id").is_in(valid_station_ids))
-            # .then(pl.col("start station id"))
             # Manhattan 
             pl.when(pl.col("start_station_id").is_in(valid_station_ids))
               .then(pl.col("start_station_id"))
               .otherwise(10000)
               .alias("start station id"),
-            # Cambridge
-            #pl.when(pl.col("end station id").is_in(valid_station_ids))
-            #  .then(pl.col("end station id"))
+
             # Manhattan
             pl.when(pl.col("end_station_id").is_in(valid_station_ids))
               .then(pl.col("end_station_id"))
@@ -195,15 +181,11 @@ def filter_trips_and_compute_timeslots(
             # with_columns() against the input state, so overwriting "starttime"
             # here does not affect the "startday" coalesce below.
             pl.coalesce([
-                # Cambridge
-                #pl.col("starttime").str.to_datetime(format=fmt, strict=False)
                 # Manhattan
                 pl.col("started_at").str.to_datetime(format=fmt, strict=False)
                 for fmt in datetime_formats
             ]).alias("starttime"),
             pl.coalesce([
-                # Cambridge
-                #pl.col("starttime").str.to_date(format=fmt, strict=False)
                 # Manhattan
                 pl.col("started_at").str.to_date(format=fmt, strict=False)
                 for fmt in datetime_formats
@@ -388,18 +370,12 @@ def run(config: PreprocessingConfig) -> None:
     # Load trip data
     trip_df = pl.DataFrame()
     for month in config.months:
-        # Cambridge
-        #path = os.path.join(
-        #    config.trips_path,
-        #    f"{config.year}{str(month).zfill(2)}-bluebikes-tripdata.csv"
-        #)
         # Manhattan
         path = os.path.join(
             config.trips_path,
-            f"{config.year}{str(month).zfill(2)}-citibike-tripdata.csv" # Cambiato da bluebikes a citibike
+            f"{config.year}{str(month).zfill(2)}-citibike-tripdata.csv" 
         )
         if os.path.isfile(path):
-            #monthly_data = pl.read_csv(path) # Cambridge
             monthly_data = pl.read_csv(path, infer_schema_length=0, dtypes={"start_station_id": pl.Utf8, "end_station_id": pl.Utf8}) # Manhattan
             trip_df = pl.concat([trip_df, monthly_data]) if trip_df.height > 0 else monthly_data
         else:

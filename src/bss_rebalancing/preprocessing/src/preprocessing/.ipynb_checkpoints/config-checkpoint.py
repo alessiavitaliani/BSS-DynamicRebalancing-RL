@@ -42,18 +42,13 @@ class PreprocessingConfig:
         default_factory=lambda: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     )
 
-    # Bounding box (north, south, east, west) for Cambridge
-    #bbox: Optional[Tuple[float, float, float, float]] = field(
-    #    default_factory=lambda: (42.370, 42.353, -71.070, -71.117)
-    #)
     # Bounding box (north, south, east, west) for Manhattan
     bbox: Optional[Tuple[float, float, float, float]] = field(
-        default_factory=lambda: (40.8822, 40.6970, -73.9067, -74.0205)
+        default_factory=lambda: (40.7680, 40.7340, -73.9620, -74.0140)
     )
 
     # Grid settings
     cell_size: int = 300  # meters (small area of Manhattan)
-    #cell_size: int = 500  # meters (Manhattan)
 
     # Radius settings
     interpolation_radius: int = 500  # meters for PMF interpolation

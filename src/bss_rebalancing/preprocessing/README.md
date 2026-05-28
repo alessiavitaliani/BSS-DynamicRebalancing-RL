@@ -58,13 +58,13 @@ bss-preprocess [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--data-path` | str | `data/` | Path to data directory |
-| `--year` | int | `2022` | Year of data to process |
+| `--year` | int | `2024` | Year of data to process |
 | `--months` | str | `9,10` | Comma-separated months |
 | `--cell-size` | int | `300` | Grid cell size in meters |
 | `--steps` | str | all | Specific steps to run (comma-separated) |
 | `--skip` | str | none | Steps to skip (comma-separated) |
 | `--plot` | str | none | Plot mode: `graph`, `grid`, `grid-numbered` |
-| `--bbox` | str | `[42.370, 42.353, -71.070, -71.117]` | Bounding box [N,S,E,W] |
+| `--bbox` | str | `[40.7680, 40.7340, -73.9620, -74.0140]` | Bounding box [N,S,E,W] |
 | `--verbose` / `-v` | flag | false | Enable verbose output |
 
 ### Pipeline Steps
@@ -91,7 +91,7 @@ Available steps for `--steps` or `--skip`:
 bss-preprocess --data-path data/
 
 # Process specific year and months
-bss-preprocess --data-path data/ --year 2022 --months 9,10,11
+bss-preprocess --data-path data/ --year 2024 --months 9,10,11
 
 # Custom cell size
 bss-preprocess --data-path data/ --cell-size 500
@@ -128,10 +128,10 @@ Plots are saved to `data/plots/`.
 ### Advanced Configuration
 
 ```bash
-# Custom bounding box (Cambridge area)
+# Custom bounding box (Manhattan area)
 bss-preprocess \
     --data-path data/ \
-    --bbox "[42.400, 42.350, -71.050, -71.150]" \
+    --bbox "[40.7680, 40.7340, -73.9620, -74.0140]" \
     --cell-size 400
 
 # Verbose output for debugging
@@ -140,7 +140,7 @@ bss-preprocess --data-path data/ --verbose
 # Process entire year
 bss-preprocess \
     --data-path data/ \
-    --year 2022 \
+    --year 2024 \
     --months 1,2,3,4,5,6,7,8,9,10,11,12
 ```
 
@@ -153,8 +153,8 @@ After running the pipeline, your data directory will contain:
 ```
 data/
 ├── trips/                                  # Downloaded trip data
-│   ├── 202209-bluebikes-tripdata.csv
-│   └── 202210-bluebikes-tripdata.csv
+│   ├── 202409-citibike-tripdata.csv
+│   └── 202410-citibike-tripdata.csv
 │
 ├── rates/                                  # Poisson rate matrices
 │   └── 09-10/                              # Month range
@@ -173,7 +173,7 @@ data/
 │       └── ...
 │
 ├── utils/                                  # Processed utilities
-│   ├── cambridge_network.graphml           # Street network graph
+│   ├── manhattan_network.graphml           # Street network graph
 │   ├── cell_data.pkl                       # Spatial grid cells
 │   ├── distance_matrix.csv                 # Travel time matrix
 │   ├── ev_consumption_matrix.csv           # Travel time matrix
@@ -191,16 +191,16 @@ data/
 
 ## Data Sources
 
-### BlueBikes Trip Data
-- **Source**: [BlueBikes System Data](https://www.bluebikes.com/system-data)
+### CitiBike Trip Data
+- **Source**: [CitiBike System Data](https://citibikenyc.com/system-data)
 - **Format**: CSV files with trip records
 - **Fields**: start/end stations, timestamps, coordinates
-- **Coverage**: Cambridge, MA metropolitan area
+- **Coverage**: Manhattan, New York City
 
 ### OpenStreetMap Network
 - **Source**: [OSM via OSMnx](https://osmnx.readthedocs.io/)
 - **Type**: Bike-friendly street network
-- **Area**: Cambridge, MA (configurable bounding box)
+- **Area**: Manhattan, New York City (configurable bounding box)
 
 ### TomTom Traffic Data
 - **Purpose**: Time-dependent travel speeds
@@ -217,12 +217,12 @@ Default configuration in `config.py`:
 @dataclass
 class PreprocessingConfig:
     # Location
-    place = ["Cambridge, Massachusetts, USA"]
+    place = ["Manhattan, New York City, New York, USA"]
     network_type = "bike"
-    bbox = (42.370, 42.353, -71.070, -71.117)  # N, S, E, W
+    bbox = (40.7680, 40.7340, -73.9620, -74.0140)  # N, S, E, W
 
     # Time
-    year = 2022
+    year = 2024
     months = [9, 10]  # September, October
     days_of_week = ["Monday", ..., "Sunday"]
     num_time_slots = 8  # 3-hour slots
@@ -309,7 +309,7 @@ If graph initialization fails:
 
 ```bash
 # Try with a larger bounding box
-bss-preprocess --data-path data/ --bbox "[42.400, 42.300, -71.000, -71.200]"
+bss-preprocess --data-path data/ --bbox "[40.7780, 40.7310, -73.9570, -74.0150]"
 ```
 
 ---

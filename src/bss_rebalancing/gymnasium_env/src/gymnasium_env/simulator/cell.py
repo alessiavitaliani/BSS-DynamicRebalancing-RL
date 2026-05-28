@@ -57,9 +57,9 @@ class Cell:
             'total_departures': 0,
             'total_rebalanced': 0,
             'failures': 0,
-            'total_demand': 0,      # <--- Assicurati che ci sia
-            'pickups': 0,           # <--- Aggiunta per sicurezza
-            'dropoffs': 0,          # <--- Aggiunta per sicurezza
+            'total_demand': 0,      
+            'pickups': 0,           
+            'dropoffs': 0,          
             # Derived quality metrics (recomputed each step)
             'failure_rate': 0.0,
             # Critic score + history
