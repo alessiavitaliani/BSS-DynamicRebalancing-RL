@@ -627,7 +627,7 @@ def train_dqn(
 
 def train_ppo(
     env: gymnasium.Env,
-    agent: DQNAgent,
+    agent: PPOAgent,
     buffer: PPOBuffer,
     episode: int,
     device: torch.device,
@@ -716,6 +716,7 @@ def train_ppo(
             'critic_sum': 0.0,
             'eligibility_sum': 0.0,
             'bikes_sum': 0.0,
+            'bikes_dead_sum': 0.0
         }
         for cell_id in cell_dict.keys()
     }
@@ -751,7 +752,7 @@ def train_ppo(
             stats['critic_sum'] += cell.get_critic_score()
             stats['eligibility_sum'] += cell.get_eligibility_score()
             stats['bikes_sum'] += cell.get_total_bikes()
-            stats['bikes_dead_sum'] = cell.get_dead_bikes()
+            stats['bikes_dead_sum'] += cell.get_dead_bikes()
 
         # Create next state (S')
         next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
@@ -772,9 +773,10 @@ def train_ppo(
 
         # Record step metrics
         action_per_step.append(action)
-        if action not in reward_tracking_per_action:
-            reward_tracking_per_action[action] = []
-        reward_tracking_per_action[action].append(reward)
+        #if action not in reward_tracking_per_action:
+        #    reward_tracking_per_action[action] = []
+        #reward_tracking_per_action[action].append(reward)
+        reward_tracking_per_action.setdefault(action, []).append(reward)
         
         global_critic_scores.append(info['global_critic_score'])
         total_reward_per_timeslot += reward
@@ -819,7 +821,7 @@ def train_ppo(
 
         # Move to next state
         state = next_state
-        del single_state
+        #del single_state
 
     # ============================================================================
     # End of Episode: PPO Update
@@ -828,12 +830,13 @@ def train_ppo(
     if len(buffer) > 0:
         # Bootstrap value for the very last state if the episode wasn't 'done' 
         # (useful for truncated episodes in BSS)
-        last_value = 0 
-        if not timeslot_terminated:
+        last_value = 0.0 
+        # if not timeslot_terminated:
+        if not done:
             _, _, last_value_tensor = agent.select_action(single_state)
             last_value = last_value_tensor.item()
         # Perform the PPO update using the collected rollout
-        pg_loss, v_loss, ent_loss = agent.update(buffer)
+        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
         
         # CRITICAL: Clear the buffer after the update
         buffer.clear()
@@ -871,7 +874,7 @@ def train_ppo(
     return {
         "rewards_per_timeslot": rewards,
         "failures_per_timeslot": failures,
-        "total_invalid_actions": info["total_invalid_actions"],
+        "total_invalid_actions": info.get("total_invalid_actions", 0),
         "state_values_per_timeslot": state_values, # Formerly q_values / epsilons
         "action_per_step": action_per_step,
         "global_critic_scores": global_critic_scores,
@@ -1524,9 +1527,9 @@ def main():
                 total_failures=sum(training_dict['failures_per_timeslot']),
                 mean_daily_failures=sum(training_dict['failures_per_timeslot']) / num_days,
                 #q_values_per_timeslot=training_dict['q_values_per_timeslot'],
-                q_values_per_timeslot=training_dict.get('q_values_per_timeslot', []),
+                state_values_per_timeslot=training_dict.get('state_values_per_timeslot', []),
                 #mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
-                mean_q_values=float(np.mean(training_dict.get('q_values_per_timeslot', []))) if training_dict.get('q_values_per_timeslot') else 0.0,
+                mean_state_values=float(np.mean(training_dict.get('state_values_per_timeslot', []))) if training_dict.get('state_values_per_timeslot') else 0.0,
                 deployed_bikes=training_dict['deployed_bikes'],
                 truck_load=training_dict['truck_load'],
                 depot_load=training_dict['depot_load'],
@@ -1537,6 +1540,9 @@ def main():
                 global_critic_scores=training_dict['global_critic_scores'],
                 cell_subgraph=training_dict['cell_subgraph'],
                 traveling_bikes=training_dict['traveling_bikes'],
+                policy_loss=training_dict['policy_loss'],
+                value_loss=training_dict['value_loss'],
+                entropy=training_dict['entropy']
             )
 
             # Save training episode results
@@ -1653,6 +1659,14 @@ def main():
         logger.info("Training completed successfully")
         tbar.close()
         env.close()
+        
+        # Save closure to avoid leaked semaphore
+        gc.collect()
+        try:
+            from joblib.executor import get_memmapping_executor
+            get_memmapping_executor().shutdown(kill=True)
+        except Exception:
+            pass
     except KeyboardInterrupt:
         print("\nTraining interrupted.")
         if pending_val is not None and pending_val.proc.poll() is None:
@@ -1668,7 +1682,10 @@ def main():
         raise
 
     print(f"\nTraining {run_id} completed.")
-    print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
+    if best_val_score != float("inf"):
+        print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
+    else:
+        print("Best validation score: N/A (Disable validation in this run)")
 
 if __name__ == "__main__":
     print("1. Entered in the main section")

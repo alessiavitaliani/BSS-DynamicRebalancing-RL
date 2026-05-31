@@ -35,7 +35,11 @@ class EpisodeResults:
     total_failures: int = 0
     total_invalid_actions: int = 0
     mean_q_values: float = 0.0
+    mean_state_values: float = 0.0
     epsilon: float = 0.0
+    policy_loss: float = 0.0
+    value_loss: float = 0.0
+    entropy: float = 0.0
 
     # Time-series data (per timeslot)
     rewards_per_timeslot: List[float] = field(default_factory=list)
@@ -48,6 +52,7 @@ class EpisodeResults:
     outside_system_bikes: List[int] = field(default_factory=list)
     traveling_bikes: List[int] = field(default_factory=list)
     q_values_per_timeslot: List[np.ndarray] = field(default_factory=list)
+    state_values_per_timeslot: List[float] = field(default_factory=list)
 
     # Action-level data (per step)
     action_per_step: List[int] = field(default_factory=list)
@@ -195,6 +200,11 @@ class ResultsManager:
             'total_failures': results.total_failures,
             'total_invalid_actions': results.total_invalid_actions,
             'epsilon': results.epsilon,
+            'mean_q_values': results.mean_q_values,
+            'mean_state_values': results.mean_state_values,
+            'policy_loss': results.policy_loss,
+            'value_loss': results.value_loss,
+            'entropy': results.entropy,
         }
         with open(episode_dir / 'scalars.json', 'w') as f:
             json.dump(scalars, f, indent=2, cls=_NumpyEncoder)
@@ -220,6 +230,7 @@ class ResultsManager:
             'reward_tracking_per_action': results.reward_tracking_per_action,
             'global_critic_scores': results.global_critic_scores,
             'q_values': results.q_values_per_timeslot,
+            'state_values': results.state_values_per_timeslot,
         }
         with open(episode_dir / 'step_data.pkl.gz', 'wb') as f:
             pickle.dump(step_data, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -242,6 +253,11 @@ class ResultsManager:
             'total_failures': results.total_failures,
             'total_invalid_actions': results.total_invalid_actions,
             'epsilon': results.epsilon,
+            'mean_q_values': results.mean_q_values,
+            'mean_state_values': results.mean_state_values,
+            'policy_loss': results.policy_loss,
+            'value_loss': results.value_loss,
+            'entropy': results.entropy,
         }
 
         if results.mode == 'train':
@@ -321,6 +337,9 @@ class ResultsManager:
             reward_tracking_per_action=step_data['reward_tracking_per_action'],
             global_critic_scores=step_data['global_critic_scores'],
             q_values_per_timeslot=step_data['q_values'],
+            state_values_per_timeslot=step_data['state_values'],
+            mean_q_values=step_data['mean_q_values'],
+            mean_state_values=step_data['mean_state_values'],
             cell_subgraph=cell_subgraph,
         )
 
@@ -469,6 +488,11 @@ class ResultsManager:
             total_failures=results.total_failures,
             total_invalid_actions=results.total_invalid_actions,
             epsilon=results.epsilon,
+            mean_q_values=results.mean_q_values,
+            mean_state_values=results.mean_state_values,
+            policy_loss=results.policy_loss,
+            value_loss=results.value_loss,
+            entropy=results.entropy,
 
             # Ensure consistent lengths
             rewards_per_timeslot=pad_to_length(results.rewards_per_timeslot, expected_length, 0.0),
@@ -481,6 +505,7 @@ class ResultsManager:
             outside_system_bikes=pad_to_length(results.outside_system_bikes, expected_length, 0),
             traveling_bikes=pad_to_length(results.traveling_bikes, expected_length, 0),
             q_values_per_timeslot=results.q_values_per_timeslot,
+            state_values_per_timeslot=results.state_values_per_timeslot,
 
             # Step-level data (no length requirements)
             action_per_step=results.action_per_step,

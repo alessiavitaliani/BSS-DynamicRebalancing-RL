@@ -55,7 +55,7 @@ class PPOAgent:
 
         return action.item(), logprob, value
 
-    def update(self, buffer):
+    def update(self, buffer, last_value=0.0):
         """
         Performs the PPO update using GAE and Clipped Objective.
         """
@@ -79,7 +79,7 @@ class PPOAgent:
             for t in reversed(range(len(rewards))):
                 if t == len(rewards) - 1:
                     nextnonterminal = 1.0 - dones[t]
-                    nextvalues = 0 # End of rollout bootstrap
+                    nextvalues = last_value # End of rollout bootstrap
                 else:
                     nextnonterminal = 1.0 - dones[t]
                     nextvalues = values[t+1]
