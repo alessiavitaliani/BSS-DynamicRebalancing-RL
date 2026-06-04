@@ -73,7 +73,7 @@ params = {
     # PPO params
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
-    "ent_coef": 0.01,                               # Entropy coefficient
+    "ent_coef": 0.02,                               # Entropy coefficient
     "vf_coef": 0.05,                                # Value coefficient
     "update_epochs": 10,                            # How many times buffer is processed at every update 
 
@@ -1663,8 +1663,15 @@ def main():
         # Save closure to avoid leaked semaphore
         gc.collect()
         try:
-            from joblib.executor import get_memmapping_executor
-            get_memmapping_executor().shutdown(kill=True)
+            from loky import get_reusable_executor
+            get_reusable_executor().shutdown(wait=True, kill=True)
+        except Exception:
+            pass
+            
+        try:
+            for p in mp.active_children():
+                p.terminate()
+                p.join()
         except Exception:
             pass
     except KeyboardInterrupt:
@@ -1685,7 +1692,7 @@ def main():
     if best_val_score != float("inf"):
         print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
     else:
-        print("Best validation score: N/A (Disable validation in this run)")
+        print("Best validation score: N/A (Disabled validation in this run)")
 
 if __name__ == "__main__":
     print("1. Entered in the main section")

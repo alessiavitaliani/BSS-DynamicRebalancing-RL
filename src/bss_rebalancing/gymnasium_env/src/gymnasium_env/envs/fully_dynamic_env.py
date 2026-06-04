@@ -117,13 +117,13 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.1
+    BASE_COST = -0.05
 
     # Invalid action penalty
-    INVALID_ACTION = -1.0
+    INVALID_ACTION = -0.2
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.6
+    LOOP_PENALTY = -0.05
 
     # Drop bike rewards
     DROP_BASE = 0.01
@@ -147,13 +147,13 @@ class RewardComponents:
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
     ELIGIBILITY_REVISIT_PENALTY = -0.2
-    ELIGIBILITY_EXPLORATION_BONUS = 0.3
+    ELIGIBILITY_EXPLORATION_BONUS = 0.6
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.1
-    STAY_IN_CRITICAL = -1.0
-    STAY_NO_CRITIC = 0.0
+    STAY_BASE = -0.3
+    STAY_IN_CRITICAL = -1.5
+    STAY_NO_CRITIC = -0.15
 
     # Other
     SURPLUS_THRESHOLD = -0.67
@@ -713,7 +713,7 @@ class FullyDynamicEnv(gym.Env):
                 EnvDefaults.TIMESLOT_DURATION_SECONDS,
                 EnvDefaults.DEFAULT_DAY,
                 self._result_queue,
-                True
+                False
             ),
             daemon=True,  # dies if main process dies
         )
@@ -999,7 +999,7 @@ class FullyDynamicEnv(gym.Env):
         self.observation_space.seed(seed)
 
     def close(self):
-        if self._bg_process is not None:
+        if hasattr(self, "_bg_process") and self._bg_process is not None:
             if self._bg_process.is_alive():
                 self._bg_process.terminate()
             self._bg_process.join(timeout=3)
@@ -1009,6 +1009,13 @@ class FullyDynamicEnv(gym.Env):
         if self._result_queue is not None:
             self._result_queue.close()
             self._result_queue.join_thread()
+            
+        if hasattr(self, "_result_queue"):
+            while not self._result_queue.empty():
+                try:
+                    self._result_queue.get_nowait()
+                except Exception:
+                    break
 
         super().close()
 

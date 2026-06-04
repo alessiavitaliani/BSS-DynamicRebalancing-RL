@@ -390,7 +390,7 @@ def load_best_model_metadata(run_dir: Path) -> Optional[Dict]:
 
 def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     """
-    Load the full Cambridge road network graph.
+    Load the full Manhattan road network graph.
 
     Args:
         data_path: Path to the data directory (parent of 'utils/')
@@ -398,7 +398,7 @@ def load_base_graph(data_path: Path) -> Optional[nx.MultiDiGraph]:
     Returns:
         NetworkX MultiDiGraph or None if not found
     """
-    graph_path = data_path / 'utils' / 'cambridge_network.graphml'
+    graph_path = data_path / 'utils' / 'manhattan_network.graphml'
     if not graph_path.exists():
         return None
     return ox.load_graphml(graph_path)
