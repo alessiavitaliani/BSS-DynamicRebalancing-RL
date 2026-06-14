@@ -59,9 +59,9 @@ if mp.current_process().name == "MainProcess":
 params = {
     "seed": int(42),                                     # Random seed for reproducibility
     "num_episodes": 140,                            # Total number of training episodes
-    "batch_size": int(64),                               # Batch size for replay buffer sampling
+    "batch_size": int(64),                          # Batch size for replay buffer sampling
     "replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
-    "gamma": 0.95,                                  # Discount factor
+    "gamma": 0.99,                                  # Discount factor
     "epsilon_start": 1.0,                           # Starting exploration rate
     "epsilon_delta": 0.05,                          # Epsilon decay rate
     "epsilon_end": 0.01,                            # Minimum exploration rate
@@ -78,11 +78,11 @@ params = {
     "update_epochs": 10,                            # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
-    "maximum_number_of_bikes": 500,         # Maximum number of bikes in the system
+    "maximum_number_of_bikes": 1500,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 1,                # ID (cell) of the depot position
+    "depot_position_id": 1,                 # ID (cell) of the depot position
     "initial_cell_id": 18,                  # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
@@ -687,6 +687,8 @@ def train_ppo(
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
     distance_lookup = info['distance_lookup']
+    print(f"\n[DEBUG] Numero di celle caricate dall'ambiente: {len(cell_dict)}")
+    print(f"[DEBUG] Chiavi in cell_dict: {list(cell_dict.keys())}\n")
 
     # Build initial graph from cells
     cell_graph = build_cell_graph_from_cells(
@@ -694,6 +696,12 @@ def train_ppo(
         nodes_dict=nodes_dict,
         distance_lookup=distance_lookup
     )
+    print(f"[DEBUG] Nodi creati nel cell_graph: {len(cell_graph.nodes)}")
+    print(f"[DEBUG] Archi (collegamenti) nel cell_graph: {len(cell_graph.edges)}")
+    print("\n--- ISPEZIONE INTERNA DELLE CELLE ---")
+    for cid, cell in cell_dict.items():
+        print(f"Cella ID: {cid} -> Center Node: {cell.get_center_node()} | Adjacency List: {list(cell.get_adjacent_cells().values())}")
+    print("-------------------------------------\n")
 
     # Define which metrics to use as GNN features
     gnn_features = [

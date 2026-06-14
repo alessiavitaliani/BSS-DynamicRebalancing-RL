@@ -351,6 +351,8 @@ def create_graph_heatmap_plot(
                  else f"{int(display_val)}" if fmt == 'd'
         else f"{display_val:{fmt}}")
         cell_data.append((b, display_val, label))
+    
+    print(f"DEBUG: Ho trovato {len(cell_geoms)} rombi da disegnare.")
 
     if not cell_geoms:
         plt.close(fig)
@@ -389,12 +391,15 @@ def create_graph_heatmap_plot(
     # Re-apply zorder on labels after gdf.plot() draws over them
     for txt in ax.texts:
         txt.set_zorder(4)
+        
+    ax.set_aspect('equal', adjustable='datalim')
 
     # Extend view to fit all cells
-    total_bounds = cell_gdf.total_bounds
-    pad = 0.0001
-    ax.set_xlim(total_bounds[0] - pad, total_bounds[2] + pad)
-    ax.set_ylim(total_bounds[1] - pad, total_bounds[3] + pad)
+    #total_bounds = cell_gdf.total_bounds
+    #pad = 0.0001
+    #ax.set_xlim(total_bounds[0] - pad, total_bounds[2] + pad)
+    #ax.set_ylim(total_bounds[1] - pad, total_bounds[3] + pad)
+    ax.autoscale(enable=True, axis='both', tight=True)
 
     # # Colorbar
     # sm = cm.ScalarMappable(cmap=cmap, norm=norm)

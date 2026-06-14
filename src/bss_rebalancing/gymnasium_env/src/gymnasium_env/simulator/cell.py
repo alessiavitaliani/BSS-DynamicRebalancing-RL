@@ -89,11 +89,21 @@ class Cell:
         #if nearest_node not in self._nodes:
         #    raise ValueError("Center node not found in cell nodes")
         #self._center_node = nearest_node 
-        if hasattr(self, 'nodes') and len(self.nodes) > 0:
-            self.center_node = list(self.nodes)[0]
+        #if hasattr(self, 'nodes') and len(self.nodes) > 0:
+        #    self.center_node = list(self.nodes)[0]
+        #else:
+        #    self.center_node = None
+        #    print(f"Warning: Cell at {getattr(self, 'center_coords', 'unknown')} has no nodes.")
+        # 2. Controllo di sicurezza per i nodi sui confini delle celle
+        if nearest_node in self._nodes:
+            self._center_node = nearest_node
+        elif self._nodes:
+            # Se il più vicino in assoluto appartiene a un'altra cella, 
+            # prendiamo come centro il primo nodo effettivamente contenuto in questa cella
+            self._center_node = self._nodes[0]
         else:
-            self.center_node = None
-            print(f"Warning: Cell at {getattr(self, 'center_coords', 'unknown')} has no nodes.")
+            self._center_node = 0
+            print(f"Warning: Cell {self._id} has no nodes.")
 
     # ── Episode reset ───────────────────────────────────────────────────────────
 

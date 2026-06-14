@@ -127,12 +127,12 @@ class RewardComponents:
 
     # Drop bike rewards
     DROP_BASE = 0.01
-    DROP_REBALANCED_CRITICAL = 2.0
+    DROP_REBALANCED_CRITICAL = 4.0
     DROP_IN_CRITICAL = 1.0
     DROP_IN_SURPLUS = -0.5
 
     # Pick-up rewards
-    PICKUP_FROM_CRITICAL = -0.5
+    PICKUP_FROM_CRITICAL = -1.5
     PICKUP_UNBALANCED_CELL = -2.0
     PICKUP_FROM_SURPLUS = 0.2
 
@@ -152,7 +152,7 @@ class RewardComponents:
 
     # Stay penalties
     STAY_BASE = -0.3
-    STAY_IN_CRITICAL = -1.5
+    STAY_IN_CRITICAL = -3
     STAY_NO_CRITIC = -0.15
 
     # Other
@@ -715,7 +715,7 @@ class FullyDynamicEnv(gym.Env):
                 self._result_queue,
                 False
             ),
-            daemon=True,  # dies if main process dies
+            daemon=False,  # dies if main process dies
         )
         if self._bg_process is not None:
             self._bg_process.start()
