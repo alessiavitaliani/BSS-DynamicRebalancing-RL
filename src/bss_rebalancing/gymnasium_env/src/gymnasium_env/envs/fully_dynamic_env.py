@@ -77,7 +77,7 @@ class EnvDefaults:
     NET_FLOW_BASED_REPOSITIONING = False
 
     # Truck parameters
-    MAX_TRUCK_LOAD = 30
+    MAX_TRUCK_LOAD = 50
     INITIAL_TRUCK_BIKES = 15
 
     # Time parameters
@@ -123,7 +123,7 @@ class RewardComponents:
     INVALID_ACTION = -0.2
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.05
+    LOOP_PENALTY = -0.25
 
     # Drop bike rewards
     DROP_BASE = 0.01
@@ -151,14 +151,14 @@ class RewardComponents:
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.3
-    STAY_IN_CRITICAL = -3
+    STAY_BASE = -0.2
+    STAY_IN_CRITICAL = -0.8
     STAY_NO_CRITIC = -0.15
 
     # Other
     SURPLUS_THRESHOLD = -0.67
     DEPLOY_WEIGHT = 0.02
-    DEPOT_WEIGHT = 0.02
+    DEPOT_WEIGHT = 0.15
 
 
 # =============================================================================
@@ -689,6 +689,8 @@ class FullyDynamicEnv(gym.Env):
         The result is placed in self._result_queue when ready.
         Idempotent: does nothing if a process is already running.
         """
+        return
+    
         if self._bg_process is not None and self._bg_process.is_alive():
             return  # Already computing, nothing to do
 
@@ -715,7 +717,7 @@ class FullyDynamicEnv(gym.Env):
                 self._result_queue,
                 False
             ),
-            daemon=False,  # dies if main process dies
+            daemon=True,  # dies if main process dies
         )
         if self._bg_process is not None:
             self._bg_process.start()

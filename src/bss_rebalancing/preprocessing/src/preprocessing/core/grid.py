@@ -103,41 +103,51 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
     Parameters:
         cell_dict: Dictionary of Cell objects (modified in place).
     """
+def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
+    """
+    Set the adjacent cells for each cell in the dictionary using coordinate-based direction.
+    """
     tbar = tqdm(total=len(cell_dict), desc="Setting adjacent cells", dynamic_ncols=True)
+    
+    # 1. AUMENTO SOGLIA: Se hai poche celle (es. 22), 
+    # la distanza tra i centri è di diversi km. 5000m assicura la connessione.
     cell_size = 300
+    threshold = cell_size*15 
 
-    for cell in cell_dict.values():
-        center_coords = cell.get_boundary().centroid.coords[0]
-        cell_lat_lon = (center_coords[1], center_coords[0])
+    cells = list(cell_dict.values())
 
-        for adj_cell in cell_dict.values():
-            if adj_cell.get_id() != cell.get_id():
-                adj_center_coords = adj_cell.get_boundary().centroid.coords[0]
-                adj_lat_lon = (adj_center_coords[1], adj_center_coords[0])
-
-                threshold = cell_size * 1.5
-                if haversine(cell_lat_lon, adj_lat_lon, unit=Unit.METERS) < threshold:
-                    lon_diff = center_coords[0] - adj_center_coords[0]
-                    lat_diff = center_coords[1] - adj_center_coords[1]
-
-                    cell_adj_cells = cell.get_adjacent_cells()
-                    adj_cell_adj_cells = adj_cell.get_adjacent_cells()
-
-                    if lon_diff > 0 and lat_diff > 0:
-                        cell_adj_cells["left"] = adj_cell.get_id()
-                        adj_cell_adj_cells["right"] = cell.get_id()
-
-                    if lon_diff < 0 and lat_diff < 0:
-                        cell_adj_cells["right"] = adj_cell.get_id()
-                        adj_cell_adj_cells["left"] = cell.get_id()
-
-                    if lon_diff > 0 > lat_diff:
-                        cell_adj_cells["up"] = adj_cell.get_id()
-                        adj_cell_adj_cells["down"] = cell.get_id()
-
-                    if lon_diff < 0 < lat_diff:
-                        cell_adj_cells["down"] = adj_cell.get_id()
-                        adj_cell_adj_cells["up"] = cell.get_id()
+    for cell in cells:
+        center = cell.get_boundary().centroid.coords[0]
+        # Troviamo la distanza verso OGNI altra cella
+        distances = []
+        for adj_cell in cells:
+            if adj_cell.get_id() == cell.get_id():
+                continue
+            
+            adj_center = adj_cell.get_boundary().centroid.coords[0]
+            # Calcolo distanza in metri
+            dist = haversine((center[1], center[0]), (adj_center[1], adj_center[0]), unit=Unit.METERS)
+            distances.append((dist, adj_cell))
+        
+        # Ordiniamo per distanza (dal più vicino al più lontano)
+        distances.sort(key=lambda x: x[0])
+        
+        # Colleghiamo le 2 celle più vicine in assoluto, a prescindere dalla distanza
+        # Questo garantisce che il grafo sia sempre connesso
+        for _, adj_cell in distances[:1]: 
+            adj_center = adj_cell.get_boundary().centroid.coords[0]
+            lon_diff = adj_center[0] - center[0]
+            lat_diff = adj_center[1] - center[1]
+            
+            cell_adj = cell.get_adjacent_cells()
+            
+            # Assegniamo la direzione in base a dove si trova il vicino
+            if abs(lat_diff) > abs(lon_diff):
+                direction = "up" if lat_diff > 0 else "down"
+            else:
+                direction = "right" if lon_diff > 0 else "left"
+            
+            cell_adj[direction] = adj_cell.get_id()
 
         tbar.update(1)
 
