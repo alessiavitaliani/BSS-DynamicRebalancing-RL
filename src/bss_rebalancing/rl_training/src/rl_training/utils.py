@@ -171,8 +171,19 @@ def convert_graph_to_data(
             for n in nodes
         ]
         node_feature_tensors.append(
-            torch.tensor(feature_values, dtype=torch.float32).unsqueeze(-1)
-        )
+            torch.tensor(feature_values, dtype=torch.float32).unsqueeze(-1))
+        
+        #vals = torch.tensor(feature_values, dtype=torch.float32) 
+        # Normalization
+        #min_val = vals.min()
+        #max_val = vals.max()
+        #if max_val - min_val > 0:
+        #    vals = (vals - min_val) / (max_val - min_val)
+        #else:
+        #    vals = vals - min_val 
+
+        #node_feature_tensors.append(vals.unsqueeze(-1))
+        
 
     data.x = torch.cat(node_feature_tensors, dim=-1)
 

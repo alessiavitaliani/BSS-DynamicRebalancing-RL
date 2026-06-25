@@ -351,8 +351,6 @@ def create_graph_heatmap_plot(
                  else f"{int(display_val)}" if fmt == 'd'
         else f"{display_val:{fmt}}")
         cell_data.append((b, display_val, label))
-    
-    print(f"DEBUG: Ho trovato {len(cell_geoms)} rombi da disegnare.")
 
     if not cell_geoms:
         plt.close(fig)

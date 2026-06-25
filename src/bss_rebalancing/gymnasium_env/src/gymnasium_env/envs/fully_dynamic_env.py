@@ -71,7 +71,7 @@ class EnvDefaults:
     """Default configuration values for the environment."""
 
     # Bike fleet parameters
-    MAX_BIKES = 1000
+    MAX_BIKES = 1500
     MIN_BIKES_PER_CELL = 5
     BASE_REPOSITIONING = True
     NET_FLOW_BASED_REPOSITIONING = False
@@ -117,24 +117,24 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.05
+    BASE_COST = -0.01
 
     # Invalid action penalty
-    INVALID_ACTION = -0.2
+    INVALID_ACTION = -0.5
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.25
+    LOOP_PENALTY = -0.3
 
     # Drop bike rewards
     DROP_BASE = 0.01
-    DROP_REBALANCED_CRITICAL = 4.0
+    DROP_REBALANCED_CRITICAL = 2.0
     DROP_IN_CRITICAL = 1.0
-    DROP_IN_SURPLUS = -0.5
+    DROP_IN_SURPLUS = -0.3
 
     # Pick-up rewards
-    PICKUP_FROM_CRITICAL = -1.5
-    PICKUP_UNBALANCED_CELL = -2.0
-    PICKUP_FROM_SURPLUS = 0.2
+    PICKUP_FROM_CRITICAL = -0.1
+    PICKUP_UNBALANCED_CELL = -0.3
+    PICKUP_FROM_SURPLUS = 0.6
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1
@@ -144,15 +144,15 @@ class RewardComponents:
     CHARGE_LOW_BATTERY_THRESHOLD = 0.8
 
     # Eligibility penalties
-    ELIGIBILITY_HIGH_THRESHOLD = 0.7
-    ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = -0.2
-    ELIGIBILITY_EXPLORATION_BONUS = 0.6
-    ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
+    ELIGIBILITY_HIGH_THRESHOLD = 0.5
+    ELIGIBILITY_LOW_THRESHOLD = 0.3
+    ELIGIBILITY_REVISIT_PENALTY = -0.3
+    ELIGIBILITY_EXPLORATION_BONUS = 0.4
+    ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.2
 
     # Stay penalties
     STAY_BASE = -0.2
-    STAY_IN_CRITICAL = -0.8
+    STAY_IN_CRITICAL = -0.3
     STAY_NO_CRITIC = -0.15
 
     # Other
@@ -337,6 +337,7 @@ class FullyDynamicEnv(gym.Env):
         }
 
         self._sorted_cell_ids = sorted(self._cells.keys())
+        self._last_step_failures = []
 
         # -------------------------------------------------------------------------
         # Initialize stations, bikes and assign cells
@@ -598,6 +599,7 @@ class FullyDynamicEnv(gym.Env):
             bikes=bikes,
             max_load=max_truck_load,
         )
+        self._truck.get_cell().record_visit()
 
         # -------------------------------------------------------------------------
         # Initialize day/timeslot and generate events
@@ -657,7 +659,8 @@ class FullyDynamicEnv(gym.Env):
 
         # ── Launch background precomputation of the next episode ─────────────
         self._start_next_episode_precomputation()
-
+        
+        info["avoid_action"] = self._compute_avoid_actions()
         return observation, info
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -689,7 +692,6 @@ class FullyDynamicEnv(gym.Env):
         The result is placed in self._result_queue when ready.
         Idempotent: does nothing if a process is already running.
         """
-        return
     
         if self._bg_process is not None and self._bg_process.is_alive():
             return  # Already computing, nothing to do
@@ -715,7 +717,7 @@ class FullyDynamicEnv(gym.Env):
                 EnvDefaults.TIMESLOT_DURATION_SECONDS,
                 EnvDefaults.DEFAULT_DAY,
                 self._result_queue,
-                False
+                True
             ),
             daemon=True,  # dies if main process dies
         )
@@ -728,10 +730,10 @@ class FullyDynamicEnv(gym.Env):
 
     def _acquire_next_episode_buffer(self) -> dict:
         try:
-            result = self._result_queue.get(timeout=300)
+            result = self._result_queue.get(timeout=750)
         except Exception:
             print(f"DEBUG: Background loading timed out. Computing synchronously for seed={self._episode_seed}")
-            result = self._compute_episode_buffer(seed=self._episode_seed, show_pbar=True)
+            result = self._compute_episode_buffer(seed=self._episode_seed, show_pbar=False)
             
             if self._bg_process is not None:
                 self._bg_process.kill()
@@ -833,6 +835,8 @@ class FullyDynamicEnv(gym.Env):
         old_critic_score = truck_cell.get_critic_score()
         old_global_critic_score = self._global_critic_score
         old_surplus_bikes = truck_cell.get_surplus_bikes()
+        truck_cell_id = self._truck.get_cell().get_id()
+        self._cells[truck_cell_id].record_visit()
 
         self._env_logger.info(
             f"Cell {truck_cell.get_id()} before update has "
@@ -912,12 +916,13 @@ class FullyDynamicEnv(gym.Env):
         )
 
         # Compute outputs
+        self._last_step_failures = failures
         reward = self._get_reward(
             action,
             old_eligibility_score,
             old_critic_score,
             old_global_critic_score,
-            old_surplus_bikes,
+            old_surplus_bikes
         )
         observation = self._get_obs(action)
 
@@ -940,6 +945,7 @@ class FullyDynamicEnv(gym.Env):
             "number_of_system_bikes": len(self._system_bikes),
             "number_of_outside_bikes": len(self._outside_system_bikes),
             "number_of_traveling_bikes": len(self._travelling_bikes),
+            "avoid_action": self._compute_avoid_actions(),
         }
 
         # Check for timeslot/episode termination
@@ -947,13 +953,20 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= self._total_failures / self._total_timeslots  # / 10.0
+            reward -= (self._total_failures / self._total_timeslots)*0.01  # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
                     seconds=(self._timeslot * 3 + 1) * 3600 + self._env_time,
                 )
             )
+            
+        # Exploration bonus
+        #y_coord = self._nodes_dict[self._truck.get_position()][0]
+        #y_norm = (y_coord - self._min_lat) / (self._max_lat - self._min_lat)
+    
+        #if y_norm < 0.3:
+            #reward += 0.5
 
         return observation, reward, done, terminated, info
 
@@ -1208,6 +1221,7 @@ class FullyDynamicEnv(gym.Env):
             ],
             dtype=np.float16,
         )
+        
 
         # Concatenate all features
         observation = np.concatenate(
@@ -1219,7 +1233,6 @@ class FullyDynamicEnv(gym.Env):
                 ohe_borders,
             ]
         )
-
         return observation
 
     def _get_borders(self) -> np.array:  # type: ignore
@@ -1252,6 +1265,38 @@ class FullyDynamicEnv(gym.Env):
         )
 
         return normalized_lat, normalized_lon
+    
+    def _compute_avoid_actions(self) -> list:
+        """Calculate invalid actions in the current state."""
+        avoid = []
+
+        # Directions blocked by map edges
+        borders = self._get_borders()  
+        direction_actions = [
+            Actions.UP.value,
+            Actions.DOWN.value,
+            Actions.LEFT.value,
+            Actions.RIGHT.value,
+        ]
+        for i, action_val in enumerate(direction_actions):
+            if borders[i] == 1:
+                avoid.append(action_val)
+
+        # Truck state
+        truck_load = self._truck.get_load()
+
+        if truck_load == 0:
+            avoid.append(Actions.DROP_BIKE.value)
+            avoid.append(Actions.CHARGE_BIKE.value)
+
+        if truck_load >= EnvDefaults.MAX_TRUCK_LOAD:
+            avoid.append(Actions.PICK_UP_BIKE.value)
+            
+        current_cell_bikes = self._truck.get_cell().get_total_bikes()
+        if current_cell_bikes == 0:
+            avoid.append(Actions.PICK_UP_BIKE.value)
+
+        return avoid
 
     # ─────────────────────────────────────────────────────────────────────────
     # Reward Function
@@ -1337,6 +1382,9 @@ class FullyDynamicEnv(gym.Env):
 
         idle_ratio = len(self._depot.bikes) / self._maximum_number_of_bikes
         r_depot = -RewardComponents.DEPOT_WEIGHT * idle_ratio
+        
+        if self._truck.get_load() == 0 and len(self._depot.bikes) > 200:
+            r_depot -= 0.1
 
         # Combine all reward components
         reward = (
@@ -1356,6 +1404,10 @@ class FullyDynamicEnv(gym.Env):
             f"split reward {drop_reward} {pick_up_reward} {bike_charge_reward} "
             f"{eligibility_penalty} {stay_penalty} {loop_penalty}"
         )
+        
+        step_failures = sum(self._last_step_failures)
+        failure_signal = -0.001 * step_failures
+        reward += failure_signal
 
         return reward
 

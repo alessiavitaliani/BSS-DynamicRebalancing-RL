@@ -246,6 +246,7 @@ class Cell:
 
     # Operational counters
     def get_visits(self)           -> int:   return self._metrics['visits']
+    def record_visit(self):                  self._metrics['visits'] += 1
     def get_ops(self)              -> int:   return self._metrics['operations']
     def get_pick_ups(self)         -> int:   return self._metrics['pick_ups']
     def get_drops(self)            -> int:   return self._metrics['drops']

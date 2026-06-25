@@ -118,38 +118,65 @@ def set_adjacent_cells(cell_dict: Dict[int, Cell]) -> None:
 
     for cell in cells:
         center = cell.get_boundary().centroid.coords[0]
-        # Troviamo la distanza verso OGNI altra cella
-        distances = []
+        cell_adj = cell.get_adjacent_cells()
+        
+        # Initialize the minimum distances to infinity for all 4 directions
+        closest_dist = {'up': float('inf'), 'down': float('inf'), 'left': float('inf'), 'right': float('inf')}
+        closest_cells = {'up': None, 'down': None, 'left': None, 'right': None}
+
         for adj_cell in cells:
             if adj_cell.get_id() == cell.get_id():
                 continue
             
             adj_center = adj_cell.get_boundary().centroid.coords[0]
-            # Calcolo distanza in metri
-            dist = haversine((center[1], center[0]), (adj_center[1], adj_center[0]), unit=Unit.METERS)
-            distances.append((dist, adj_cell))
-        
-        # Ordiniamo per distanza (dal più vicino al più lontano)
-        distances.sort(key=lambda x: x[0])
-        
-        # Colleghiamo le 2 celle più vicine in assoluto, a prescindere dalla distanza
-        # Questo garantisce che il grafo sia sempre connesso
-        for _, adj_cell in distances[:1]: 
-            adj_center = adj_cell.get_boundary().centroid.coords[0]
+            
+            # center[0] is the longitude (X), center[1] is the latitude (Y)
             lon_diff = adj_center[0] - center[0]
             lat_diff = adj_center[1] - center[1]
             
-            cell_adj = cell.get_adjacent_cells()
+            # Calculate the distance in meters
+            dist = haversine((center[1], center[0]), (adj_center[1], adj_center[0]), unit=Unit.METERS)
             
-            # Assegniamo la direzione in base a dove si trova il vicino
-            if abs(lat_diff) > abs(lon_diff):
-                direction = "up" if lat_diff > 0 else "down"
+            # If the cell is too far away, ignore it
+            if dist > threshold:
+                continue
+            
+            # Rotate the vectors to correct the grid's perspective (45°)
+            x_rot = lon_diff + lat_diff
+            y_rot = lat_diff - lon_diff
+            
+            # Determine the direction of the neighbor using the rotated axes
+            if abs(y_rot) > abs(x_rot):
+                direction = "up" if y_rot > 0 else "down"
             else:
-                direction = "right" if lon_diff > 0 else "left"
+                direction = "right" if x_rot > 0 else "left"
+            # ----------------------------------------------------
             
-            cell_adj[direction] = adj_cell.get_id()
+            # If this is the closest neighbor we've found so far in this direction, let's save it
+            if dist < closest_dist[direction]:
+                closest_dist[direction] = dist
+                closest_cells[direction] = adj_cell.get_id()
+
+        # Finally, assign the found neighbors to the cell
+        for direction in ['up', 'down', 'left', 'right']:
+            cell_adj[direction] = closest_cells[direction]
 
         tbar.update(1)
+        
+    tbar.close()
+
+    # Enforce absolute symmetry
+    for cell_id, cell in cell_dict.items():
+        adj = cell.get_adjacent_cells()
+        
+        if adj['right'] is not None:
+            cell_dict[adj['right']].get_adjacent_cells()['left'] = cell_id
+        if adj['left'] is not None:
+            cell_dict[adj['left']].get_adjacent_cells()['right'] = cell_id
+        if adj['up'] is not None:
+            cell_dict[adj['up']].get_adjacent_cells()['down'] = cell_id
+        if adj['down'] is not None:
+            cell_dict[adj['down']].get_adjacent_cells()['up'] = cell_id
 
 
 def remove_empty_cells(cell_dict: Dict[int, Cell]) -> Dict[int, Cell]:

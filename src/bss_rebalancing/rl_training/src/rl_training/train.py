@@ -59,31 +59,33 @@ if mp.current_process().name == "MainProcess":
 params = {
     "seed": int(42),                                # Random seed for reproducibility
     "num_episodes": 140,                            # Total number of training episodes
-    "batch_size": int(128),                         # Batch size for replay buffer sampling
+    "batch_size": int(64),                          # Batch size for replay buffer sampling
     "replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
+    "rollout_steps": 2048,                          # Buffer capacity
+    "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
     "epsilon_start": 1.0,                           # Starting exploration rate
     "epsilon_delta": 0.03,                          # Epsilon decay rate
     "epsilon_end": 0.02,                            # Minimum exploration rate
     "epsilon_decay": 1e-5,                          # Epsilon decay constant
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
-    "lr": 1e-4,                                     # Learning rate
+    "lr": 3e-5,                                     # Learning rate
     "soft_update": True,                            # Use soft update for target network
     "tau": 0.005,                                   # Tau parameter for soft update
     # PPO params
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
     "ent_coef": 0.05,                               # Entropy coefficient
-    "vf_coef": 0.05,                                # Value coefficient
-    "update_epochs": 4,                             # How many times buffer is processed at every update 
+    "vf_coef": 0.5,                                 # Value coefficient
+    "update_epochs": 10,                            # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
-    "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
+    "maximum_number_of_bikes": 1500,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
     "depot_position_id": 1,                 # ID (cell) of the depot position
-    "initial_cell_id": 1,                   # Initial cell where the truck starts
+    "initial_cell_id": 18,                   # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,
@@ -492,6 +494,7 @@ def train_dqn(
 
         # ── Environment step ────────────────────────────────────────────────────
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
+        
 
         # ── Graph update ────────────────────────────────────────────────────────
         cell_dict = info['cell_dict']
@@ -687,8 +690,6 @@ def train_ppo(
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
     distance_lookup = info['distance_lookup']
-    #print(f"\n[DEBUG] Numero di celle caricate dall'ambiente: {len(cell_dict)}")
-    #print(f"[DEBUG] Chiavi in cell_dict: {list(cell_dict.keys())}\n")
 
     # Build initial graph from cells
     cell_graph = build_cell_graph_from_cells(
@@ -696,13 +697,7 @@ def train_ppo(
         nodes_dict=nodes_dict,
         distance_lookup=distance_lookup
     )
-    #print(f"[DEBUG] Nodi creati nel cell_graph: {len(cell_graph.nodes)}")
-    #print(f"[DEBUG] Archi (collegamenti) nel cell_graph: {len(cell_graph.edges)}")
-    #print("\n--- ISPEZIONE INTERNA DELLE CELLE ---")
-    #for cid, cell in cell_dict.items():
-    #    print(f"Cella ID: {cid} -> Center Node: {cell.get_center_node()} | Adjacency List: {list(cell.get_adjacent_cells().values())}")
-    #print("-------------------------------------\n")
-
+    
     # Define which metrics to use as GNN features
     gnn_features = [
         'truck_cell',
@@ -730,6 +725,11 @@ def train_ppo(
     }
 
     done = False
+    update_freq = params["rollout_steps"]  # Number of steps before update
+    step_counter = 0   # Step counter
+    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
+    buffer.clear()
+    
     while not done:
         # Prepare state for agent (S)
         single_state = Data(
@@ -749,6 +749,7 @@ def train_ppo(
 
         # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
+        reward = float(np.clip(reward, -3.0, 5.0))
 
         # Update node attributes
         cell_dict = info['cell_dict']
@@ -780,6 +781,7 @@ def train_ppo(
         )
 
         # Record step metrics
+        step_counter += 1
         action_per_step.append(action)
         #if action not in reward_tracking_per_action:
         #    reward_tracking_per_action[action] = []
@@ -790,6 +792,33 @@ def train_ppo(
         total_reward_per_timeslot += reward
         total_failures_per_timeslot += sum(info['failures'])
         iterations += 1
+        
+        # ============================================================================
+        # PPO Update after k steps
+        # ============================================================================
+        if len(buffer) >= update_freq:
+            # Bootstrapping
+            if done:
+                last_value = 0.0
+            else:
+                next_state_data = Data(
+                    x=next_state.x.to(device),
+                    edge_index=next_state.edge_index.to(device),
+                    edge_attr=next_state.edge_attr.to(device),
+                    agent_state=torch.tensor(next_state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
+                    batch=torch.zeros(next_state.x.size(0), dtype=torch.long).to(device),
+                )
+                
+                with torch.no_grad():
+                    # Interroghiamo la rete per avere il valore del next_state
+                    _, _, next_value = agent.select_action(next_state_data)
+                    last_value = next_value.item()
+            
+            # Perform the update 
+            pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
+            
+            # Clear the buffer to collect new data
+            buffer.clear()
 
         # Handle timeslot completion
         if timeslot_terminated:
@@ -831,24 +860,10 @@ def train_ppo(
         state = next_state
         #del single_state
 
-    # ============================================================================
-    # End of Episode: PPO Update
-    # ============================================================================
-    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
     if len(buffer) > 0:
-        # Bootstrap value for the very last state if the episode wasn't 'done' 
-        # (useful for truncated episodes in BSS)
-        last_value = 0.0 
-        # if not timeslot_terminated:
-        if not done:
-            _, _, last_value_tensor = agent.select_action(single_state)
-            last_value = last_value_tensor.item()
-        # Perform the PPO update using the collected rollout
-        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
-        
-        # CRITICAL: Clear the buffer after the update
+        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=0.0)
         buffer.clear()
-
+        
     # Cleanup
     torch.cuda.empty_cache()
 
