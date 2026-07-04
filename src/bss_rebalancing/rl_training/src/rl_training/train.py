@@ -22,8 +22,8 @@ from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions
 from gymnasium_env.envs.fully_dynamic_env import EnvDefaults, RewardComponents
 
-from rl_training.agents import DQNAgent
-from rl_training.memory import ReplayBuffer
+from rl_training.agents import DQNAgent, PPOAgent
+from rl_training.memory import ReplayBuffer, PPOBuffer
 from rl_training.results import ResultsManager, EpisodeResults
 from rl_training.logging_config import init_logging, LoggingConfig, get_logger
 from rl_training.utils import (
@@ -34,6 +34,7 @@ from rl_training.utils import (
     build_cell_graph_from_cells,
     update_cell_graph_features
 )
+from rl_training.networks.ppo import PPO as PPONetwork 
 
 # ------------------------------------------------------------------------------
 # Device detection
@@ -56,27 +57,35 @@ if mp.current_process().name == "MainProcess":
 # ------------------------------------------------------------------------------
 
 params = {
-    "seed": int(42),                        # Random seed for reproducibility
-    "num_episodes": 140,                    # Total number of training episodes
-    "batch_size": int(64),                  # Batch size for replay buffer sampling
-    "replay_buffer_capacity": int(1e5),     # Capacity of replay buffer: 0.1 million transitions
-    "gamma": 0.95,                          # Discount factor
-    "epsilon_start": 1.0,                   # Starting exploration rate
-    "epsilon_delta": 0.05,                  # Epsilon decay rate
-    "epsilon_end": 0.01,                    # Minimum exploration rate
-    "epsilon_decay": 1e-5,                  # Epsilon decay constant
-    "exploration_time": 0.6,                # Fraction of total training time for exploration
-    "lr": 1e-4,                             # Learning rate
-    "soft_update": True,                    # Use soft update for target network
-    "tau": 0.005,                           # Tau parameter for soft update
+    "seed": int(42),                                # Random seed for reproducibility
+    "num_episodes": 140,                            # Total number of training episodes
+    "batch_size": int(64),                          # Batch size for replay buffer sampling
+    "replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
+    "rollout_steps": 4096,                          # Buffer capacity
+    "minibatch_size": 512,                          # Dimension of each minibatch
+    "gamma": 0.99,                                  # Discount factor
+    "epsilon_start": 1.0,                           # Starting exploration rate
+    "epsilon_delta": 0.03,                          # Epsilon decay rate
+    "epsilon_end": 0.02,                            # Minimum exploration rate
+    "epsilon_decay": 1e-5,                          # Epsilon decay constant
+    "exploration_time": 0.7,                        # Fraction of total training time for exploration
+    "lr": 1e-4,                                     # Learning rate
+    "soft_update": True,                            # Use soft update for target network
+    "tau": 0.005,                                   # Tau parameter for soft update
+    # PPO params
+    "clip_coef": 0.2,                               # Clipping coefficient 
+    "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
+    "ent_coef": 0.03,                               # Entropy coefficient
+    "vf_coef": 0.5,                                 # Value coefficient
+    "update_epochs": 6,                            # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
-    "maximum_number_of_bikes": 500,         # Maximum number of bikes in the system
-    "minimum_number_of_bikes": 1,           # Minimum number of bikes per cell
+    "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
+    "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 18,                # ID (cell) of the depot position
-    "initial_cell_id": 18,                  # Initial cell where the truck starts
+    "depot_position_id": 1,                 # ID (cell) of the depot position
+    "initial_cell_id": 18,                   # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,
@@ -485,6 +494,7 @@ def train_dqn(
 
         # ── Environment step ────────────────────────────────────────────────────
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
+        
 
         # ── Graph update ────────────────────────────────────────────────────────
         cell_dict = info['cell_dict']
@@ -618,11 +628,707 @@ def train_dqn(
     }
 
 
-# ------------------------------------------------------------------------------
-# main
-# ------------------------------------------------------------------------------
+def train_ppo(
+    env: gymnasium.Env,
+    agent: PPOAgent,
+    buffer: PPOBuffer,
+    episode: int,
+    device: torch.device,
+    run_id: int,
+    logging_enabled: bool,
+    tbar=None,
+    episode_results_path: str | None = None,
+    seed: int = None,
+) -> dict:
+    # ============================================================================
+    # Initialize metrics tracking
+    # ============================================================================
+    # Per-timeslot metrics
+    rewards = []
+    failures = []
+    state_values = [] # Replaces epsilons and q_values
+    system_bikes = []
+    truck_load = []
+    depot_load = []
+    outside_system_bikes = []
+    traveling_bikes = []
+    demand_per_timeslot = []
+
+    # Per-step metrics
+    action_per_step = []
+    global_critic_scores = []
+    # Assumes Actions is accessible in your scope
+    # reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
+    reward_tracking_per_action = {} # Initialized dynamically to avoid import issues here
+
+    # Accumulators (reset each timeslot)
+    total_reward_per_timeslot = 0.0
+    total_failures_per_timeslot = 0
+    timeslots_completed = 0
+    iterations = 0
+    last_cumulative_demand = 0
+
+    # ============================================================================
+    # Environment setup and reset
+    # ============================================================================
+    # Ensure params and reward_params are accessible in your real file
+    reset_options = {
+        'total_timeslots': params["total_timeslots"],
+        'maximum_number_of_bikes': params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
+        'enable_repositioning': params["enable_repositioning"],
+        'use_net_flow': params["use_net_flow"],
+        'discount_factor': params["gamma"],
+        'depot_id': params['depot_position_id'],
+    }
+    if episode_results_path is not None:
+        reset_options['results_path'] = episode_results_path
+
+    agent_state, info = env.reset(options=reset_options)
+
+    # Extract static environment info
+    cell_dict = info['cell_dict']
+    nodes_dict = info['nodes_dict']
+    distance_lookup = info['distance_lookup']
+
+    # Build initial graph from cells
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict,
+        nodes_dict=nodes_dict,
+        distance_lookup=distance_lookup
+    )
+    
+    # Define which metrics to use as GNN features
+    gnn_features = [
+        'truck_cell',
+        'critic_score',
+        'eligibility_score',
+        'total_bikes',
+    ]
+
+    # Initialize state
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+    state.agent_state = agent_state
+    state.steps = info['steps']
+
+    # ============================================================================
+    # Main training loop
+    # ============================================================================
+    episode_cell_stats = {
+        cell_id: {
+            'critic_sum': 0.0,
+            'eligibility_sum': 0.0,
+            'bikes_sum': 0.0,
+            'bikes_dead_sum': 0.0
+        }
+        for cell_id in cell_dict.keys()
+    }
+
+    done = False
+    update_freq = params["rollout_steps"]  # Number of steps before update
+    step_counter = 0   # Step counter
+    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
+    buffer.clear()
+    
+    while not done:
+        # Prepare state for agent (S)
+        single_state = Data(
+            x=state.x.to(device),
+            edge_index=state.edge_index.to(device),
+            edge_attr=state.edge_attr.to(device),
+            agent_state=torch.tensor(state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
+            batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
+        )
+
+        # Retrieve forbidden actions from environment (if provided)
+        avoid_actions = info.get("avoid_action", [])
+
+        # Select action using PPO Actor (stochastic, no epsilon)
+        # We also get the logprob and the Critic's value estimation
+        action, logprob, value = agent.select_action(single_state, avoid_action=avoid_actions)
+
+        # Step into: get reward and observation (R)
+        agent_state, reward, done, timeslot_terminated, info = env.step(action)
+        #reward = float(np.clip(reward, -3.0, 5.0))
+
+        # Update node attributes
+        cell_dict = info['cell_dict']
+        update_cell_graph_features(cell_graph, cell_dict)
+
+        # Update cumulative cell statistics
+        for cell_id, cell in cell_dict.items():
+            stats = episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['eligibility_sum'] += cell.get_eligibility_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] += cell.get_dead_bikes()
+
+        # Create next state (S')
+        next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+        next_state.agent_state = agent_state
+        next_state.steps = info['steps']
+
+        # Store transition in the PPO Rollout Buffer
+        # Notice we don't strictly need next_state for standard GAE if we handle dones correctly, 
+        # but we save the current interaction data.
+        buffer.push(
+            state=single_state.cpu(), # Move to CPU to save VRAM during episode
+            action=action,
+            logprob=logprob.item(),
+            reward=reward,
+            value=value.item(),
+            done=done
+        )
+
+        # Record step metrics
+        step_counter += 1
+        action_per_step.append(action)
+        #if action not in reward_tracking_per_action:
+        #    reward_tracking_per_action[action] = []
+        #reward_tracking_per_action[action].append(reward)
+        reward_tracking_per_action.setdefault(action, []).append(reward)
+        
+        global_critic_scores.append(info['global_critic_score'])
+        total_reward_per_timeslot += reward
+        total_failures_per_timeslot += sum(info['failures'])
+        iterations += 1
+        
+        # ============================================================================
+        # PPO Update after k steps
+        # ============================================================================
+        if len(buffer) >= update_freq:
+            # Bootstrapping
+            if done:
+                last_value = 0.0
+            else:
+                next_state_data = Data(
+                    x=next_state.x.to(device),
+                    edge_index=next_state.edge_index.to(device),
+                    edge_attr=next_state.edge_attr.to(device),
+                    agent_state=torch.tensor(next_state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
+                    batch=torch.zeros(next_state.x.size(0), dtype=torch.long).to(device),
+                )
+                
+                with torch.no_grad():
+                    # Interroghiamo la rete per avere il valore del next_state
+                    _, _, next_value = agent.select_action(next_state_data)
+                    last_value = next_value.item()
+            
+            # Perform the update 
+            pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
+            
+            # Clear the buffer to collect new data
+            buffer.clear()
+
+        # Handle timeslot completion
+        if timeslot_terminated:
+            timeslots_completed += 1
+
+            # PPO DOES NOT update target networks or epsilons here.
+            # We also don't need the expensive get_q_values calculation anymore.
+            # We simply record the Critic's value from the last step of the timeslot.
+
+            # Record timeslot metrics
+            rewards.append(total_reward_per_timeslot)
+            failures.append(total_failures_per_timeslot)
+            state_values.append(value.item()) # Replacing q_values/epsilon tracking
+            system_bikes.append(info['number_of_system_bikes'])
+            truck_load.append(info['truck_bikes'])
+            depot_load.append(info['depot_bikes'])
+            outside_system_bikes.append(info['number_of_outside_bikes'])
+            traveling_bikes.append(info['number_of_traveling_bikes'])
+
+            current = sum(cell.get_total_demand() for cell in cell_dict.values())
+            demand_per_timeslot.append(current - last_cumulative_demand)
+            last_cumulative_demand = current
+            
+            # Reset accumulators
+            total_reward_per_timeslot = 0.0
+            total_failures_per_timeslot = 0
+
+            # Update progress bar
+            if tbar is not None:
+                tbar.set_description(
+                    f"[TRAIN] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
+                    f"{info['day'].capitalize()} at {info.get('time_formatted', 'N/A')}"
+                )
+                # Replaced epsilon with the Critic's Value estimation
+                tbar.set_postfix({'Val': f"{value.item():.2f}"})
+                tbar.update(1)
+
+        # Move to next state
+        state = next_state
+        #del single_state
+
+    if len(buffer) > 0:
+        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=0.0)
+        buffer.clear()
+        
+    # Cleanup
+    torch.cuda.empty_cache()
+
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
+            eligibility_mean = stats.get('eligibility_sum', 0.0) / steps_in_episode
+            bikes_mean = stats.get('bikes_sum', 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
+        else:
+            critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+        nx_attrs['critic_mean'] = critic_mean
+        nx_attrs['eligibility_mean'] = eligibility_mean
+        nx_attrs['failure_sum'] = cell_dict[cell_id].get_failures()
+        nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
+        nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['bikes_mean'] = bikes_mean
+        nx_attrs['dead_bikes_mean'] = dead_bikes_mean
+
+    # ============================================================================
+    # Return results
+    # ============================================================================
+    return {
+        "rewards_per_timeslot": rewards,
+        "failures_per_timeslot": failures,
+        "total_invalid_actions": info.get("total_invalid_actions", 0),
+        "state_values_per_timeslot": state_values, # Formerly q_values / epsilons
+        "action_per_step": action_per_step,
+        "global_critic_scores": global_critic_scores,
+        "reward_tracking_per_action": reward_tracking_per_action,
+        "deployed_bikes": system_bikes,
+        "truck_load": truck_load,
+        "depot_load": depot_load,
+        "outside_system_bikes": outside_system_bikes,
+        "traveling_bikes": traveling_bikes,
+        "demand_per_timeslot": demand_per_timeslot,
+        "cell_subgraph": cell_graph,
+        # PPO specific metrics to track training health
+        "policy_loss": pg_loss,
+        "value_loss": v_loss,
+        "entropy": ent_loss,
+    }
+    
+# ----------------------------------------------------------------------------------------------------------------------
+
+def validate_dqn(
+        env: gymnasium.Env,
+        agent: DQNAgent,
+        episode: int,
+        device: torch.device,
+        run_id: int,
+        logging_enabled: bool,
+        tbar=None,
+        episode_results_path: str | None = None,
+        params_snapshot: dict | None = None,
+        reward_params_snapshot: dict | None = None,
+) -> dict:
+    # ============================================================================
+    # Initialize metrics tracking
+    # ============================================================================
+    # Per-timeslot metrics
+    rewards = []
+    failures = []
+    system_bikes = []
+    truck_load = []
+    depot_load = []
+    outside_system_bikes = []
+    traveling_bikes = []
+
+    # Per-step metrics
+    action_per_step = []
+    global_critic_scores = []
+    reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
+
+    # Accumulators (reset each timeslot)
+    total_reward_per_timeslot = 0.0
+    total_failures_per_timeslot = 0
+    timeslots_completed = 0
+    iterations = 0
+
+    # ============================================================================
+    # Environment setup and reset
+    # ============================================================================
+    _params = params_snapshot if params_snapshot is not None else params
+    _reward_params = reward_params_snapshot if reward_params_snapshot is not None else reward_params
+
+    reset_options = {
+        'total_timeslots': _params["total_timeslots"],
+        'maximum_number_of_bikes': _params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': _params["minimum_number_of_bikes"],
+        'enable_repositioning': _params["enable_repositioning"],
+        'use_net_flow': _params["use_net_flow"],
+        'discount_factor': _params["gamma"],
+        'depot_id': _params['depot_position_id'],
+        'reward_params': _reward_params,
+    }
+    if episode_results_path is not None:
+        reset_options['results_path'] = episode_results_path
+
+    agent_state, info = env.reset(options=reset_options)
+
+    # Extract static environment info
+    cell_dict = info['cell_dict']
+    nodes_dict = info['nodes_dict']
+    distance_lookup = info['distance_lookup']
+
+    # Build initial graph from cells (reads metrics automatically)
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict,
+        nodes_dict=nodes_dict,
+        distance_lookup=distance_lookup
+    )
+
+    # Define which metrics to use as GNN features
+    gnn_features = [
+        'truck_cell',
+        'critic_score',
+        'eligibility_score',
+        'total_bikes',
+    ]
+
+    # Initialize state
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+    state.agent_state = agent_state
+    state.steps = info['steps']
+
+    # ============================================================================
+    # Temporarily set epsilon for validation (mostly greedy policy)
+    # ============================================================================
+    previous_epsilon = agent.epsilon
+    agent.epsilon = 0.05  # Low exploration for validation
+
+    # ============================================================================
+    # Main validation loop
+    # ============================================================================
+    episode_cell_stats = {
+        cell_id: {"critic_sum": 0.0, "eligibility_sum": 0.0, "bikes_sum": 0.0}
+        for cell_id in cell_dict.keys()
+    }
+
+    done = False
+    while not done:
+        # Prepare state for agent
+        single_state = Data(
+            x=state.x.to(device),
+            edge_index=state.edge_index.to(device),
+            edge_attr=state.edge_attr.to(device),
+            agent_state=torch.tensor(state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
+            batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
+        )
+
+        # Select action and step environment (A) (epsilon=0.05, mostly greedy)
+        action = agent.select_action(single_state, epsilon_greedy=True)
+
+        # Step into: get reward and observation (R)
+        agent_state, reward, done, timeslot_terminated, info = env.step(action)
+
+        # Only update node attributes
+        cell_dict = info['cell_dict']
+        update_cell_graph_features(cell_graph, cell_dict)
+
+        # Update cumulative cell statistics (averaged at episode end)
+        for cell_id, cell in cell_dict.items():
+            stats = episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['eligibility_sum'] += cell.get_eligibility_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] = cell.get_dead_bikes()
+
+        # Create next state (S')
+        next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+        next_state.agent_state = agent_state
+        next_state.steps = info['steps']
+
+        # Record step metrics (no training in validation)
+        action_per_step.append(action)
+        reward_tracking_per_action[action].append(reward)
+        global_critic_scores.append(info['global_critic_score'])
+        total_reward_per_timeslot += reward
+        total_failures_per_timeslot += sum(info['failures'])
+        iterations += 1
+
+        # Handle timeslot completion
+        if timeslot_terminated:
+            timeslots_completed += 1
+
+            # Record timeslot metrics
+            rewards.append(total_reward_per_timeslot)
+            failures.append(total_failures_per_timeslot)
+            system_bikes.append(info['number_of_system_bikes'])
+            truck_load.append(info['truck_bikes'])
+            depot_load.append(info['depot_bikes'])
+            outside_system_bikes.append(info['number_of_outside_bikes'])
+            traveling_bikes.append(info['number_of_traveling_bikes'])
+
+            # Reset accumulators
+            total_reward_per_timeslot = 0.0
+            total_failures_per_timeslot = 0
+
+            # Update progress bar
+            if tbar is not None:
+                tbar.set_description(
+                    f"[VALIDATION] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
+                    f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
+                )
+                tbar.set_postfix({'eps': agent.epsilon})
+                tbar.update(1)
+
+        # Move to next state
+        state = next_state
+        del single_state  # Free GPU memory
+
+    # Cleanup
+    torch.cuda.empty_cache()
+
+    # Restore original epsilon
+    agent.epsilon = previous_epsilon
+
+    steps_in_episode = iterations
+    for cell_id, stats in episode_cell_stats.items():
+        center_node = cell_dict[cell_id].get_center_node()
+        if center_node not in cell_graph.nodes:
+            continue
+
+        if steps_in_episode > 0:
+            critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
+            eligibility_mean = stats.get('eligibility_sum', 0.0) / steps_in_episode
+            bikes_mean = stats.get('bikes_sum', 0.0) / steps_in_episode
+            dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
+        else:
+            critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+        nx_attrs = cell_graph.nodes[center_node]
+
+        nx_attrs['critic_mean'] = critic_mean
+        nx_attrs['eligibility_mean'] = eligibility_mean
+        nx_attrs['failure_sum'] = cell_dict[cell_id].get_failures()
+        nx_attrs['failure_rate'] = cell_dict[cell_id].get_failure_rate()
+        nx_attrs['visits_sum'] = cell_dict[cell_id].get_visits()
+        nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
+        nx_attrs['success_rebalancing'] = cell_dict[cell_id].get_total_rebalanced()
+        nx_attrs['bikes_mean'] = bikes_mean
+        nx_attrs['dead_bikes_mean'] = dead_bikes_mean
+
+    # ============================================================================
+    # Return results (no losses, q_values, epsilon tracking in validation)
+    # ============================================================================
+    return {
+        "rewards_per_timeslot": rewards,
+        "failures_per_timeslot": failures,
+        "total_invalid_actions": info["total_invalid_actions"],
+        "action_per_step": action_per_step,
+        "global_critic_scores": global_critic_scores,
+        "reward_tracking_per_action": reward_tracking_per_action,
+        "deployed_bikes": system_bikes,
+        "truck_load": truck_load,
+        "depot_load": depot_load,
+        "outside_system_bikes": outside_system_bikes,
+        'traveling_bikes': traveling_bikes,
+        "cell_subgraph": cell_graph,
+        # Validation doesn't track these (return empty for consistency)
+        "q_values_per_timeslot": [],
+        "epsilon_per_timeslot": [],
+    }
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Parallel validation worker
+# ----------------------------------------------------------------------------------------------------------------------
+
+def _validation_worker(
+        state_dict: dict,
+        num_actions: int,
+        observation_space_len: int,
+        data_path: str,
+        episode_results_path: str,
+        episode: int,
+        run_id: int,
+        logging_enabled: bool,
+        params_snapshot: dict,
+        reward_params_snapshot: dict,
+        device_str: str,
+        result_queue: mp.Queue,
+) -> None:
+    """
+    Fully isolated validation process. Reconstructs its own agent (frozen, no
+    replay buffer) and its own gym environment on the specified device.
+    Sends ('success', result_dict) or ('error', error_str) back via result_queue.
+    """
+    val_env = None
+    val_tbar = None
+
+    try:
+        val_device = torch.device(device_str)
+
+        # ------------------------------------------------------------------
+        # Reconstruct frozen agent from the weight snapshot — no replay buffer
+        # ------------------------------------------------------------------
+        val_agent = DQNAgent(
+            num_actions=num_actions,
+            observation_space_len=observation_space_len,
+            gamma=params_snapshot["gamma"],
+            epsilon_start=0.01,
+            epsilon_end=0.01,
+            epsilon_decay=1,
+            lr=params_snapshot["lr"],
+            device=val_device,
+            tau=params_snapshot["tau"],
+            soft_update=False,
+            replay_buffer=None,
+        )
+        val_agent.train_model.load_state_dict(
+            {k: v.to(val_device) for k, v in state_dict.items()}
+        )
+        val_agent.train_model.eval()
+
+        # ------------------------------------------------------------------
+        # Own environment instance
+        # ------------------------------------------------------------------
+        val_env = gym.make(
+            'gymnasium_env/FullyDynamicEnv-v0',
+            data_path=data_path,
+            results_path=f"{episode_results_path}/",
+            seed=params_snapshot['seed'],
+            logging_enabled=logging_enabled,
+        )
+
+        # ------------------------------------------------------------------
+        # Own tqdm bar at position=1, disappears when done (leave=False)
+        # ------------------------------------------------------------------
+        val_tbar = tqdm(
+            total=params_snapshot["total_timeslots"],
+            desc=f"[VAL] Epis {episode}",
+            position=1,
+            leave=False,
+            dynamic_ncols=True,
+        )
+
+        result = validate_dqn(
+            env=val_env,
+            agent=val_agent,
+            episode=episode,
+            device=val_device,
+            run_id=run_id,
+            logging_enabled=logging_enabled,
+            tbar=val_tbar,
+            episode_results_path=episode_results_path,
+            params_snapshot=params_snapshot,
+            reward_params_snapshot=reward_params_snapshot,
+        )
+
+        # cell_subgraph is a networkx graph — it's picklable, no issues
+        result_queue.put(('success', result))
+
+    except Exception:
+        import traceback
+        result_queue.put(('error', traceback.format_exc()))
+    finally:
+        if val_tbar is not None:
+            val_tbar.close()
+        if val_env is not None:
+            val_env.close()
+        torch.cuda.empty_cache()
+
+
+def _collect_pending_validation(
+        validation_process: mp.Process | None,
+        result_queue: mp.Queue,
+        pending_episode: int | None,
+        results_manager: ResultsManager,
+        best_validation_score: float,
+        num_days: int,
+        agent: DQNAgent,
+        logger,
+        block: bool = False,
+) -> tuple[float, float | None]:
+    """
+    Checks whether the running validation process has finished and, if so,
+    collects and processes its result.
+
+    Args:
+        block: If True, wait for the process to finish (used at end of training).
+
+    Returns:
+        Updated best_validation_score, and last_validation_score (or None if
+        no result was collected this call).
+    """
+    if validation_process is None:
+        return best_validation_score, None
+
+    if block:
+        validation_process.join()
+    elif validation_process.is_alive():
+        return best_validation_score, None
+
+    # Process has finished — drain the queue
+    if result_queue.empty():
+        logger.error(f"Validation process for episode {pending_episode} exited with no result.")
+        return best_validation_score, None
+
+    status, payload = result_queue.get_nowait()
+
+    if status == 'error':
+        logger.error(f"Validation process for episode {pending_episode} failed:\n{payload}")
+        return best_validation_score, None
+
+    validation_dict = payload
+
+    validation_results = EpisodeResults(
+        episode=pending_episode,
+        mode='validation',
+        epsilon=0.05,
+        epsilon_per_timeslot=validation_dict.get('epsilon_per_timeslot', []),
+        rewards_per_timeslot=validation_dict['rewards_per_timeslot'],
+        total_reward=sum(validation_dict['rewards_per_timeslot']),
+        failures_per_timeslot=validation_dict['failures_per_timeslot'],
+        total_failures=sum(validation_dict['failures_per_timeslot']),
+        mean_daily_failures=sum(validation_dict['failures_per_timeslot']) / num_days,
+        action_per_step=validation_dict['action_per_step'],
+        total_invalid_actions=validation_dict['total_invalid_actions'],
+        reward_tracking_per_action=validation_dict['reward_tracking_per_action'],
+        q_values_per_timeslot=validation_dict.get('q_values_per_timeslot', []),
+        mean_q_values=float(np.mean(validation_dict['q_values_per_timeslot'])) if validation_dict[
+            'q_values_per_timeslot'] else 0.0,
+        deployed_bikes=validation_dict['deployed_bikes'],
+        global_critic_scores=validation_dict.get('global_critic_scores', []),
+        cell_subgraph=validation_dict['cell_subgraph'],
+    )
+
+    results_manager.save_episode(validation_results)
+    last_validation_score = validation_results.total_failures
+
+    is_best = validation_results.total_failures < best_validation_score
+    if is_best:
+        best_validation_score = validation_results.total_failures
+
+    model_path = results_manager.save_model(
+        agent=agent,
+        episode=pending_episode,
+        score=validation_results.total_failures,
+        model_type='best' if is_best else 'checkpoint',
+        save_best=is_best,
+    )
+
+    logger.info(
+        f"Episode {pending_episode}: Validation failures = {validation_results.mean_daily_failures:.2f} mean / "
+        f"{validation_results.total_failures} total | "
+        f"Best = {best_validation_score} | "
+        f"Invalid actions = {validation_results.total_invalid_actions} | "
+        f"Model saved: {model_path} ({'best' if is_best else 'checkpoint'})"
+    )
+
+    return best_validation_score, last_validation_score
+
+# ----------------------------------------------------------------------------------------------------------------------
 
 def main():
+    print("2. Start of the main section")
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
     warnings.filterwarnings("ignore")
@@ -635,6 +1341,7 @@ def main():
     # ------------------------------------------------------------------
     # Params
     # ------------------------------------------------------------------
+    validation_process = None
     run_id = args.run_id
     data_path = args.data_path
     results_path = args.results_path
@@ -655,20 +1362,20 @@ def main():
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
-    # At X% of the total timeslots (X% of the training) the epsilon should be 0.1
-    params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params[
-        "total_timeslots"]) ** 2) / np.log(10)
-    # TODO: check this above
+    # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
+    #params["epsilon_decay"] = ((params["exploration_time"] * params["num_episodes"] * params["total_timeslots"])**2) / np.log(10) # only for DQN
+    #print(f"\nParams in use: {params}\n")
+    #print(f"Reward params in use: {reward_params}\n")
+    #if one_validation:
+    #    print("one_validation = True")
 
-    # ------------------------------------------------------------------
-    # ResultsManager
-    # ------------------------------------------------------------------
     results_manager = ResultsManager(
         results_path=results_path,
         run_id=run_id,
         overwrite=False,
         interactive=True
     )
+    #results_manager.save_hyperparameters(params, reward_params, {})
 
     # Init logging
     init_logging(LoggingConfig(
@@ -681,9 +1388,8 @@ def main():
     logger = get_logger("train", logger_name="train")
     logger.info("Starting training loop")
 
-    # ------------------------------------------------------------------
-    # Environment
-    # ------------------------------------------------------------------
+    print("3. Before gym.make")
+    # Create the environment
     env = gym.make(
         'gymnasium_env/FullyDynamicEnv-v0',
         data_path=data_path,
@@ -691,6 +1397,10 @@ def main():
         seed=params['seed'],
         logging_enabled=logging_enabled
     )
+    #env.unwrapped.seed(params['seed'])
+    #env.action_space.seed(params['seed'])
+    #env.observation_space.seed(params['seed'])
+    print("4. Environment created")
 
     # Save hyperparameters
     results_manager.save_hyperparameters(
@@ -711,28 +1421,48 @@ def main():
     # Agent with replay buffer
     # ------------------------------------------------------------------
     # Set up replay buffer
-    replay_buffer = ReplayBuffer(params["replay_buffer_capacity"])
+    # replay_buffer = ReplayBuffer(params["replay_buffer_capacity"]) # DQN
+    ppo_buffer = PPOBuffer() # PPO
 
     # Initialize the DQN agent
-    agent = DQNAgent(
-        seed=int(params['seed']),
-        replay_buffer=replay_buffer,
-        num_actions=env.action_space.n,
-        observation_space_len=env.observation_space.shape[0],
-        gamma=params["gamma"],
-        epsilon_start=params["epsilon_start"],
-        epsilon_end=params["epsilon_end"],
-        epsilon_decay=params["epsilon_decay"],
-        lr=params["lr"],
-        device=device,
-        tau=params["tau"],
-        soft_update=params["soft_update"],
+    #agent = DQNAgent(
+    #   seed=int(params['seed']),
+    #   replay_buffer=replay_buffer,
+    #   num_actions=env.action_space.n,
+    #   observation_space_len=env.observation_space.shape[0],
+    #   gamma=params["gamma"],
+    #   epsilon_start=params["epsilon_start"],
+    #   epsilon_end=params["epsilon_end"],
+    #   epsilon_decay=params["epsilon_decay"],
+    #   lr=params["lr"],
+    #   device=device,
+    #   tau=params["tau"],
+    #   soft_update=params["soft_update"],
+    #)
+    # Initialize the PPO agent
+    network = PPONetwork(
+        num_actions=env.action_space.n, 
+        node_features=4 
+    ).to(device)
+    
+    agent = PPOAgent(
+        #seed=int(params['seed']),
+        network=network,
+        lr=params.get("lr", 3e-4),
+        gamma=params.get("gamma", 0.99),
+        gae_lambda=params.get("gae_lambda"),
+        clip_coef=params.get("clip_coef"),
+        ent_coef=params.get("ent_coef"),
+        vf_coef=params.get("vf_coef"),
+        update_epochs=params.get("update_epochs"),
+        device=device
     )
     print("Model initialized successfully.\n")
 
-    # ------------------------------------------------------------------
-    # Training loop
-    # ------------------------------------------------------------------
+
+    # Train the agent using the training loop
+    starting_episode = 0
+    last_validation_score = None
     num_days = int(params["total_timeslots"] // 8)
 
     # Best validation score tracker (lower mean_daily_failures = better)
@@ -760,17 +1490,48 @@ def main():
             # ------------------------------------------------------------------
             # Train one episode
             # ------------------------------------------------------------------
-            training_dict = train_dqn(
+
+            if validation_process is not None and not validation_process.is_alive():
+                best_validation_score, collected_score = _collect_pending_validation(
+                    validation_process=validation_process,
+                    result_queue=result_queue,
+                    pending_episode=pending_validation_episode,
+                    results_manager=results_manager,
+                    best_validation_score=best_validation_score,
+                    num_days=num_days,
+                    agent=agent,
+                    logger=logger,
+                )
+                if collected_score is not None:
+                    last_validation_score = collected_score
+                validation_process = None
+                pending_validation_episode = None
+
+            # DQN Training
+            #training_dict = train_dqn(
+            #    env=env,
+            #    agent=agent,
+            #    batch_size=int(params["batch_size"]),
+            #    episode=episode,
+            #    device=device,
+            #    run_id=run_id,
+            #    logging_enabled=logging_enabled,
+            #    tbar=tbar,
+            #    episode_results_path=os.path.join(f"{str(results_manager.training_path)}", f"episode_{episode:03d}")
+            #    seed=current_seed
+            #)
+            
+            # PPO Training
+            training_dict = train_ppo(
                 env=env,
                 agent=agent,
-                batch_size=int(params["batch_size"]),
+                buffer=ppo_buffer,
                 episode=episode,
                 device=device,
                 run_id=run_id,
                 logging_enabled=logging_enabled,
-                logger=logger,
                 tbar=tbar,
-                episode_results_path=os.path.join(f"{str(results_manager.training_path)}", f"episode_{episode:03d}"),
+                episode_results_path=os.path.join(str(results_manager.training_path), f"episode_{episode:03d}"),
                 seed=current_seed
             )
 
@@ -779,17 +1540,19 @@ def main():
                 episode=episode,
                 mode='train',
                 seed=current_seed,
-                epsilon=agent.epsilon,
-                epsilon_per_timeslot=training_dict['epsilon_per_timeslot'],
+                #epsilon=agent.epsilon,
+                #epsilon_per_timeslot=training_dict['epsilon_per_timeslot'],
+                epsilon=0.0, # In PPO, exploration is given by entropy
                 rewards_per_timeslot=training_dict['rewards_per_timeslot'],
                 demand_per_timeslot=training_dict['demand_per_timeslot'],
                 total_reward=sum(training_dict['rewards_per_timeslot']),
                 failures_per_timeslot=training_dict['failures_per_timeslot'],
                 total_failures=sum(training_dict['failures_per_timeslot']),
                 mean_daily_failures=sum(training_dict['failures_per_timeslot']) / num_days,
-                q_values_per_timeslot=training_dict['q_values_per_timeslot'],
-                mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict[
-                    'q_values_per_timeslot'] else 0.0,
+                #q_values_per_timeslot=training_dict['q_values_per_timeslot'],
+                state_values_per_timeslot=training_dict.get('state_values_per_timeslot', []),
+                #mean_q_values=float(np.mean(training_dict['q_values_per_timeslot'])) if training_dict['q_values_per_timeslot'] else 0.0,
+                mean_state_values=float(np.mean(training_dict.get('state_values_per_timeslot', []))) if training_dict.get('state_values_per_timeslot') else 0.0,
                 deployed_bikes=training_dict['deployed_bikes'],
                 truck_load=training_dict['truck_load'],
                 depot_load=training_dict['depot_load'],
@@ -800,13 +1563,17 @@ def main():
                 global_critic_scores=training_dict['global_critic_scores'],
                 cell_subgraph=training_dict['cell_subgraph'],
                 traveling_bikes=training_dict['traveling_bikes'],
+                policy_loss=training_dict['policy_loss'],
+                value_loss=training_dict['value_loss'],
+                entropy=training_dict['entropy']
             )
 
             # Save training episode results
             results_manager.save_episode(training_results)
 
-            if agent.epsilon < params['validation_epsilon_threshold']:
-
+            current_epsilon = getattr(agent, 'epsilon', 0.0)
+            #if current_epsilon < params['validation_epsilon_threshold']:
+            if False: # to not have validation for now
                 # ── Step A: collect the previous val subprocess (if any) ──────
                 # This is the only point where training may briefly wait, and
                 # only if val_N-1 hasn't finished by the time train_N is done.
@@ -848,7 +1615,12 @@ def main():
                     score=training_results.mean_daily_failures,
                     model_type='episode'
                 )
-                logger.info(f"Episode {episode}: model snapshot saved (epsilon={agent.epsilon:.4f})")
+                logger.info(f"Episode {episode}: model snapshot saved (epsilon={current_epsilon:.4f})")
+                if 'training_results' in locals(): del training_results
+                if 'training_dict' in locals(): del training_dict
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 # ── Step C: launch the new val subprocess (non-blocking) ──────
                 val_cmd = _build_validate_cmd(
@@ -871,7 +1643,7 @@ def main():
                 f"Mean Failures = {training_results.mean_daily_failures:.2f}, "
                 f"Total Failures = {training_results.total_failures}, "
                 f"Invalid Actions = {training_results.total_invalid_actions}, "
-                f"Epsilon = {agent.epsilon:.4f}"
+                f"Epsilon = {current_epsilon:.4f}"
             )
 
             gc.collect()
@@ -910,6 +1682,21 @@ def main():
         logger.info("Training completed successfully")
         tbar.close()
         env.close()
+        
+        # Save closure to avoid leaked semaphore
+        gc.collect()
+        try:
+            from loky import get_reusable_executor
+            get_reusable_executor().shutdown(wait=True, kill=True)
+        except Exception:
+            pass
+            
+        try:
+            for p in mp.active_children():
+                p.terminate()
+                p.join()
+        except Exception:
+            pass
     except KeyboardInterrupt:
         print("\nTraining interrupted.")
         if pending_val is not None and pending_val.proc.poll() is None:
@@ -925,8 +1712,11 @@ def main():
         raise
 
     print(f"\nTraining {run_id} completed.")
-    print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
-
+    if best_val_score != float("inf"):
+        print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
+    else:
+        print("Best validation score: N/A (Disabled validation in this run)")
 
 if __name__ == "__main__":
+    print("1. Entered in the main section")
     main()

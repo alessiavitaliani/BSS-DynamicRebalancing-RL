@@ -29,17 +29,17 @@ from .results_manager import EpisodeResults, ResultsManager
 
 params = {
     "seed": 42,                                     # Random seed for reproducibility
-    "num_episodes": 1,                              # Total number of episodes
+    "num_episodes": 200,                            # Total number of episodes
     "total_timeslots": 56,                          # Total number of time slots in one episode
 
-    "num_rebalancing_events": 2,                    # Number of rebalancing events per episode
+    "num_rebalancing_events": 5,                    # Number of rebalancing events per episode
     "starting_rebalancing_event": 1,                # Hour to start rebalancing (0-23)
     "enable_repositioning": False,                  # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                          # Use net flow repositioning strategy at the start of each episode
 
-    "maximum_number_of_bikes": 500,                 # Maximum number of bikes in the system
+    "maximum_number_of_bikes": 1500,                # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
-    "depot_position_id": 18,                        # ID (cell) of the depot position
+    "depot_position_id": 1,                         # ID (cell) of the depot position
     "initial_cell_id": 18                           # Initial cell where the truck starts
 }
 

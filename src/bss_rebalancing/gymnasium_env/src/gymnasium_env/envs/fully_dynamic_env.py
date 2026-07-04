@@ -117,13 +117,13 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.1
+    BASE_COST = -0.02
 
     # Invalid action penalty
     INVALID_ACTION = -1.0
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.6
+    LOOP_PENALTY = -0.3
 
     # Drop bike rewards
     DROP_BASE = 0.01
@@ -152,13 +152,13 @@ class RewardComponents:
 
     # Stay penalties
     STAY_BASE = -0.1
-    STAY_IN_CRITICAL = -1.0
+    STAY_IN_CRITICAL = -0.5
     STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
-    DEPLOY_WEIGHT = 0.02
-    DEPOT_WEIGHT = 0.02
+    DEPLOY_WEIGHT = 0.05
+    DEPOT_WEIGHT = 0.08
 
 
 # =============================================================================
