@@ -77,7 +77,7 @@ class EnvDefaults:
     NET_FLOW_BASED_REPOSITIONING = False
 
     # Truck parameters
-    MAX_TRUCK_LOAD = 30
+    MAX_TRUCK_LOAD = 40
     INITIAL_TRUCK_BIKES = 15
 
     # Time parameters
@@ -88,8 +88,8 @@ class EnvDefaults:
 
     # RL parameters
     DISCOUNT_FACTOR = 0.99
-    ELIGIBILITY_DECAY = 0.9968
-    BORDER_ELIGIBILITY_DECAY = 0.99
+    ELIGIBILITY_DECAY = 0.997
+    BORDER_ELIGIBILITY_DECAY = 0.9998
 
     # Default starting conditions
     DEFAULT_DAY = "monday"
@@ -129,12 +129,12 @@ class RewardComponents:
     DROP_BASE = 0.01
     DROP_REBALANCED_CRITICAL = 2.0
     DROP_IN_CRITICAL = 1.0
-    DROP_IN_SURPLUS = -0.5
+    DROP_IN_SURPLUS = -1.2
 
     # Pick-up rewards
     PICKUP_FROM_CRITICAL = -0.5
     PICKUP_UNBALANCED_CELL = -2.0
-    PICKUP_FROM_SURPLUS = 0.2
+    PICKUP_FROM_SURPLUS = 0.3
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1

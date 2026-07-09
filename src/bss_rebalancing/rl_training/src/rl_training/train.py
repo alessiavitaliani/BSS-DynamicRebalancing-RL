@@ -80,12 +80,12 @@ params = {
     "update_epochs": 6,                            # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
-    "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
+    "maximum_number_of_bikes": 1200,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 1,                 # ID (cell) of the depot position
-    "initial_cell_id": 18,                   # Initial cell where the truck starts
+    "depot_position_id": 12,                # ID (cell) of the depot position
+    "initial_cell_id": 12,                  # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,
@@ -749,7 +749,7 @@ def train_ppo(
 
         # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
-        #reward = float(np.clip(reward, -3.0, 5.0))
+        reward = float(np.clip(reward, -2.0, 3.0))
 
         # Update node attributes
         cell_dict = info['cell_dict']

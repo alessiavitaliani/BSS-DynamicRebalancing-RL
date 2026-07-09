@@ -873,7 +873,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= self._total_failures / self._total_timeslots  # / 10.0
+            reward -= (self._total_failures / self._total_timeslots) / 25.0  # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
