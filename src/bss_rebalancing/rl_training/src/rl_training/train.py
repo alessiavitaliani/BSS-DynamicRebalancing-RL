@@ -58,7 +58,7 @@ if mp.current_process().name == "MainProcess":
 
 params = {
     "seed": int(42),                                # Random seed for reproducibility
-    "num_episodes": 140,                            # Total number of training episodes
+    "num_episodes": 400,                            # Total number of training episodes
     "batch_size": int(64),                          # Batch size for replay buffer sampling
     "replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
     "rollout_steps": 4096,                          # Buffer capacity
@@ -81,11 +81,11 @@ params = {
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1200,        # Maximum number of bikes in the system
-    "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
+    "minimum_number_of_bikes": 8,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
     "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 12,                # ID (cell) of the depot position
-    "initial_cell_id": 12,                  # Initial cell where the truck starts
+    "depot_position_id": 36,                # ID (cell) of the depot position
+    "initial_cell_id": 36,                  # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,
@@ -680,6 +680,7 @@ def train_ppo(
         'use_net_flow': params["use_net_flow"],
         'discount_factor': params["gamma"],
         'depot_id': params['depot_position_id'],
+        'initial_cell': params['initial_cell_id'],
     }
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path

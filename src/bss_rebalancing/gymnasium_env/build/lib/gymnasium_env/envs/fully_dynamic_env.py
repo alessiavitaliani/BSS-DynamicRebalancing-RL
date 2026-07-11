@@ -117,24 +117,24 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.1
+    BASE_COST = -0.01
 
     # Invalid action penalty
     INVALID_ACTION = -1.0
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.6
+    LOOP_PENALTY = -0.15
 
     # Drop bike rewards
     DROP_BASE = 0.01
-    DROP_REBALANCED_CRITICAL = 2.0
-    DROP_IN_CRITICAL = 1.0
-    DROP_IN_SURPLUS = -1.2
+    DROP_REBALANCED_CRITICAL = 2.5
+    DROP_IN_CRITICAL = 1.5
+    DROP_IN_SURPLUS = -1.5
 
     # Pick-up rewards
     PICKUP_FROM_CRITICAL = -0.5
-    PICKUP_UNBALANCED_CELL = -2.0
-    PICKUP_FROM_SURPLUS = 0.3
+    PICKUP_UNBALANCED_CELL = -0.5
+    PICKUP_FROM_SURPLUS = 0.2
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1
@@ -146,19 +146,19 @@ class RewardComponents:
     # Eligibility penalties
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = -0.2
+    ELIGIBILITY_REVISIT_PENALTY = -0.1
     ELIGIBILITY_EXPLORATION_BONUS = 0.3
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.1
+    STAY_BASE = -0.2
     STAY_IN_CRITICAL = -1.0
     STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
-    DEPLOY_WEIGHT = 0.02
-    DEPOT_WEIGHT = 0.02
+    DEPLOY_WEIGHT = 0.05
+    DEPOT_WEIGHT = 0.05
 
 
 # =============================================================================
@@ -873,7 +873,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= self._total_failures / self._total_timeslots  # / 10.0
+            reward -= self._total_failures / (self._total_timeslots*20)  # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
