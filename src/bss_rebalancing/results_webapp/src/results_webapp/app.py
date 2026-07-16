@@ -30,6 +30,11 @@ def _training_tabs():
                 dbc.Col(dcc.Graph(id='epsilon-plot',        config=PLOT_CONFIG), width=6),
                 dbc.Col(dcc.Graph(id='total-failures-plot', config=PLOT_CONFIG), width=6),
             ], className='mt-3'),
+            dbc.Row([
+                dbc.Col(dcc.Graph(id='policy-loss-plot', config=PLOT_CONFIG), width=4),
+                dbc.Col(dcc.Graph(id='value-loss-plot',  config=PLOT_CONFIG), width=4),
+                dbc.Col(dcc.Graph(id='entropy-plot',     config=PLOT_CONFIG), width=4),
+            ], className='mt-3'),
         ]),
 
         # ── Episode Details ──────────────────────────────────────────────────

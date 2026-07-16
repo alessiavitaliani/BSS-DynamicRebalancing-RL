@@ -190,6 +190,9 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
                 'total_failures': scalars.get('total_failures', 0),
                 'total_invalid_actions': scalars.get('total_invalid_actions', 0),
                 'epsilon': scalars.get('epsilon', 0.0),
+                'policy_loss': scalars.get('policy_loss', 0.0),   
+                'value_loss': scalars.get('value_loss', 0.0),     
+                'entropy': scalars.get('entropy', 0.0),
             })
 
         if not episodes_data:
@@ -226,6 +229,9 @@ def build_summary_from_episodes(run_dir: Path, mode: str) -> Optional[pd.DataFra
             'total_failures': scalars.get('total_failures', 0),
             'total_invalid': scalars.get('total_invalid', 0),
             'epsilon': scalars.get('epsilon', 0.0),
+            'policy_loss': scalars.get('policy_loss', 0.0),   
+            'value_loss': scalars.get('value_loss', 0.0),     
+            'entropy': scalars.get('entropy', 0.0),
         })
 
     if not episodes_data:

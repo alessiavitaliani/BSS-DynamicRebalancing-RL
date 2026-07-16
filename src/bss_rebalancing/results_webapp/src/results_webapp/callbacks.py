@@ -303,6 +303,9 @@ def register_callbacks(app):
         Output('rewards-plot',       'figure'),
         Output('epsilon-plot',       'figure'),
         Output('total-failures-plot','figure'),
+        Output('policy-loss-plot',   'figure'),
+        Output('value-loss-plot',    'figure'),
+        Output('entropy-plot',       'figure'),
         Input('run-selector',        'value'),
         Input('mode-selector',       'value'),
         Input('interval-component',  'n_intervals'),
@@ -313,14 +316,14 @@ def register_callbacks(app):
         ef = _empty_fig()
 
         if mode != 'training' or not run_path:
-            return ef, ef, ef, ef
+            return ef, ef, ef, ef, ef, ef, ef
 
         run_dir = Path(run_path)
         summary = load_summary_data(run_dir, 'training')
 
         if summary is None or summary.empty:
             nf = _empty_fig('No training data available yet')
-            return nf, nf, nf, nf
+            return nf, nf, nf, nf, nf, nf, nf
 
         def _metric(col, title, ylabel, cumulative=False, color=COLORS['primary']):
             if col in summary.columns:
@@ -344,8 +347,17 @@ def register_callbacks(app):
         failures_fig  = _metric('total_failures',
                                 'Training Total Failures per Episode',
                                 'Total Failures', cumulative=True, color=COLORS['danger'])
+        policy_loss_fig = _metric('policy_loss',
+                              'Training Policy Loss per Episode',
+                              'Policy Loss', color=COLORS['primary'])
+        value_loss_fig  = _metric('value_loss',
+                              'Training Value Loss per Episode',
+                              'Value Loss', color=COLORS['secondary'])
+        entropy_fig     = _metric('entropy',
+                              'Training Entropy per Episode',
+                              'Entropy', cumulative=True, color=COLORS['warning'])
 
-        return mean_fail_fig, rewards_fig, epsilon_fig, failures_fig
+        return mean_fail_fig, rewards_fig, epsilon_fig, failures_fig, policy_loss_fig, value_loss_fig, entropy_fig
 
     # ========================================================================
     # Callback: Training — Episode Details
@@ -397,10 +409,10 @@ def register_callbacks(app):
     )
     def update_best_tab(run_path, mode, n):
         ef = _empty_fig()
-        empty_11 = (ef,) * 11
+        empty_10 = (ef,) * 10
 
         if mode != 'validation' or not run_path:
-            return (html.P(''),) + (html.P(''),) + (html.P(''),) + empty_11
+            return (html.P(''),) + (html.P(''),) + (html.P(''),) + empty_10
 
         run_dir  = Path(run_path)
         metadata = load_best_model_metadata(run_dir)
@@ -410,7 +422,7 @@ def register_callbacks(app):
                 '⚠ No best model metadata found (models/best/metadata.json missing).',
                 color='warning'
             )
-            return (banner,) + (html.P(''),) + (html.P(''),) + empty_11
+            return (banner,) + (html.P(''),) + (html.P(''),) + empty_10
 
         best_ep   = metadata.get('episode')
         best_score= metadata.get('score', 'N/A')
