@@ -29,7 +29,7 @@ from .results_manager import EpisodeResults, ResultsManager
 
 params = {
     "seed": 42,                                     # Random seed for reproducibility
-    "num_episodes": 200,                            # Total number of episodes
+    "num_episodes": 1,                              # Total number of episodes
     "total_timeslots": 56,                          # Total number of time slots in one episode
 
     "num_rebalancing_events": 5,                    # Number of rebalancing events per episode
@@ -39,8 +39,8 @@ params = {
 
     "maximum_number_of_bikes": 1500,                # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
-    "depot_position_id": 1,                         # ID (cell) of the depot position
-    "initial_cell_id": 18                           # Initial cell where the truck starts
+    "depot_position_id": 31,                        # ID (cell) of the depot position
+    "initial_cell_id": 31                           # Initial cell where the truck starts
 }
 
 

@@ -134,7 +134,7 @@ class RewardComponents:
     # Pick-up rewards
     PICKUP_FROM_CRITICAL = -0.5
     PICKUP_UNBALANCED_CELL = -2.0
-    PICKUP_FROM_SURPLUS = 0.2
+    PICKUP_FROM_SURPLUS = 0.5
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1

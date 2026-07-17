@@ -112,8 +112,8 @@ class BenchmarkDefaults:
     BIKES_PER_CELL = 5                # Base allocation per cell
 
     # Environment setup
-    DEPOT_ID = 103                    # Depot cell ID
-    INITIAL_CELL_ID = 103             # Starting cell ID
+    DEPOT_ID = 31                    # Depot cell ID
+    INITIAL_CELL_ID = 31             # Starting cell ID
     NUM_REBALANCING_EVENTS = 8        # Rebalancing ops per day
 
     # Reproducibility
