@@ -89,7 +89,7 @@ class PPOAgent:
                 advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             
             returns = advantages + values
-            returns = torch.clamp(returns, -150, 150)
+            #returns = torch.clamp(returns, -150, 150)
             
             if torch.isnan(advantages).any() or torch.isnan(returns).any():
                 print("[WARN] NaN in GAE, skipping update")
@@ -138,7 +138,7 @@ class PPOAgent:
                 # Value Loss (MSE):
                 # L^VF = (V_predicted - V_target)^2
                 #v_loss = self.vf_coef * ((newvalue.view(-1) - returns) ** 2).mean()
-                v_loss   = self.vf_coef * 0.5 * ((newvalue.view(-1) - mb_returns) ** 2).mean()
+                v_loss   = self.vf_coef * ((newvalue.view(-1) - mb_returns) ** 2).mean()
 
                 # Entropy Bonus (prevents premature convergence)
                 ent_loss = self.ent_coef * entropy.mean()

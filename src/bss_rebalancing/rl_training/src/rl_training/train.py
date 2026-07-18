@@ -59,19 +59,11 @@ if mp.current_process().name == "MainProcess":
 params = {
     "seed": int(42),                                # Random seed for reproducibility
     "num_episodes": 400,                            # Total number of training episodes
-    #"batch_size": int(64),                          # Batch size for replay buffer sampling
-    #"replay_buffer_capacity": int(1e5),             # Capacity of replay buffer: 0.1 million transitions
     "rollout_steps": 4096,                          # Buffer capacity
     "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
-    #"epsilon_start": 1.0,                           # Starting exploration rate
-    #"epsilon_delta": 0.03,                          # Epsilon decay rate
-    #"epsilon_end": 0.02,                            # Minimum exploration rate
-    #"epsilon_decay": 1e-5,                          # Epsilon decay constant
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
     "lr": 1e-4,                                     # Learning rate
-    #"soft_update": True,                            # Use soft update for target network
-    #"tau": 0.005,                                   # Tau parameter for soft update
     # PPO params
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 

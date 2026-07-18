@@ -88,8 +88,8 @@ class EnvDefaults:
 
     # RL parameters
     DISCOUNT_FACTOR = 0.99
-    ELIGIBILITY_DECAY = 0.9968
-    BORDER_ELIGIBILITY_DECAY = 0.99
+    ELIGIBILITY_DECAY = 0.997
+    BORDER_ELIGIBILITY_DECAY = 0.999
 
     # Default starting conditions
     DEFAULT_DAY = "monday"
@@ -117,13 +117,13 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.02
+    BASE_COST = -0.05
 
     # Invalid action penalty
-    INVALID_ACTION = -1.0
+    INVALID_ACTION = -1.5
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.3
+    LOOP_PENALTY = -0.5
 
     # Drop bike rewards
     DROP_BASE = 0.01
@@ -132,33 +132,37 @@ class RewardComponents:
     DROP_IN_SURPLUS = -0.5
 
     # Pick-up rewards
-    PICKUP_FROM_CRITICAL = -0.5
-    PICKUP_UNBALANCED_CELL = -2.0
+    PICKUP_FROM_CRITICAL = -1.5
+    PICKUP_UNBALANCED_CELL = -1.5
     PICKUP_FROM_SURPLUS = 0.5
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1
     CHARGE_USELESS_NORMAL = -0.3
-    CHARGE_USEFUL_CRITICAL = 0.5
-    CHARGE_USEFUL_NORMAL = 0.3
+    CHARGE_USEFUL_CRITICAL = 1.0
+    CHARGE_USEFUL_NORMAL = 0.4
     CHARGE_LOW_BATTERY_THRESHOLD = 0.8
 
     # Eligibility penalties
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = -0.2
-    ELIGIBILITY_EXPLORATION_BONUS = 0.3
+    ELIGIBILITY_REVISIT_PENALTY = -0.15
+    ELIGIBILITY_EXPLORATION_BONUS = 0.4
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.1
-    STAY_IN_CRITICAL = -0.5
+    STAY_BASE = -0.3
+    STAY_IN_CRITICAL = -0.8
     STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
     DEPLOY_WEIGHT = 0.05
     DEPOT_WEIGHT = 0.08
+    
+    COVERAGE_PENALTY_WEIGHT = 0.15
+    COVERAGE_STALE_THRESHOLD_INTERIOR = 0.15  
+    COVERAGE_STALE_THRESHOLD_BORDER = 0.88
 
 
 # =============================================================================
@@ -1256,6 +1260,11 @@ class FullyDynamicEnv(gym.Env):
 
         idle_ratio = len(self._depot.bikes) / self._maximum_number_of_bikes
         r_depot = -RewardComponents.DEPOT_WEIGHT * idle_ratio
+        
+        num_stale_cells = sum(1 for c in self._cells.values()
+            if c.get_eligibility_score() < (RewardComponents.COVERAGE_STALE_THRESHOLD_INTERIOR if c.has_all_neighbors()
+            else RewardComponents.COVERAGE_STALE_THRESHOLD_BORDER))
+        r_coverage = -RewardComponents.COVERAGE_PENALTY_WEIGHT * (num_stale_cells / len(self._cells))
 
         # Combine all reward components
         reward = (
@@ -1268,6 +1277,7 @@ class FullyDynamicEnv(gym.Env):
             + loop_penalty
             + r_deploy
             + r_depot
+            + r_coverage
             - 0.5 * delta_global
         )
 

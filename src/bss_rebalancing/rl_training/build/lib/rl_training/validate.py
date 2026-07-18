@@ -8,6 +8,7 @@ import argparse
 import warnings
 import logging
 import torch
+import numpy as np
 
 import gymnasium_env  # noqa: F401 — registers the gym environment
 import gymnasium as gym
@@ -17,7 +18,8 @@ from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions
 from gymnasium_env.envs.fully_dynamic_env import EnvDefaults, RewardComponents
 
-from rl_training.agents import DQNAgent
+from rl_training.agents import DQNAgent, PPOAgent
+from rl_training.networks.ppo import PPO as PPONetwork
 from rl_training.results import ResultsManager, EpisodeResults
 from rl_training.logging_config import init_logging, LoggingConfig, get_logger
 from rl_training.utils import (
@@ -53,11 +55,15 @@ params = {
     "minimum_number_of_bikes": 1,
     "gamma": 0.95,
     "lr": 1e-4,
-    "tau": 0.005,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "ent_coef": 0.03,
+    "vf_coef": 0.5,
+    "update_epochs": 6,
     "enable_repositioning": False,
     "use_net_flow": False,
-    "depot_position_id": 18,
-    "initial_cell_id": 18,
+    "depot_position_id": 31,
+    "initial_cell_id": 31,
 }
 
 reward_params = {
@@ -209,9 +215,9 @@ Examples:
 # validate_dqn
 # ------------------------------------------------------------------------------
 
-def validate_dqn(
+def validate_ppo(
         env,
-        agent: DQNAgent,
+        agent: PPOAgent,
         episode: int,
         device: torch.device,
         run_id: int,
@@ -232,6 +238,7 @@ def validate_dqn(
     outside_system_bikes = []
     demand_per_timeslot = []
     traveling_bikes = []
+    state_values = []
 
     action_per_step = []
     global_critic_scores = []
@@ -308,7 +315,8 @@ def validate_dqn(
         )
 
         # ── Action (A) selection ────────────────────────────────────────────────
-        action = agent.select_action(single_state, epsilon_greedy=True)
+        avoid_actions = info.get("avoid_action", [])
+        action, _, value = agent.select_action(single_state, avoid_action=avoid_actions)
 
         # ── Environment step ────────────────────────────────────────────────────
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
@@ -342,6 +350,7 @@ def validate_dqn(
 
             rewards.append(total_reward_per_timeslot)
             failures.append(total_failures_per_timeslot)
+            state_values.append(value.item())
             system_bikes.append(info['number_of_system_bikes'])
             truck_load.append(info['truck_bikes'])
             depot_load.append(info['depot_bikes'])
@@ -413,9 +422,7 @@ def validate_dqn(
         "traveling_bikes": traveling_bikes,
         "demand_per_timeslot": demand_per_timeslot,
         "cell_subgraph": cell_graph,
-        # Not tracked during validation — kept for EpisodeResults compatibility
-        "q_values_per_timeslot": [],
-        "epsilon_per_timeslot": [],
+        "state_values_per_timeslot": state_values,
     }
 
 # ------------------------------------------------------------------------------
@@ -541,22 +548,20 @@ def main():
     # ------------------------------------------------------------------
     # Agent — frozen, no replay buffer
     # ------------------------------------------------------------------
-    agent = DQNAgent(
-        seed=int(params['seed']),
-        num_actions=env.action_space.n,
-        observation_space_len=env.observation_space.shape[0],
-        gamma=params["gamma"],
-        epsilon_start=0.01,
-        epsilon_end=0.01,
-        epsilon_decay=1,  # no decay
-        lr=params["lr"],
+    network = PPONetwork(num_actions=env.action_space.n, node_features=4).to(device)
+    agent = PPOAgent(
+        network=network,
+        lr=params.get("lr", 3e-4),
+        gamma=params.get("gamma", 0.99),
+        gae_lambda=params.get("gae_lambda"),
+        clip_coef=params.get("clip_coef"),
+        ent_coef=params.get("ent_coef"),
+        vf_coef=params.get("vf_coef"),
+        update_epochs=params.get("update_epochs"),
         device=device,
-        tau=params["tau"],
-        soft_update=False,
-        replay_buffer=None,
     )
     agent.load_model(model_path)
-    agent.train_model.eval()
+    agent.network.eval()
     if not non_interactive:
         print("Model loaded successfully.\n")
 
@@ -581,7 +586,7 @@ def main():
             current_seed = int(params["seed"] + episode)
             set_seed(current_seed)
 
-            validation_dict = validate_dqn(
+            validation_dict = validate_ppo(
                 seed=current_seed,
                 env=env,
                 agent=agent,
@@ -598,18 +603,18 @@ def main():
                 episode=episode,
                 mode="validation",
                 seed=current_seed,
-                epsilon=agent.epsilon_min,
-                epsilon_per_timeslot=validation_dict.get("epsilon_per_timeslot", []),
+                epsilon=0.0,   # PPO: nessun epsilon, esplorazione via entropia
                 rewards_per_timeslot=validation_dict["rewards_per_timeslot"],
                 total_reward=sum(validation_dict["rewards_per_timeslot"]),
                 failures_per_timeslot=validation_dict["failures_per_timeslot"],
                 total_failures=sum(validation_dict["failures_per_timeslot"]),
                 mean_daily_failures=sum(validation_dict["failures_per_timeslot"]) / num_days,
+                state_values_per_timeslot=validation_dict.get("state_values_per_timeslot", []),
+                mean_state_values=float(np.mean(validation_dict["state_values_per_timeslot"]))
+                                if validation_dict.get("state_values_per_timeslot") else 0.0,
                 action_per_step=validation_dict["action_per_step"],
                 total_invalid_actions=validation_dict["total_invalid_actions"],
                 reward_tracking_per_action=validation_dict["reward_tracking_per_action"],
-                q_values_per_timeslot=validation_dict.get("q_values_per_timeslot", []),
-                mean_q_values=0.0,
                 traveling_bikes=validation_dict['traveling_bikes'],
                 deployed_bikes=validation_dict["deployed_bikes"],
                 demand_per_timeslot=validation_dict['demand_per_timeslot'],

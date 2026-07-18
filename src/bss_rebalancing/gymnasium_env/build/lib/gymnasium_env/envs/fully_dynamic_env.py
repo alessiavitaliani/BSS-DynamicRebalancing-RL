@@ -71,13 +71,13 @@ class EnvDefaults:
     """Default configuration values for the environment."""
 
     # Bike fleet parameters
-    MAX_BIKES = 1200
+    MAX_BIKES = 1000
     MIN_BIKES_PER_CELL = 5
     BASE_REPOSITIONING = True
     NET_FLOW_BASED_REPOSITIONING = False
 
     # Truck parameters
-    MAX_TRUCK_LOAD = 40
+    MAX_TRUCK_LOAD = 30
     INITIAL_TRUCK_BIKES = 15
 
     # Time parameters
@@ -89,7 +89,7 @@ class EnvDefaults:
     # RL parameters
     DISCOUNT_FACTOR = 0.99
     ELIGIBILITY_DECAY = 0.997
-    BORDER_ELIGIBILITY_DECAY = 0.9998
+    BORDER_ELIGIBILITY_DECAY = 0.999
 
     # Default starting conditions
     DEFAULT_DAY = "monday"
@@ -117,13 +117,13 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.2
+    BASE_COST = -0.05
 
     # Invalid action penalty
-    INVALID_ACTION = -2.0
+    INVALID_ACTION = -1.5
 
     # Loop detection penalty
-    LOOP_PENALTY = -1.0
+    LOOP_PENALTY = -0.5
 
     # Drop bike rewards
     DROP_BASE = 0.01
@@ -132,33 +132,33 @@ class RewardComponents:
     DROP_IN_SURPLUS = -0.5
 
     # Pick-up rewards
-    PICKUP_FROM_CRITICAL = -2.0
-    PICKUP_UNBALANCED_CELL = -1.8
+    PICKUP_FROM_CRITICAL = -1.5
+    PICKUP_UNBALANCED_CELL = -1.5
     PICKUP_FROM_SURPLUS = 0.5
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.1
     CHARGE_USELESS_NORMAL = -0.3
-    CHARGE_USEFUL_CRITICAL = 1.2
+    CHARGE_USEFUL_CRITICAL = 1.0
     CHARGE_USEFUL_NORMAL = 0.4
     CHARGE_LOW_BATTERY_THRESHOLD = 0.8
 
     # Eligibility penalties
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = -0.1
-    ELIGIBILITY_EXPLORATION_BONUS = 0.5
+    ELIGIBILITY_REVISIT_PENALTY = -0.15
+    ELIGIBILITY_EXPLORATION_BONUS = 0.4
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.5
-    STAY_IN_CRITICAL = -1.0
+    STAY_BASE = -0.3
+    STAY_IN_CRITICAL = -0.8
     STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
     DEPLOY_WEIGHT = 0.05
-    DEPOT_WEIGHT = 0.05
+    DEPOT_WEIGHT = 0.08
     
     COVERAGE_PENALTY_WEIGHT = 0.15
     COVERAGE_STALE_THRESHOLD_INTERIOR = 0.15  
@@ -877,7 +877,7 @@ class FullyDynamicEnv(gym.Env):
 
         # Apply final penalty if episode complete
         if done:
-            reward -= self._total_failures / (self._total_timeslots*20)  # / 10.0
+            reward -= (self._total_failures / self._total_timeslots) / 25.0  # / 10.0
             self._env_logger.log_done(
                 time=convert_seconds_to_hours_minutes_day(
                     day=self._day.upper(),
