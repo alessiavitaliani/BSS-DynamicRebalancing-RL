@@ -51,8 +51,8 @@ if torch.backends.mps.is_available():
 params = {
     "seed": 42,
     "total_timeslots": 56,
-    "maximum_number_of_bikes": 500,
-    "minimum_number_of_bikes": 1,
+    "maximum_number_of_bikes": 1000,
+    "minimum_number_of_bikes": 5,
     "gamma": 0.95,
     "lr": 1e-4,
     "gae_lambda": 0.95,
@@ -60,10 +60,10 @@ params = {
     "ent_coef": 0.03,
     "vf_coef": 0.5,
     "update_epochs": 6,
-    "enable_repositioning": False,
-    "use_net_flow": False,
-    "depot_position_id": 31,
-    "initial_cell_id": 31,
+    "enable_repositioning": True,
+    "use_net_flow": True,
+    "depot_position_id": 12,
+    "initial_cell_id": 12,
 }
 
 reward_params = {

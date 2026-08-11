@@ -39,8 +39,8 @@ params = {
 
     "maximum_number_of_bikes": 1500,                # Maximum number of bikes in the system
     "minimum_number_of_bikes": 1,                   # Minimum number of bikes per cell
-    "depot_position_id": 31,                        # ID (cell) of the depot position
-    "initial_cell_id": 31                           # Initial cell where the truck starts
+    "depot_position_id": 12,                        # ID (cell) of the depot position
+    "initial_cell_id": 12                           # Initial cell where the truck starts
 }
 
 

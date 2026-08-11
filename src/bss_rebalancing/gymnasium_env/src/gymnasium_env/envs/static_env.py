@@ -73,8 +73,8 @@ class EnvDefaults:
 
     # RL parameters
     DISCOUNT_FACTOR = 0.99
-    ELIGIBILITY_DECAY = 0.9968
-    BORDER_ELIGIBILITY_DECAY = 0.99
+    ELIGIBILITY_DECAY = 0.997
+    BORDER_ELIGIBILITY_DECAY = 0.999
 
     # Default starting conditions
     DEFAULT_DAY = "monday"

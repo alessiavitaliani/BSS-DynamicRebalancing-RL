@@ -58,26 +58,26 @@ if mp.current_process().name == "MainProcess":
 
 params = {
     "seed": int(42),                                # Random seed for reproducibility
-    "num_episodes": 400,                            # Total number of training episodes
+    "num_episodes": 250,                            # Total number of training episodes
     "rollout_steps": 4096,                          # Buffer capacity
     "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
-    "lr": 1e-4,                                     # Learning rate
+    "lr": 2.5e-5,                                   # Learning rate
     # PPO params
-    "clip_coef": 0.2,                               # Clipping coefficient 
+    "clip_coef": 0.15,                              # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
-    "ent_coef": 0.03,                               # Entropy coefficient
+    "ent_coef": 0.02,                               # Entropy coefficient
     "vf_coef": 0.5,                                 # Value coefficient
     "update_epochs": 6,                            # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
-    "minimum_number_of_bikes": 8,           # Minimum number of bikes per cell
-    "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
-    "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 31,                # ID (cell) of the depot position
-    "initial_cell_id": 31,                  # Initial cell where the truck starts
+    "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
+    "enable_repositioning": False,           # Use base repositioning strategy at the start of each episode
+    "use_net_flow": False,                   # Use net flow repositioning strategy at the start of each episode
+    "depot_position_id": 12,                # ID (cell) of the depot position
+    "initial_cell_id": 12,                  # Initial cell where the truck starts
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,

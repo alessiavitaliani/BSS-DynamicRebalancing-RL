@@ -301,7 +301,7 @@ def register_callbacks(app):
     @app.callback(
         Output('mean-failures-plot', 'figure'),
         Output('rewards-plot',       'figure'),
-        Output('epsilon-plot',       'figure'),
+        #Output('epsilon-plot',       'figure'),
         Output('total-failures-plot','figure'),
         Output('policy-loss-plot',   'figure'),
         Output('value-loss-plot',    'figure'),
@@ -316,14 +316,14 @@ def register_callbacks(app):
         ef = _empty_fig()
 
         if mode != 'training' or not run_path:
-            return ef, ef, ef, ef, ef, ef, ef
+            return ef, ef, ef, ef, ef, ef
 
         run_dir = Path(run_path)
         summary = load_summary_data(run_dir, 'training')
 
         if summary is None or summary.empty:
             nf = _empty_fig('No training data available yet')
-            return nf, nf, nf, nf, nf, nf, nf
+            return nf, nf, nf, nf, nf, nf
 
         def _metric(col, title, ylabel, cumulative=False, color=COLORS['primary']):
             if col in summary.columns:
@@ -341,9 +341,9 @@ def register_callbacks(app):
         rewards_fig   = _metric('total_reward',
                                 'Training Total Reward per Episode',
                                 'Total Reward', cumulative=True, color=COLORS['secondary'])
-        epsilon_fig   = _metric('epsilon',
-                                'Training Epsilon Decay',
-                                'Epsilon', color=COLORS['warning'])
+        #epsilon_fig   = _metric('epsilon',
+        #                        'Training Epsilon Decay',
+        #                        'Epsilon', color=COLORS['warning'])
         failures_fig  = _metric('total_failures',
                                 'Training Total Failures per Episode',
                                 'Total Failures', cumulative=True, color=COLORS['danger'])
@@ -357,7 +357,7 @@ def register_callbacks(app):
                               'Training Entropy per Episode',
                               'Entropy', cumulative=True, color=COLORS['warning'])
 
-        return mean_fail_fig, rewards_fig, epsilon_fig, failures_fig, policy_loss_fig, value_loss_fig, entropy_fig
+        return mean_fail_fig, rewards_fig, failures_fig, policy_loss_fig, value_loss_fig, entropy_fig
 
     # ========================================================================
     # Callback: Training — Episode Details

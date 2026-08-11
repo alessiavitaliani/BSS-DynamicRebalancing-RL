@@ -95,7 +95,7 @@ class EnvDefaults:
     DEFAULT_DAY = "monday"
     DEFAULT_TIMESLOT = 0
     DEFAULT_TOTAL_TIMESLOTS = 56
-    DEFAULT_DEPOT_ID = 1
+    DEFAULT_DEPOT_ID = 17
 
     # Precomputation parameters
     PRECOMPUTED_EPISODE_TIMESLOTS = 56  # 7 days × 8 slots
@@ -117,52 +117,52 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.05
+    BASE_COST = -0.01
 
     # Invalid action penalty
     INVALID_ACTION = -1.5
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.5
+    LOOP_PENALTY = -0.2
 
     # Drop bike rewards
     DROP_BASE = 0.01
-    DROP_REBALANCED_CRITICAL = 2.0
-    DROP_IN_CRITICAL = 1.0
-    DROP_IN_SURPLUS = -0.5
+    DROP_REBALANCED_CRITICAL = 3.0
+    DROP_IN_CRITICAL = 2.5
+    DROP_IN_SURPLUS = -1.0
 
     # Pick-up rewards
     PICKUP_FROM_CRITICAL = -1.5
-    PICKUP_UNBALANCED_CELL = -1.5
-    PICKUP_FROM_SURPLUS = 0.5
+    PICKUP_UNBALANCED_CELL = -0.1
+    PICKUP_FROM_SURPLUS = 0.8
 
     # Charge bike rewards
-    CHARGE_USELESS_CRITICAL = -0.1
-    CHARGE_USELESS_NORMAL = -0.3
-    CHARGE_USEFUL_CRITICAL = 1.0
+    CHARGE_USELESS_CRITICAL = -0.2
+    CHARGE_USELESS_NORMAL = -0.4
+    CHARGE_USEFUL_CRITICAL = 1.2
     CHARGE_USEFUL_NORMAL = 0.4
     CHARGE_LOW_BATTERY_THRESHOLD = 0.8
 
     # Eligibility penalties
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = -0.15
-    ELIGIBILITY_EXPLORATION_BONUS = 0.4
+    ELIGIBILITY_REVISIT_PENALTY = 0.0
+    ELIGIBILITY_EXPLORATION_BONUS = 0.05
     ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
 
     # Stay penalties
-    STAY_BASE = -0.3
-    STAY_IN_CRITICAL = -0.8
+    STAY_BASE = -0.1
+    STAY_IN_CRITICAL = -1.0
     STAY_NO_CRITIC = 0.0
 
     # Other
     SURPLUS_THRESHOLD = -0.67
     DEPLOY_WEIGHT = 0.05
-    DEPOT_WEIGHT = 0.08
+    DEPOT_WEIGHT = 0.05
     
-    COVERAGE_PENALTY_WEIGHT = 0.15
+    COVERAGE_PENALTY_WEIGHT = 0.35
     COVERAGE_STALE_THRESHOLD_INTERIOR = 0.15  
-    COVERAGE_STALE_THRESHOLD_BORDER = 0.88
+    COVERAGE_STALE_THRESHOLD_BORDER = 0.45
 
 
 # =============================================================================
@@ -1237,6 +1237,10 @@ class FullyDynamicEnv(gym.Env):
         elif action == Actions.CHARGE_BIKE.value:
             bike_charge_reward = self._compute_charge_reward(was_critical)
             # bike_charge_reward = 0.0  # Placeholder for future implementation
+            self._env_logger.info(
+                f"CHARGE last_charge={self._truck.last_charge:.3f} "
+                f"was_critical={was_critical} reward={bike_charge_reward}"
+            )
 
         elif action in {
             Actions.UP.value,
@@ -1337,7 +1341,7 @@ class FullyDynamicEnv(gym.Env):
         if self._truck.last_charge < RewardComponents.CHARGE_LOW_BATTERY_THRESHOLD:
             # Bike was already nearly full → useless charge
             if was_critical:
-                return RewardComponents.CHARGE_USELESS_CRITICAL  # -0.1
+                    return RewardComponents.CHARGE_USELESS_CRITICAL  # -0.1
             else:
                 return RewardComponents.CHARGE_USELESS_NORMAL  # -0.3
         else:
@@ -1561,6 +1565,9 @@ class FullyDynamicEnv(gym.Env):
                         net_flow_per_cell[cell.get_id()] += 1
 
             total_negative_flow = sum(f for f in net_flow_per_cell.values() if f < 0)
+            
+            MAX_BONUS_MULTIPLIER = 5
+            per_cell_cap = base_bikes_per_cell * MAX_BONUS_MULTIPLIER
 
             if total_negative_flow < 0:  # guard: at least one cell has net outflow
                 for cell_id, flow in net_flow_per_cell.items():
@@ -1568,6 +1575,7 @@ class FullyDynamicEnv(gym.Env):
                         proportional_bikes = int(
                             (flow / total_negative_flow) * remaining
                         )
+                        proportional_bikes = min(proportional_bikes, per_cell_cap)
                         bikes_per_cell[cell_id] += proportional_bikes
                         bikes_positioned += proportional_bikes
 
