@@ -74,8 +74,8 @@ params = {
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
-    "enable_repositioning": False,           # Use base repositioning strategy at the start of each episode
-    "use_net_flow": False,                   # Use net flow repositioning strategy at the start of each episode
+    "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
+    "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
     "depot_position_id": 12,                # ID (cell) of the depot position
     "initial_cell_id": 12,                  # Initial cell where the truck starts
 
