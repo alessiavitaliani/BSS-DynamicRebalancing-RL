@@ -18,7 +18,7 @@ from torch_geometric.data import Data
 from gymnasium_env.simulator.utils import Actions
 from gymnasium_env.envs.fully_dynamic_env import EnvDefaults, RewardComponents
 
-from rl_training.agents import DQNAgent, PPOAgent
+from rl_training.agents import PPOAgent
 from rl_training.networks.ppo import PPO as PPONetwork
 from rl_training.results import ResultsManager, EpisodeResults
 from rl_training.logging_config import init_logging, LoggingConfig, get_logger

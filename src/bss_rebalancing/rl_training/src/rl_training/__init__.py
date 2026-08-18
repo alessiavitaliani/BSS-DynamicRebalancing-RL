@@ -7,9 +7,9 @@ Reinforcement Learning training and validation module for the BSS Dynamic Rebala
 __version__ = "1.0.0"
 __author__ = "Edoardo Scarpel"
 
-from rl_training.agents import DQNAgent, PPOAgent
-from rl_training.memory import ReplayBuffer, PairData, PPOBuffer
-from rl_training.networks import DQN, PPO
+from rl_training.agents import PPOAgent
+from rl_training.memory import PPOBuffer
+from rl_training.networks import PPO
 from rl_training.results import EpisodeResults, ResultsManager
 from rl_training.utils import (
     set_seed,
@@ -22,12 +22,8 @@ from rl_training.utils import (
 from rl_training.logging_config import init_logging, LoggingConfig, get_logger
 
 __all__ = [
-    "DQNAgent",
     "PPOAgent",
-    "ReplayBuffer",
-    "PairData",
     "PPOBuffer",
-    "DQN",
     "PPO",
     "EpisodeResults",
     "ResultsManager",
