@@ -38,7 +38,7 @@
       "url_suffix": "-citibike-tripdata.zip",
       "graph_place": "Manhattan, New York, USA",
       "network_type": "bike",
-      "bbox": [40.7766, 40.7620, -73.9741, -73.9930], 
+      "bbox": [40.8850, 40.7000, -73.9000, -74.0300], 
       "years": [2024],
       "months": [9, 10],
       "station_id_type": "alphanumeric",

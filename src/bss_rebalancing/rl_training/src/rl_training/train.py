@@ -63,13 +63,13 @@ params = {
     "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
-    "lr": 2.5e-5,                                   # Learning rate
+    "lr": 2.0e-5,                                   # Learning rate
     # PPO params
-    "clip_coef": 0.15,                              # Clipping coefficient 
+    "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
     "ent_coef": 0.02,                               # Entropy coefficient
-    "vf_coef": 0.5,                                 # Value coefficient
-    "update_epochs": 6,                            # How many times buffer is processed at every update 
+    "vf_coef": 0.25,                                # Value coefficient
+    "update_epochs": 6,                             # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system

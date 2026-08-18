@@ -77,8 +77,8 @@ class EnvDefaults:
     NET_FLOW_BASED_REPOSITIONING = False
 
     # Truck parameters
-    MAX_TRUCK_LOAD = 30
-    INITIAL_TRUCK_BIKES = 15
+    MAX_TRUCK_LOAD = 80
+    INITIAL_TRUCK_BIKES = 40
 
     # Time parameters
     TIMESLOT_DURATION_HOURS = 3
@@ -95,7 +95,7 @@ class EnvDefaults:
     DEFAULT_DAY = "monday"
     DEFAULT_TIMESLOT = 0
     DEFAULT_TOTAL_TIMESLOTS = 56
-    DEFAULT_DEPOT_ID = 17
+    DEFAULT_DEPOT_ID = 12
 
     # Precomputation parameters
     PRECOMPUTED_EPISODE_TIMESLOTS = 56  # 7 days × 8 slots
@@ -117,42 +117,42 @@ class RewardComponents:
     """Reward function component values."""
 
     # Base step cost
-    BASE_COST = -0.01
+    BASE_COST = -0.08
 
     # Invalid action penalty
-    INVALID_ACTION = -1.5
+    INVALID_ACTION = -0.25
 
     # Loop detection penalty
-    LOOP_PENALTY = -0.2
+    LOOP_PENALTY = -0.15
 
     # Drop bike rewards
-    DROP_BASE = 0.01
-    DROP_REBALANCED_CRITICAL = 3.0
-    DROP_IN_CRITICAL = 2.5
-    DROP_IN_SURPLUS = -1.0
+    DROP_BASE = 0.0
+    DROP_REBALANCED_CRITICAL = 2.5
+    DROP_IN_CRITICAL = 1.5
+    DROP_IN_SURPLUS = -0.5
 
     # Pick-up rewards
-    PICKUP_FROM_CRITICAL = -1.5
+    PICKUP_FROM_CRITICAL = -1.0
     PICKUP_UNBALANCED_CELL = -0.1
-    PICKUP_FROM_SURPLUS = 0.8
+    PICKUP_FROM_SURPLUS = 1.0
 
     # Charge bike rewards
     CHARGE_USELESS_CRITICAL = -0.2
-    CHARGE_USELESS_NORMAL = -0.4
-    CHARGE_USEFUL_CRITICAL = 1.2
-    CHARGE_USEFUL_NORMAL = 0.4
-    CHARGE_LOW_BATTERY_THRESHOLD = 0.8
+    CHARGE_USELESS_NORMAL = -0.2
+    CHARGE_USEFUL_CRITICAL = 1.5
+    CHARGE_USEFUL_NORMAL = 0.5
+    CHARGE_LOW_BATTERY_THRESHOLD = 0.3
 
     # Eligibility penalties
     ELIGIBILITY_HIGH_THRESHOLD = 0.7
     ELIGIBILITY_LOW_THRESHOLD = 0.2
-    ELIGIBILITY_REVISIT_PENALTY = 0.0
+    ELIGIBILITY_REVISIT_PENALTY = -0.03
     ELIGIBILITY_EXPLORATION_BONUS = 0.05
-    ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.05
+    ELIGIBILITY_EMPTY_TRUCK_PENALTY = -0.03
 
     # Stay penalties
-    STAY_BASE = -0.1
-    STAY_IN_CRITICAL = -1.0
+    STAY_BASE = -0.08
+    STAY_IN_CRITICAL = -0.3
     STAY_NO_CRITIC = 0.0
 
     # Other
@@ -160,9 +160,9 @@ class RewardComponents:
     DEPLOY_WEIGHT = 0.05
     DEPOT_WEIGHT = 0.05
     
-    COVERAGE_PENALTY_WEIGHT = 0.35
+    COVERAGE_PENALTY_WEIGHT = 0.15
     COVERAGE_STALE_THRESHOLD_INTERIOR = 0.15  
-    COVERAGE_STALE_THRESHOLD_BORDER = 0.45
+    COVERAGE_STALE_THRESHOLD_BORDER = 0.3
 
 
 # =============================================================================
