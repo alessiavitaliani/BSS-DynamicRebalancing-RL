@@ -28,7 +28,7 @@ def create_controls():
                     )
                 ])
             ])
-        ], width=4),
+        ], width=3),
 
         dbc.Col([
             dbc.Card([
@@ -48,7 +48,7 @@ def create_controls():
                     )
                 ])
             ])
-        ], width=4),
+        ], width=3),
 
         dbc.Col([
             dbc.Card([
@@ -61,7 +61,26 @@ def create_controls():
                     )
                 ])
             ])
-        ], width=4),
+        ], width=3),
+
+        dbc.Col([
+            dbc.Card([
+                dbc.CardBody([
+                    html.Label('Area:', className='fw-bold'),
+                    dcc.Dropdown(
+                        id='area-selector',
+                        clearable=False,
+                        placeholder='All areas (combined)',
+                        options=[{'label': 'All areas (combined)', 'value': '__all__'}],
+                        value='__all__',
+                    ),
+                    html.Small(
+                        'Only applies to multi-area runs (--data-paths).',
+                        className='text-muted'
+                    ),
+                ])
+            ])
+        ], width=3),
     ], className='mb-4')
 
 

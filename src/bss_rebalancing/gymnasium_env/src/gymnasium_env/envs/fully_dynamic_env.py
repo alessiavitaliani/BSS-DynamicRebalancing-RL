@@ -79,6 +79,7 @@ class EnvDefaults:
     # Truck parameters
     MAX_TRUCK_LOAD = 80
     INITIAL_TRUCK_BIKES = 40
+    NUM_TRUCKS = 2
 
     # Time parameters
     TIMESLOT_DURATION_HOURS = 3
@@ -107,10 +108,10 @@ class EnvDefaults:
 class BorderType:
     """Cell border classification based on number of missing adjacent cells."""
 
-    NORMAL = 0  # All 4 adjacent cells exist
-    EDGE = 1  # 1 adjacent cell missing
-    CORNER = 2  # 2 adjacent cells missing
-    DEAD_END = 3  # 3 adjacent cells missing
+    NORMAL = 0      # All 4 adjacent cells exist
+    EDGE = 1        # 1 adjacent cell missing
+    CORNER = 2      # 2 adjacent cells missing
+    DEAD_END = 3    # 3 adjacent cells missing
 
 
 class RewardComponents:
@@ -218,7 +219,15 @@ class FullyDynamicEnv(gym.Env):
         log_dir = (
             os.path.join(results_path, "logs") if results_path is not None else None
         )
-        self._env_logger = EnvLogger(name="env")
+        # Env logger: lazy init. `name` is made unique per instance (not just
+        # "env") because Python's logging.getLogger(name) returns the SAME
+        # singleton Logger object for a given name — with multi-area training
+        # creating several FullyDynamicEnv instances in one process, a fixed
+        # name meant every instance shared one Logger/FileHandler, so whichever
+        # env reset() last silently redirected (and truncated, mode="w") the
+        # log file for ALL of them. A unique name per instance gives each env
+        # its own Logger/handler pointing at its own results_path/logs/env.log.
+        self._env_logger = EnvLogger(name=f"env-{id(self)}")
         self._env_logger.init(
             log_dir=log_dir,
             filename="env.log",
@@ -328,8 +337,12 @@ class FullyDynamicEnv(gym.Env):
         self._enable_repositioning = EnvDefaults.BASE_REPOSITIONING
         self._use_net_flow = EnvDefaults.NET_FLOW_BASED_REPOSITIONING
 
-        # Station and truck objects
-        self.__truck: Truck | None = None
+        # Station and truck objects (multi-truck: shared policy, one truck acts
+        # per step() call; turns rotate to whichever truck has been waiting
+        # longest — see `_active_truck_idx` and `Truck.free_at`).
+        self._trucks: list[Truck] = []
+        self._active_truck_idx: int = 0
+        self._num_trucks: int = EnvDefaults.NUM_TRUCKS
 
         # Time tracking
         self._env_time = 0
@@ -373,15 +386,13 @@ class FullyDynamicEnv(gym.Env):
 
     @property
     def _truck(self) -> Truck:
-        if self.__truck is None:
+        """The truck whose turn it currently is (acts on the next step() call,
+        or just acted, depending on where in step() this is read)."""
+        if not self._trucks:
             raise RuntimeError(
                 "Environment not initialized — call reset() before step()."
             )
-        return self.__truck
-
-    @_truck.setter
-    def _truck(self, value: Truck | None) -> None:
-        self.__truck = value
+        return self._trucks[self._active_truck_idx]
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Reset
@@ -485,7 +496,27 @@ class FullyDynamicEnv(gym.Env):
 
         # Extract cell and truck configuration from options
         cell_id_list = list(self._cells.keys())
-        truck_cell_id = options.get("initial_cell", self.np_random.choice(cell_id_list))
+        self._num_trucks = options.get("num_trucks", self._num_trucks)
+
+        # `initial_cells` (list, one entry per truck) is the multi-truck option.
+        # `initial_cell` (singular) is kept for backward compatibility: if given,
+        # it's used as the first truck's cell and the rest are sampled.
+        initial_cells = options.get("initial_cells")
+        if initial_cells is None:
+            single_cell = options.get("initial_cell")
+            chosen = [single_cell] if single_cell is not None else []
+            remaining = self._num_trucks - len(chosen)
+            if remaining > 0:
+                pool = [c for c in cell_id_list if c not in chosen]
+                chosen += list(
+                    self.np_random.choice(pool, size=remaining, replace=False)
+                )
+            initial_cells = chosen
+        if len(initial_cells) != self._num_trucks:
+            raise ValueError(
+                f"Expected {self._num_trucks} initial cells (one per truck, via "
+                f"'initial_cells'), got {len(initial_cells)}."
+            )
         max_truck_load = options.get("max_truck_load", EnvDefaults.MAX_TRUCK_LOAD)
         depot_id = options.get("depot_id", EnvDefaults.DEFAULT_DEPOT_ID)
         self._enable_repositioning = options.get(
@@ -495,8 +526,9 @@ class FullyDynamicEnv(gym.Env):
             "use_net_flow", EnvDefaults.NET_FLOW_BASED_REPOSITIONING
         )
 
-        # Mark initial truck cell as visited
-        self._cells[truck_cell_id].set_visits(1)
+        # Mark each truck's initial cell as visited
+        for cell_id in initial_cells:
+            self._cells[cell_id].set_visits(1)
 
         # Initialize depot and bike fleet
         if depot_id not in self._cells:
@@ -518,21 +550,26 @@ class FullyDynamicEnv(gym.Env):
         self._event_buffer = None
 
         # -------------------------------------------------------------------------
-        # Initialize truck
+        # Initialize trucks — each starts at its own cell (its "depot"/base) with
+        # its own share of bikes loaded from the shared central depot reserve.
         # -------------------------------------------------------------------------
-        # Load initial bikes onto truck from depot
-        initial_bike_keys = list(self._depot.bikes.keys())[
-            : EnvDefaults.INITIAL_TRUCK_BIKES
-        ]
-        bikes = {key: self._depot.bikes.pop(key) for key in initial_bike_keys}
+        self._trucks = []
+        for cell_id in initial_cells:
+            initial_bike_keys = list(self._depot.bikes.keys())[
+                : EnvDefaults.INITIAL_TRUCK_BIKES
+            ]
+            bikes = {key: self._depot.bikes.pop(key) for key in initial_bike_keys}
 
-        truck_cell = self._cells[truck_cell_id]
-        self._truck = Truck(
-            position=truck_cell.get_center_node(),
-            cell=truck_cell,
-            bikes=bikes,
-            max_load=max_truck_load,
-        )
+            truck_cell = self._cells[cell_id]
+            truck = Truck(
+                position=truck_cell.get_center_node(),
+                cell=truck_cell,
+                bikes=bikes,
+                max_load=max_truck_load,
+            )
+            truck.set_free_at(0.0)
+            self._trucks.append(truck)
+        self._active_truck_idx = 0
 
         # -------------------------------------------------------------------------
         # Initialize day/timeslot and generate events
@@ -564,6 +601,7 @@ class FullyDynamicEnv(gym.Env):
         # Update graph with initial metrics
         # -------------------------------------------------------------------------
         self._update_cells_metrics()
+        self._mark_active_truck_cell()
 
         # -------------------------------------------------------------------------
         # Build initial observation and info
@@ -576,6 +614,9 @@ class FullyDynamicEnv(gym.Env):
             "failures": [],
             "depot_bikes": len(self._depot.bikes),
             "truck_bikes": self._truck.get_load(),
+            "active_truck_id": self._truck.id,
+            "trucks_bikes": [t.get_load() for t in self._trucks],
+            "trucks_cells": [t.get_cell().get_id() for t in self._trucks],
             "number_of_system_bikes": len(self._system_bikes),
             "number_of_outside_bikes": len(self._outside_system_bikes),
             "distance_lookup": self._distance_lookup,
@@ -697,6 +738,11 @@ class FullyDynamicEnv(gym.Env):
         """
         # Execute the action
         self._invalid_action = False
+
+        # The truck whose turn it is. Captured explicitly (rather than reading
+        # `self._truck` again later) because `self._active_truck_idx` changes
+        # further down once the turn is handed off to the next truck.
+        acting_truck = self._truck
 
         # Calculate current mean truck velocity
         hours = divmod((self._timeslot * 3 + 1) * 3600 + self._env_time, 3600)[0] % 24
@@ -841,7 +887,8 @@ class FullyDynamicEnv(gym.Env):
             ),
         )
 
-        # Compute outputs
+        # Compute outputs (reward is for the truck that just acted, so this
+        # must happen *before* the turn handoff below)
         reward = self._get_reward(
             action,
             old_eligibility_score,
@@ -849,6 +896,24 @@ class FullyDynamicEnv(gym.Env):
             old_global_critic_score,
             old_surplus_bikes,
         )
+
+        # -------------------------------------------------------------------------
+        # Multi-truck turn handoff (shared policy / parameter sharing)
+        # -------------------------------------------------------------------------
+        # This truck just acted, so it becomes "least recently active". Hand the
+        # turn to whichever truck has been waiting longest (with 2 trucks this
+        # is simply strict alternation A, B, A, B, ...; with more trucks it
+        # generalizes to least-recently-served).
+        acting_truck.set_free_at(self._env_time)
+        self._active_truck_idx = min(
+            range(len(self._trucks)), key=lambda i: self._trucks[i].get_free_at()
+        )
+        # Flag the cell of the truck that will decide next, so the shared-policy
+        # GNN observation can tell which truck it is currently controlling.
+        self._mark_active_truck_cell()
+
+        # Observation is built for the *next* truck to act (self._truck now
+        # points at it, after the handoff above).
         observation = self._get_obs(action)
 
         # Build info dictionary
@@ -867,6 +932,10 @@ class FullyDynamicEnv(gym.Env):
             "distance": distance,
             "depot_bikes": len(self._depot.bikes),
             "truck_bikes": self._truck.get_load(),
+            "acted_truck_id": acting_truck.id,
+            "active_truck_id": self._truck.id,
+            "trucks_bikes": [t.get_load() for t in self._trucks],
+            "trucks_cells": [t.get_cell().get_id() for t in self._trucks],
             "number_of_system_bikes": len(self._system_bikes),
             "number_of_outside_bikes": len(self._outside_system_bikes),
             "number_of_traveling_bikes": len(self._travelling_bikes),
@@ -910,6 +979,10 @@ class FullyDynamicEnv(gym.Env):
             env_time_diff = self._env_time - EnvDefaults.TIMESLOT_DURATION_SECONDS
             self._initialize_day_timeslot()
             self._env_time = env_time_diff
+
+            # Keep each truck's free_at relative to the new timeslot's clock too
+            for truck in self._trucks:
+                truck.set_free_at(truck.get_free_at() - EnvDefaults.TIMESLOT_DURATION_SECONDS)
 
             self._timeslots_completed += 1
             terminated = True
@@ -1078,7 +1151,7 @@ class FullyDynamicEnv(gym.Env):
                 logging_state_and_trips=logging_state_and_trips,
                 depot=self._depot,
                 maximum_number_of_bikes=self._maximum_number_of_bikes,
-                truck_load=self._truck.get_load(),
+                truck_load=sum(t.get_load() for t in self._trucks),
             )
             total_step_failures += failure
 
@@ -1451,6 +1524,12 @@ class FullyDynamicEnv(gym.Env):
                     expected_max_departure[cell_id] - expected_departures[cell_id]
                 )
 
+        # ── Truck presence: count of trucks currently in each cell ─────────────────
+        truck_cell_counts: dict[int, int] = {}
+        for truck in self._trucks:
+            cid = truck.get_cell().get_id()
+            truck_cell_counts[cid] = truck_cell_counts.get(cid, 0) + 1
+
         # ── Update each cell ──────────────────────────────────────────────────────
         self._global_critic_score = 0
         for cell_id, cell in self._cells.items():
@@ -1459,10 +1538,10 @@ class FullyDynamicEnv(gym.Env):
             cell.update_metrics(
                 stations=self._stations, expected=expected, aft_arrivals=aft_arrivals
             )
-            cell.set_metric(
-                "truck_cell",
-                1.0 if cell.get_id() == self._truck.get_cell().get_id() else 0.0,
-            )
+            cell.set_metric("truck_cell", float(truck_cell_counts.get(cell_id, 0)))
+            # `active_truck_cell` (which truck is about to decide) is set later,
+            # after the turn handoff in step() — see `_mark_active_truck_cell`.
+            cell.set_metric("active_truck_cell", 0.0)
 
             # FOR TEST
             raw_critic = cell.get_critic_score()
@@ -1475,6 +1554,17 @@ class FullyDynamicEnv(gym.Env):
                     self._global_critic_score += 1.0
             else:
                 self._global_critic_score += max(raw_critic, 0.0)
+
+    def _mark_active_truck_cell(self) -> None:
+        """
+        Flag the cell of the truck whose turn is next (`self._truck`, read
+        *after* the turn handoff in step()). Used by the shared-policy GNN
+        observation to distinguish which of the (identical-looking) trucks it
+        is currently controlling.
+        """
+        self._cells[self._truck.get_cell().get_id()].set_metric(
+            "active_truck_cell", 1.0
+        )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Utility Methods

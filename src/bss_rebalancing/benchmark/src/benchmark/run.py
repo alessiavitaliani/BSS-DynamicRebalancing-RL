@@ -239,6 +239,7 @@ def run_benchmark(config: dict):
     # Save parsed arguments to global variables
     run_id = config['run_id']
     data_path = config['data_path']
+    data_paths = config.get('data_paths')
     results_path = config['results_path']
     logging_enabled = config['log']
 
@@ -253,8 +254,12 @@ def run_benchmark(config: dict):
     # Set random seeds for reproducibility
     set_seed(params['seed'])
 
-    # Ensure the data path exists
-    if not os.path.exists(data_path):
+    # Ensure the data path(s) exist
+    if data_paths:
+        for p in data_paths:
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"The specified data path does not exist: {p}")
+    elif not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
     results_manager = ResultsManager(
@@ -263,7 +268,13 @@ def run_benchmark(config: dict):
         overwrite=False,
         interactive=True,
     )
-    results_manager.save_hyperparameters(params)
+    results_manager.save_hyperparameters({
+        **params,
+        # Record the data path(s) so the results webapp can find the right
+        # base map per area (see results_webapp/data_loader.get_area_data_paths).
+        "data_path": data_path,
+        "data_paths": data_paths,
+    })
 
     # Init logging
     init_logging(LoggingConfig(
@@ -277,17 +288,41 @@ def run_benchmark(config: dict):
     logger = get_logger("run", logger_name="benchmark")
     logger.info("Starting benchmark")
 
-    # Create environment
-    env = gym.make(
-        'gymnasium_env/StaticEnv-v0',
-        data_path=config['data_path'],
-        results_path=f"{str(results_manager.bench_path)}/",
-        seed=params['seed'],
-        logging_enabled=logging_enabled
-    )
+    # Create environment(s). Multi-area mode (data_paths given): one env per
+    # area, each simulated independently with the SAME static heuristic
+    # (there's no learned/shared policy here, so — unlike train_ppo_multi_env —
+    # areas don't need to be interleaved step-by-step; each just runs to
+    # completion and the results are combined afterwards).
+    if data_paths:
+        envs = [
+            gym.make(
+                'gymnasium_env/StaticEnv-v0',
+                data_path=p,
+                results_path=f"{str(results_manager.bench_path)}/area_{i}/",
+                seed=params['seed'],
+                logging_enabled=logging_enabled
+            )
+            for i, p in enumerate(data_paths)
+        ]
+    else:
+        envs = [
+            gym.make(
+                'gymnasium_env/StaticEnv-v0',
+                data_path=data_path,
+                results_path=f"{str(results_manager.bench_path)}/",
+                seed=params['seed'],
+                logging_enabled=logging_enabled
+            )
+        ]
+    env = envs[0]  # kept for code below that still refers to a single `env`
 
     # Calculate total simulation steps
-    total_steps = params['total_timeslots'] * params['num_seed_runs']
+    # Each area produces its own tbar.update(1) per completed timeslot (run_simulation
+    # is called once per area per seed-run in multi-area mode), so total_steps must
+    # scale by len(envs) — same fix as train.py/validate.py's tbar, same symptom
+    # otherwise: bar looks right for the very first area then falls back to
+    # open-ended "N it [...]" counting for everything after.
+    total_steps = params['total_timeslots'] * params['num_seed_runs'] * len(envs)
     num_days = params["total_timeslots"] // 8
 
     try:
@@ -306,26 +341,74 @@ def run_benchmark(config: dict):
             current_seed = int(params['seed'] + episode)
             set_seed(current_seed)
 
-            episode_results = run_simulation(
-                seed=current_seed,
-                env=env,
-                episode=episode,
-                run_id=run_id,
-                logging_enabled=logging_enabled,
-                logger=logger,
-                tbar=tbar,
-                episode_results_path=os.path.join(
-                    str(results_manager.bench_path), f"episode_{episode:03d}"
-                ),
-            )
+            if len(envs) > 1:
+                # Multi-area: run the same static heuristic on each area
+                # independently, then merge into one EpisodeResults (combined
+                # series concatenated in area order, plus a per_area
+                # breakdown) so the webapp can show them together.
+                per_area_results = {}
+                for i, area_env in enumerate(envs):
+                    area_label = f"area_{i}"
+                    per_area_results[area_label] = run_simulation(
+                        seed=current_seed,
+                        env=area_env,
+                        episode=episode,
+                        run_id=run_id,
+                        logging_enabled=logging_enabled,
+                        logger=logger,
+                        tbar=tbar,
+                        episode_results_path=os.path.join(
+                            str(results_manager.bench_path), f"episode_{episode:03d}", area_label
+                        ),
+                    )
 
-            total_failures = episode_results['failures_per_timeslot']
+                def _concat(key):
+                    out = []
+                    for area_data in per_area_results.values():
+                        out.extend(area_data.get(key, []))
+                    return out
+
+                total_failures = _concat("failures_per_timeslot")
+                episode_results = {
+                    "failures_per_timeslot": total_failures,
+                    "deployed_bikes": _concat("deployed_bikes"),
+                    "truck_load": _concat("truck_load"),
+                    "depot_load": _concat("depot_load"),
+                    "outside_system_bikes": _concat("outside_system_bikes"),
+                    "traveling_bikes": _concat("traveling_bikes"),
+                    "rebalance_times": _concat("rebalance_times"),
+                    "demand_per_timeslot": _concat("demand_per_timeslot"),
+                    "global_critic_scores": _concat("global_critic_scores"),
+                    # Combined heatmap defaults to area_0's graph — see the
+                    # per_area breakdown below for each area's own graph.
+                    "cell_subgraph": next(iter(per_area_results.values()))["cell_subgraph"],
+                }
+                # num_days must scale with the number of areas: the
+                # denominator is per-area days, but the numerator above sums
+                # failures across all areas (same fix as in train.py/validate.py).
+                effective_num_days = num_days * len(envs)
+            else:
+                episode_results = run_simulation(
+                    seed=current_seed,
+                    env=env,
+                    episode=episode,
+                    run_id=run_id,
+                    logging_enabled=logging_enabled,
+                    logger=logger,
+                    tbar=tbar,
+                    episode_results_path=os.path.join(
+                        str(results_manager.bench_path), f"episode_{episode:03d}"
+                    ),
+                )
+                per_area_results = None
+                total_failures = episode_results['failures_per_timeslot']
+                effective_num_days = num_days
 
             ep_results = EpisodeResults(
                 episode=episode,
                 mode='benchmark',
                 seed=current_seed,
-                mean_daily_failures=float(sum(total_failures)) / num_days if num_days > 0 else 0.0,
+                mean_daily_failures=float(sum(total_failures)) / effective_num_days if effective_num_days > 0 else 0.0,
                 total_failures=sum(total_failures),
                 failures_per_timeslot=total_failures,
                 deployed_bikes=episode_results['deployed_bikes'],
@@ -336,7 +419,8 @@ def run_benchmark(config: dict):
                 rebalance_times=episode_results['rebalance_times'],
                 cell_subgraph=episode_results['cell_subgraph'],
                 demand_per_timeslot=episode_results['demand_per_timeslot'],
-                global_critic_scores=episode_results['global_critic_scores']
+                global_critic_scores=episode_results['global_critic_scores'],
+                per_area=per_area_results,
             )
             results_manager.save_episode(ep_results)
 
@@ -348,17 +432,20 @@ def run_benchmark(config: dict):
 
         results_manager.save_run_summary()
         tbar.close()
-        env.close()
+        for _e in envs:
+            _e.close()
         logger.info("Benchmark completed successfully")
         print("\nBenchmark completed successfully.")
     except KeyboardInterrupt:
         print("\nBenchmark interrupted.")
         logger.info("Benchmark interrupted.")
-        env.close()
+        for _e in envs:
+            _e.close()
         return
     except Exception as e:
         logger.error(f"Benchmark failed: {e}.")
-        env.close()
+        for _e in envs:
+            _e.close()
         raise
 
 
@@ -406,7 +493,19 @@ def parse_arguments() -> dict:
         '--data-path',
         type=str,
         default='data/',
-        help='Path to the data folder'
+        help='Path to the data folder. Ignored if --data-paths is given.'
+    )
+    parser.add_argument(
+        '--data-paths',
+        type=str,
+        default=None,
+        help=(
+            'Comma-separated list of data folder paths for multi-area benchmarking '
+            '(e.g. "data/manhattan_north,data/manhattan_south"). Runs the same '
+            'heuristic baseline independently on each area and combines the '
+            'results into one run (so the webapp can show them together). '
+            'Overrides --data-path.'
+        )
     )
     parser.add_argument(
         '--results-path',
@@ -470,6 +569,7 @@ def parse_arguments() -> dict:
     config = {
         'run_id': args.run_id,
         'data_path': args.data_path,
+        'data_paths': [p.strip() for p in args.data_paths.split(",")] if args.data_paths else None,
         'results_path': args.results_path,
         'maximum_number_of_bikes': args.max_num_bikes,
         'minimum_number_of_bikes': args.min_num_bikes,

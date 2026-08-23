@@ -66,8 +66,12 @@ class Cell:
             # Eligibility traces
             'eligibility_score': 0.0,
             'old_eligibility_score': 0.0,
-            # Truck presence flag
+            # Truck presence: number of trucks currently in this cell
             'truck_cell': 0,
+            # 1 if this is the cell of the truck that is acting in the current
+            # decision step (used with parameter sharing so the shared policy
+            # knows which truck's turn it is), 0 otherwise.
+            'active_truck_cell': 0,
         }
 
     def __str__(self) -> str:
@@ -201,6 +205,8 @@ class Cell:
     def set_ops(self, ops: int)                 -> None: self._metrics['operations']   = ops
     def set_pick_ups(self, pick_ups: int)       -> None: self._metrics['pick_ups']     = pick_ups
     def set_drops(self, drops: int)             -> None: self._metrics['drops']        = drops
+    def set_truck_cell(self, count: int)        -> None: self._metrics['truck_cell']   = count
+    def set_active_truck_cell(self, flag: int)  -> None: self._metrics['active_truck_cell'] = flag
 
     # ── Getters ─────────────────────────────────────────────────────────────────
 
@@ -230,6 +236,8 @@ class Cell:
     def get_total_departures(self) -> int:   return self._metrics['total_departures']
     def get_total_rebalanced(self) -> int:   return self._metrics['total_rebalanced']
     def get_failures(self)         -> int:   return self._metrics['failures']
+    def get_truck_cell(self)       -> int:   return self._metrics['truck_cell']
+    def get_active_truck_cell(self) -> int:  return self._metrics['active_truck_cell']
 
     # Derived quality
     def get_failure_rate(self)     -> float: return self._metrics['failure_rate']

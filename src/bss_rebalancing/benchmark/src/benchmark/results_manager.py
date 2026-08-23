@@ -3,7 +3,7 @@ import pickle
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import networkx as nx
 import numpy as np
@@ -49,6 +49,13 @@ class EpisodeResults:
 
     # Spatial data (cell subgraph)
     cell_subgraph: Optional[nx.Graph] = None
+
+    # Per-area breakdown (multi-area benchmark only — see run_benchmark_multi_env
+    # in run.py). Maps area_label -> {'failures_per_timeslot', 'deployed_bikes',
+    # 'truck_load', 'depot_load', 'outside_system_bikes', 'traveling_bikes',
+    # 'demand_per_timeslot', 'global_critic_scores', 'rebalance_times',
+    # 'cell_subgraph'}. None for single-area benchmark runs.
+    per_area: Optional[Dict[str, dict]] = None
 
 
 class ResultsManager:
@@ -174,6 +181,70 @@ class ResultsManager:
             with open(episode_dir / "cell_subgraph.gpickle", "wb") as f:
                 pickle.dump(results.cell_subgraph, f)
 
+        # 3b. Save per-area breakdown, if this episode came from multi-area
+        # benchmarking (run_benchmark_multi_env). Same layout convention as
+        # rl_training/results/results_manager.py:
+        #   episode_dir/per_area/<area_label>/timeslot_metrics.csv
+        #   episode_dir/per_area/<area_label>/cell_subgraph.gpickle
+        if results.per_area:
+            per_area_dir = episode_dir / "per_area"
+            per_area_dir.mkdir(exist_ok=True)
+            for area_label, area_data in results.per_area.items():
+                area_dir = per_area_dir / area_label
+                area_dir.mkdir(exist_ok=True)
+
+                area_series = {
+                    "failures": area_data.get("failures_per_timeslot", []),
+                    "deployed_bikes": area_data.get("deployed_bikes", []),
+                    "truck_load": area_data.get("truck_load", []),
+                    "depot_load": area_data.get("depot_load", []),
+                    "outside_system_bikes": area_data.get("outside_system_bikes", []),
+                    "traveling_bikes": area_data.get("traveling_bikes", []),
+                    # Per-timeslot aligned, same convention as the combined
+                    # timeslot_df above — NOT the same as a raw variable-length
+                    # event list (previously this was written separately as
+                    # rebalance_times.json, which the webapp's per-timeslot
+                    # plot never reads — it looks for a DataFrame column).
+                    "rebalance_times": area_data.get("rebalance_times", []),
+                    "demand": area_data.get("demand_per_timeslot", []),
+                    "global_critic_score": area_data.get("global_critic_scores", []),
+                }
+                area_len = max((len(v) for v in area_series.values()), default=0)
+
+                def _pad(data, length, fill_value=0.0):
+                    if len(data) == length:
+                        return data
+                    if len(data) < length:
+                        return list(data) + [fill_value] * (length - len(data))
+                    return list(data)[:length]
+
+                area_df = pd.DataFrame({
+                    "timeslot": range(area_len),
+                    **{k: _pad(v, area_len, 0) for k, v in area_series.items()},
+                })
+                area_df.to_csv(area_dir / "timeslot_metrics.csv", index=False)
+
+                # Per-area scalars, so the episode-detail stats cards (Total
+                # Failures / Total Reward / Mean Daily Failures) reflect the
+                # selected area instead of always showing the combined
+                # (both-areas) totals — same pattern as
+                # rl_training/results/results_manager.py's save_episode().
+                area_failures = area_series["failures"]
+                area_num_days = max(1, len(area_failures) // 8)
+                area_scalars = {
+                    "episode": results.episode,
+                    "seed": results.seed,
+                    "total_failures": int(sum(area_failures)),
+                    "mean_daily_failures": float(sum(area_failures)) / area_num_days,
+                }
+                with open(area_dir / "scalars.json", "w") as f:
+                    json.dump(area_scalars, f, indent=2, cls=_NumpyEncoder)
+
+                area_subgraph = area_data.get("cell_subgraph")
+                if area_subgraph is not None:
+                    with open(area_dir / "cell_subgraph.gpickle", "wb") as f:
+                        pickle.dump(area_subgraph, f)
+
         # 4. Update aggregated summary
         self._update_summary(results)
 
@@ -225,6 +296,34 @@ class ResultsManager:
         else:
             cell_subgraph = None
 
+        # Load per-area breakdown, if present
+        per_area_dir = episode_dir / "per_area"
+        per_area = None
+        if per_area_dir.exists():
+            per_area = {}
+            for area_dir in sorted(per_area_dir.iterdir()):
+                if not area_dir.is_dir():
+                    continue
+                area_entry: dict = {}
+                area_ts_path = area_dir / "timeslot_metrics.csv"
+                if area_ts_path.exists():
+                    area_ts = pd.read_csv(area_ts_path)
+                    area_entry["failures_per_timeslot"] = area_ts["failures"].tolist()
+                    area_entry["deployed_bikes"] = area_ts["deployed_bikes"].tolist()
+                    area_entry["truck_load"] = area_ts["truck_load"].tolist()
+                    area_entry["depot_load"] = area_ts["depot_load"].tolist()
+                    area_entry["outside_system_bikes"] = area_ts["outside_system_bikes"].tolist()
+                    area_entry["traveling_bikes"] = area_ts["traveling_bikes"].tolist()
+                    area_entry["demand_per_timeslot"] = area_ts["demand"].tolist()
+                    area_entry["global_critic_scores"] = area_ts["global_critic_score"].tolist()
+                    if "rebalance_times" in area_ts.columns:
+                        area_entry["rebalance_times"] = area_ts["rebalance_times"].tolist()
+                area_sg_path = area_dir / "cell_subgraph.gpickle"
+                if area_sg_path.exists():
+                    with open(area_sg_path, "rb") as f:
+                        area_entry["cell_subgraph"] = pickle.load(f)
+                per_area[area_dir.name] = area_entry
+
         return EpisodeResults(
             episode=scalars["episode"],
             mode="benchmark",
@@ -242,6 +341,7 @@ class ResultsManager:
             demand_per_timeslot=timeslot_df["demand"].tolist(),
             global_critic_scores=timeslot_df["global_critic_score"].tolist(),
             cell_subgraph=cell_subgraph,
+            per_area=per_area,
         )
 
     @staticmethod
@@ -294,4 +394,5 @@ class ResultsManager:
             rebalance_times=results.rebalance_times,
             # Spatial data — no length requirement
             cell_subgraph=results.cell_subgraph,
+            per_area=results.per_area,
         )

@@ -9,6 +9,7 @@ from dash import Input, Output, State, html
 
 from results_webapp.data_loader import (
     discover_runs,
+    get_area_data_paths,
     get_available_episodes,
     load_base_graph,
     load_best_model_metadata,
@@ -41,6 +42,7 @@ def _build_episode_detail_outputs(
     episode: int,
     prefix: str,
     is_benchmark: bool = False,
+    area: str | None = None,
 ):
     """
     Core logic for episode-detail callbacks.
@@ -54,6 +56,12 @@ def _build_episode_detail_outputs(
 
     For benchmark, action_plot and reward_track_plot are always empty figures.
     For benchmark, epsilon card is hidden from stats.
+
+    `area`: None or '__all__' uses the combined (all-areas) series, as before.
+    Any other value selects that area's own timeslot series (rewards/failures
+    only — step-level data like actions/reward-tracking isn't split per area,
+    so those two plots stay combined regardless of `area`; see
+    train_ppo_multi_env's per_area breakdown for what is/isn't split).
     """
     ef = _empty_fig()
 
@@ -67,6 +75,23 @@ def _build_episode_detail_outputs(
     scalars     = episode_data.get('scalars', {})
     timeslot_df = episode_data.get('timeslot_metrics')
     step_data   = episode_data.get('step_data', {}) or {}
+
+    # Multi-area: swap in the selected area's own timeslot series (rewards,
+    # failures) AND scalars (total_failures, total_reward, mean_daily_failures)
+    # in place of the combined ones. step_data (actions/reward-tracking) stays
+    # combined — see the docstring note above.
+    per_area = episode_data.get('per_area') or {}
+    if area and area != '__all__' and area in per_area:
+        area_ts = per_area[area].get('timeslot_metrics')
+        if area_ts is not None:
+            timeslot_df = area_ts
+        area_scalars = per_area[area].get('scalars')
+        if area_scalars:
+            # Per-area scalars.json only has total_failures/total_reward/
+            # mean_daily_failures (see save_episode()) — keep any other
+            # combined-only fields (e.g. epsilon) as a fallback so cards
+            # that don't have a per-area equivalent don't just show 0.
+            scalars = {**scalars, **area_scalars}
 
     total_failures = scalars.get('total_failures', 'N/A')
     total_demand = (
@@ -250,6 +275,38 @@ def register_callbacks(app):
         return options, options[-1]['value']
 
     # ========================================================================
+    # Callback: Area selector options (multi-area runs only)
+    # ========================================================================
+    @app.callback(
+        Output('area-selector', 'options'),
+        Output('area-selector', 'value'),
+        Input('run-selector', 'value'),
+        Input('mode-selector', 'value'),
+        Input('episode-selector', 'value'),
+        State('area-selector', 'value'),
+    )
+    def update_area_options(run_path, mode, episode, current_area):
+        default_option = {'label': 'All areas (combined)', 'value': '__all__'}
+
+        if not run_path or mode not in ('training', 'validation', 'benchmark') or episode is None:
+            return [default_option], '__all__'
+
+        episode_data = load_episode_data(Path(run_path), mode, episode)
+        per_area = (episode_data or {}).get('per_area') or {}
+
+        if not per_area:
+            # Single-area run (or this episode has no per-area breakdown)
+            return [default_option], '__all__'
+
+        options = [default_option] + [
+            {'label': label.replace('_', ' ').title(), 'value': label}
+            for label in sorted(per_area.keys())
+        ]
+        valid_values = {opt['value'] for opt in options}
+        value = current_area if current_area in valid_values else '__all__'
+        return options, value
+
+    # ========================================================================
     # Callback: Display configuration
     # ========================================================================
     @app.callback(
@@ -310,8 +367,9 @@ def register_callbacks(app):
         Input('mode-selector',       'value'),
         Input('interval-component',  'n_intervals'),
         Input('episode-selector',    'value'),
+        Input('area-selector',       'value'),
     )
-    def update_overview_plots(run_path, mode, n, current_episode):
+    def update_overview_plots(run_path, mode, n, current_episode, area):
         """Overview tab — training only.  Returns empty figs for other modes."""
         ef = _empty_fig()
 
@@ -319,7 +377,7 @@ def register_callbacks(app):
             return ef, ef, ef, ef, ef, ef
 
         run_dir = Path(run_path)
-        summary = load_summary_data(run_dir, 'training')
+        summary = load_summary_data(run_dir, 'training', area=area)
 
         if summary is None or summary.empty:
             nf = _empty_fig('No training data available yet')
@@ -377,14 +435,16 @@ def register_callbacks(app):
         Input('run-selector',    'value'),
         Input('mode-selector',   'value'),
         Input('episode-selector','value'),
+        Input('area-selector',   'value'),
     )
-    def update_training_episode_details(run_path, mode, episode):
+    def update_training_episode_details(run_path, mode, episode, area):
         ef = _empty_fig()
         if mode != 'training':
             return (html.P(''),) + (ef,) * 10
         return _build_episode_detail_outputs(
             Path(run_path) if run_path else None,
             'training', episode, 'train',
+            area=area,
         )
 
     # ========================================================================
@@ -406,8 +466,9 @@ def register_callbacks(app):
         Input('run-selector',   'value'),
         Input('mode-selector',  'value'),
         Input('interval-component', 'n_intervals'),
+        Input('area-selector',  'value'),
     )
-    def update_best_tab(run_path, mode, n):
+    def update_best_tab(run_path, mode, n, area):
         ef = _empty_fig()
         empty_10 = (ef,) * 10
 
@@ -438,6 +499,7 @@ def register_callbacks(app):
         # The best-model validation data lives at validation/episode_{best_ep}/episode_000/
         detail_outputs = _build_episode_detail_outputs(
             run_dir, 'validation', best_ep, 'best',
+            area=area,
         )
         rest = detail_outputs                  # full tuple including stats_cards
 
@@ -462,14 +524,16 @@ def register_callbacks(app):
         Input('run-selector',    'value'),
         Input('mode-selector',   'value'),
         Input('episode-selector','value'),
+        Input('area-selector',   'value'),
     )
-    def update_validation_episode_details(run_path, mode, episode):
+    def update_validation_episode_details(run_path, mode, episode, area):
         ef = _empty_fig()
         if mode != 'validation':
             return (html.P(''),) + (ef,) * 10
         return _build_episode_detail_outputs(
             Path(run_path) if run_path else None,
             'validation', episode, 'val',
+            area=area,
         )
 
     # ========================================================================
@@ -484,8 +548,9 @@ def register_callbacks(app):
         Input('mode-selector',      'value'),
         Input('episode-selector',   'value'),
         Input('interval-component', 'n_intervals'),
+        Input('area-selector',      'value'),
     )
-    def update_benchmark_tab(run_path, mode, episode, n):
+    def update_benchmark_tab(run_path, mode, episode, n, area):
         ef = _empty_fig()
 
         if mode != 'benchmark' or not run_path:
@@ -507,9 +572,36 @@ def register_callbacks(app):
         timeslot_df     = episode_data.get('timeslot_metrics')
         rebalance_events = episode_data.get('rebalance_events', [])  # event durations, not timeslot
 
-        total_failures = scalars.get('total_failures', 0)
-        if timeslot_df is not None and 'failures' in timeslot_df.columns and total_failures == 0:
-            total_failures = int(timeslot_df['failures'].sum())
+        # Multi-area: swap in the selected area's own timeslot series AND
+        # scalars (total_failures, mean_daily_failures), same pattern as
+        # _build_episode_detail_outputs for training/validation.
+        per_area = episode_data.get('per_area') or {}
+        if area and area != '__all__' and area in per_area:
+            area_ts = per_area[area].get('timeslot_metrics')
+            if area_ts is not None:
+                timeslot_df = area_ts
+            area_scalars = per_area[area].get('scalars')
+            if area_scalars:
+                scalars = {**scalars, **area_scalars}
+
+        is_area_view = bool(area and area != '__all__' and area in per_area)
+
+        # `scalars` is the COMBINED run's scalars.json — total_failures there
+        # is the sum across all areas. When a single area is selected, always
+        # recompute from that area's own timeslot_df instead (same pattern
+        # total_demand already used below) — otherwise every area shows the
+        # same combined total_failures/mean_daily/failure_rate, only
+        # total_demand would actually reflect the selected area.
+        if is_area_view:
+            total_failures = (
+                int(timeslot_df['failures'].sum())
+                if timeslot_df is not None and 'failures' in timeslot_df.columns
+                else 0
+            )
+        else:
+            total_failures = scalars.get('total_failures', 0)
+            if timeslot_df is not None and 'failures' in timeslot_df.columns and total_failures == 0:
+                total_failures = int(timeslot_df['failures'].sum())
 
         total_demand = (
             int(timeslot_df['demand'].sum())
@@ -602,9 +694,10 @@ def register_callbacks(app):
             Input('mode-selector',                   'value'),
             Input(episode_input,                     'value'),
             Input(f'{prefix}-graph-metric-selector', 'value'),
+            Input('area-selector',                   'value'),
             prevent_initial_call=True,
         )
-        def _cb(run_path, mode, episode, metric):
+        def _cb(run_path, mode, episode, metric, area):
             import time
             NO_IMG = ('', '')
 
@@ -625,11 +718,27 @@ def register_callbacks(app):
                     ep_to_load = meta.get('episode')
 
                 episode_data  = load_episode_data(run_dir, mode_value, ep_to_load)
-                cell_subgraph = episode_data.get('cell_subgraph') if episode_data else None
-                base_graph    = _get_base_graph(app)
+                if not episode_data:
+                    return '', f'⚠ No data for episode {ep_to_load}'
+
+                # Multi-area: use the selected area's own cell_subgraph (and,
+                # below, its own base map) instead of the combined (area_0)
+                # one — the areas are different parts of Manhattan, so mixing
+                # them would misplace nodes on the wrong map.
+                per_area = episode_data.get('per_area') or {}
+                if area and area != '__all__' and area in per_area:
+                    cell_subgraph = per_area[area].get('cell_subgraph')
+                else:
+                    cell_subgraph = episode_data.get('cell_subgraph')
+
+                base_graph = _get_base_graph(app, run_dir=run_dir, area=area)
 
                 if cell_subgraph is None:
-                    return '', f'⚠ No cell_subgraph for episode {ep_to_load}'
+                    return '', f'⚠ No cell_subgraph for episode {ep_to_load}' + (
+                        f' (area: {area})' if area and area != '__all__' else ''
+                    )
+                if base_graph is None:
+                    return '', '⚠ No base map found for this area — is --data-paths recorded?'
 
                 n_boundary = sum(
                     1 for _, d in cell_subgraph.nodes(data=True)
@@ -640,7 +749,8 @@ def register_callbacks(app):
 
                 assets_dir = Path(__file__).parent / 'assets'
                 assets_dir.mkdir(exist_ok=True)
-                out_path = assets_dir / f'{prefix}_heatmap.png'
+                area_suffix = f'_{area}' if area and area != '__all__' else ''
+                out_path = assets_dir / f'{prefix}_heatmap{area_suffix}.png'
 
                 normalized, percentage = (
                     (metric in ['visits_sum', 'bikes_mean', 'failure_sum', 'ops_sum'],) * 2
@@ -657,7 +767,8 @@ def register_callbacks(app):
                 )
 
                 ts = int(time.time())
-                return f'/assets/{prefix}_heatmap.png?t={ts}', f'✓ {metric}, episode {ep_to_load}'
+                area_label = f', area: {area}' if area and area != '__all__' else ''
+                return f'/assets/{prefix}_heatmap{area_suffix}.png?t={ts}', f'✓ {metric}, episode {ep_to_load}{area_label}'
 
             except Exception as exc:
                 import traceback; traceback.print_exc()
@@ -676,13 +787,43 @@ def register_callbacks(app):
 # Graph cache helper
 # ---------------------------------------------------------------------------
 
-def _get_base_graph(app):
-    """Load and cache the base road graph on the app object."""
-    if not hasattr(app, 'data_path') or app.data_path is None:
-        return None
+def _get_base_graph(app, run_dir: Path | None = None, area: str | None = None):
+    """
+    Load and cache the base road graph on the app object.
+
+    For multi-area runs, `area` (e.g. 'area_1') picks that area's own base
+    map — the areas are different parts of Manhattan, so area_1's cell
+    subgraph must NOT be drawn over area_0's roads. Resolution order:
+      1. Auto-detected from the run's saved config (get_area_data_paths) —
+         the normal path, works without any --data-path(s) CLI flag at all.
+      2. app.data_paths[index] — manual fallback via --data-paths, for runs
+         saved before config auto-detection existed.
+      3. app.data_path — single-path fallback (--data-path), used for
+         single-area runs and for the '__all__' combined view.
+    """
     if not hasattr(app, '_base_graph_cache'):
         app._base_graph_cache = {}
-    key = str(app.data_path)
+
+    data_path = None
+    if area and area != '__all__':
+        if run_dir is not None:
+            area_paths = get_area_data_paths(run_dir)
+            if area_paths and area in area_paths:
+                data_path = area_paths[area]
+        if data_path is None and getattr(app, 'data_paths', None):
+            try:
+                idx = int(area.rsplit('_', 1)[-1])
+                if 0 <= idx < len(app.data_paths):
+                    data_path = app.data_paths[idx]
+            except (ValueError, IndexError):
+                pass
+
+    if data_path is None:
+        if not hasattr(app, 'data_path') or app.data_path is None:
+            return None
+        data_path = app.data_path
+
+    key = str(data_path)
     if key not in app._base_graph_cache:
-        app._base_graph_cache[key] = load_base_graph(app.data_path)
+        app._base_graph_cache[key] = load_base_graph(data_path)
     return app._base_graph_cache[key]

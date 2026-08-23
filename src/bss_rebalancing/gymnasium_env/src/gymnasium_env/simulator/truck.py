@@ -22,6 +22,10 @@ class Truck:
         current_load (int): Num of bikes currently loaded on the truck.
         leaving_cell (Cell): Cell of departure for the next movement.
         last_charge (int): Normalized value of battery level given to a bike to reach max_battery during charge_bike
+        free_at (float): Simulation time at which this truck becomes free to receive its next action.
+            Used by the multi-truck environment to schedule which truck acts next (the one with the
+            smallest free_at). Kept in sync with the environment's own clock: it starts at whatever
+            time the truck begins acting, and is pushed forward by elapsed_time each time it acts.
         """
         self.id = Truck.truck_id
         self.position = position
@@ -33,6 +37,7 @@ class Truck:
         self.current_load = len(bikes) if bikes is not None else 0
         self.leaving_cell = cell
         self.last_charge = 0
+        self.free_at = 0.0
 
         Truck.truck_id += 1
 
@@ -89,3 +94,9 @@ class Truck:
 
     def get_max_load(self) -> int:
         return self.max_load
+
+    def get_free_at(self) -> float:
+        return self.free_at
+
+    def set_free_at(self, t: float):
+        self.free_at = t

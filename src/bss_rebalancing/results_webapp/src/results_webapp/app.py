@@ -156,14 +156,24 @@ def _episode_detail_rows(prefix: str):
 # App factory
 # ---------------------------------------------------------------------------
 
-def create_app(results_path: str, data_path: str = None, port: int = 8050,
-               update_interval_ms: int = 5000):
+def create_app(results_path: str, data_path: str = None, data_paths: list | None = None,
+               port: int = 8050, update_interval_ms: int = 5000):
     """
     Create and configure the Dash app.
 
     Args:
         results_path: Path to results directory
-        data_path: Path to data directory containing network.graphml
+        data_path: Path to data directory containing network.graphml. Used as
+            the fallback base map for the "All areas (combined)" view, and
+            for single-area runs. Ignored if data_paths is given.
+        data_paths: Optional list of data directory paths, one per area
+            (matching the order used with --data-paths in train.py /
+            benchmark/run.py). Only needed as a fallback for runs whose saved
+            config predates automatic per-area map detection — normally the
+            webapp resolves each area's own map automatically from the run's
+            config.json (see results_webapp.data_loader.get_area_data_paths),
+            so you do NOT need to pass every area's path here just because a
+            run happens to be multi-area.
         port: Port to run server on
         update_interval_ms: Auto-refresh interval in milliseconds
 
@@ -180,6 +190,7 @@ def create_app(results_path: str, data_path: str = None, port: int = 8050,
 
     app.results_path = Path(results_path)
     app.data_path = Path(data_path) if data_path else None
+    app.data_paths = [Path(p) for p in data_paths] if data_paths else None
     app.port = port
     app.update_interval_ms = update_interval_ms
 
@@ -222,7 +233,15 @@ def main():
     parser.add_argument('--results-path', type=str, default='../results',
                         help='Path to results directory')
     parser.add_argument('--data-path', type=str, default=None,
-                        help='Path to data directory (containing utils/network.graphml)')
+                        help='Path to data directory containing network.graphml. Ignored if --data-paths is given.')
+    parser.add_argument('--data-paths', type=str, default=None,
+                        help=(
+                            'Comma-separated list of data directory paths, one per area '
+                            '(e.g. "data/,data_north/"), matching --data-paths in train.py / '
+                            'benchmark/run.py. Usually NOT needed — the webapp auto-detects '
+                            'each area\'s map from the run\'s saved config. Only useful as a '
+                            'fallback for older runs saved before that, or to override it.'
+                        ))
     parser.add_argument('--port', type=int, default=8050,
                         help='Port to run server on')
     parser.add_argument('--update-interval', type=int, default=5*60*1000,
@@ -232,9 +251,12 @@ def main():
 
     args = parser.parse_args()
 
+    data_paths = [p.strip() for p in args.data_paths.split(",")] if args.data_paths else None
+
     app = create_app(
         results_path=args.results_path,
         data_path=args.data_path,
+        data_paths=data_paths,
         port=args.port,
         update_interval_ms=args.update_interval
     )
@@ -246,7 +268,9 @@ def main():
 
     print(f"Starting BSS Results WebApp on http://0.0.0.0:{args.port}")
     print(f"Results path: {args.results_path}")
-    if args.data_path:
+    if data_paths:
+        print(f"Data paths: {data_paths}")
+    elif args.data_path:
         print(f"Data path: {args.data_path}")
 
     app.run(debug=args.debug, host='0.0.0.0', port=args.port)

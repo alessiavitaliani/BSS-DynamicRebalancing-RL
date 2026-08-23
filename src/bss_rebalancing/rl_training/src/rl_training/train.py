@@ -74,14 +74,33 @@ params = {
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
-    "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
-    "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
-    "depot_position_id": 12,                # ID (cell) of the depot position
-    "initial_cell_id": 12,                  # Initial cell where the truck starts
+    "enable_repositioning": False,           # Use base repositioning strategy at the start of each episode
+    "use_net_flow": False,                   # Use net flow repositioning strategy at the start of each episode
+    "depot_position_id": 12,                # ID (cell) of the (shared) central bike depot
+    "initial_cell_id": 12,                  # Initial cell for truck #1 (truck #2's cell is
+                                             # sampled at random among the remaining cells —
+                                             # set "initial_cell_ids" below to pin both explicitly)
+    "num_trucks": 1,                        # Number of trucks per env (multi-truck-in-one-map
+                                             # support still exists in the env for later — see
+                                             # fully_dynamic_env.py — but the current setup uses
+                                             # multi-area training instead: see --data-paths)
+    "initial_cell_ids": [12, 17],               # Optional: e.g. [12, 40] to fix each truck's
+                                             # starting cell explicitly when num_trucks > 1
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,
 }
+
+# Define which metrics to use as GNN features
+gnn_features = [
+    'truck_cell',         # now a count of trucks in the cell (was a 0/1 flag)
+    'active_truck_cell',  # 1 for the cell of the truck the shared policy is
+                               # currently controlling — lets one set of weights
+                               # act for either truck (parameter sharing)
+    'critic_score',
+    'eligibility_score',
+    'total_bikes',
+]
 
 # ------------------------------------------------------------------------------
 # CLI
@@ -130,7 +149,18 @@ def create_parser() -> argparse.ArgumentParser:
         '--data-path',
         type=str,
         default='data/',
-        help='Path to the data folder.'
+        help='Path to the data folder. Ignored if --data-paths is given.'
+    )
+    parser.add_argument(
+        '--data-paths',
+        type=str,
+        default=None,
+        help=(
+            'Comma-separated list of data folder paths for multi-area training '
+            '(e.g. "data/manhattan_north,data/manhattan_south"). One truck per '
+            'area, all areas share the same policy (parameter sharing). '
+            'Overrides --data-path when given.'
+        )
     )
     parser.add_argument(
         '--results-path',
@@ -244,17 +274,27 @@ def _build_validate_cmd(
         total_timeslots: int,
         enable_repositioning: bool,
         use_net_flow: bool,
+        data_paths: list[str] | None = None,
 ) -> list[str]:
     """
     Build the argv list to invoke validate.py as a completely independent subprocess
     — exactly as if you typed it in your terminal.
     Uses sys.executable so the subprocess runs in the same venv as training.
+
+    If `data_paths` is given (multi-area training), validate.py is invoked with
+    --data-paths so it evaluates the shared policy on every area, matching
+    validate_ppo_multi_env(). Otherwise falls back to the single --data-path.
     """
     validate_script = str(_get_validate_script_path())
     cmd = [
         sys.executable, validate_script,
         "--run-id", str(run_id),
-        "--data-path", data_path,
+    ]
+    if data_paths:
+        cmd += ["--data-paths", ",".join(data_paths)]
+    else:
+        cmd += ["--data-path", data_path]
+    cmd += [
         "--results-path", results_path,
         "--model-type", "episode",
         "--model-episode", str(episode),
@@ -426,8 +466,12 @@ def train_ppo(
         'use_net_flow': params["use_net_flow"],
         'discount_factor': params["gamma"],
         'depot_id': params['depot_position_id'],
+        'num_trucks': params['num_trucks'],
         'initial_cell': params['initial_cell_id'],
     }
+    if params.get('initial_cell_ids'):
+        # Overrides 'initial_cell' above: fixes every truck's starting cell.
+        reset_options['initial_cells'] = params['initial_cell_ids']
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path
 
@@ -444,14 +488,6 @@ def train_ppo(
         nodes_dict=nodes_dict,
         distance_lookup=distance_lookup
     )
-    
-    # Define which metrics to use as GNN features
-    gnn_features = [
-        'truck_cell',
-        'critic_score',
-        'eligibility_score',
-        'total_bikes',
-    ]
 
     # Initialize state
     state = convert_graph_to_data(cell_graph, node_features=gnn_features)
@@ -483,7 +519,6 @@ def train_ppo(
             x=state.x.to(device),
             edge_index=state.edge_index.to(device),
             edge_attr=state.edge_attr.to(device),
-            agent_state=torch.tensor(state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
             batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
         )
 
@@ -552,7 +587,6 @@ def train_ppo(
                     x=next_state.x.to(device),
                     edge_index=next_state.edge_index.to(device),
                     edge_attr=next_state.edge_attr.to(device),
-                    agent_state=torch.tensor(next_state.agent_state, dtype=torch.float32).unsqueeze(0).to(device),
                     batch=torch.zeros(next_state.x.size(0), dtype=torch.long).to(device),
                 )
                 
@@ -597,7 +631,7 @@ def train_ppo(
             if tbar is not None:
                 tbar.set_description(
                     f"[TRAIN] Run {run_id}. Epis {episode}, Week {info['week'] % 52}, "
-                    f"{info['day'].capitalize()} at {info.get('time_formatted', 'N/A')}"
+                    f"{info['day'].capitalize()} at {convert_seconds_to_hours_minutes(info['time'])}"
                 )
                 # Replaced epsilon with the Critic's Value estimation
                 tbar.set_postfix({'Val': f"{value.item():.2f}"})
@@ -664,6 +698,353 @@ def train_ppo(
     
 
 # ----------------------------------------------------------------------------------------------------------------------
+# Multi-area training (2+ separate data_paths, 1 truck each, one shared PPO policy)
+# ----------------------------------------------------------------------------------------------------------------------
+
+@dataclass
+class _EnvContext:
+    """Per-environment (per-area) rollout state, kept separate so a single
+    shared PPOAgent/PPOBuffer can be fed transitions from several areas whose
+    maps (cell graphs) differ in size — the GNN policy doesn't care, since it
+    operates per-node/edge regardless of how many cells a given area has."""
+    env: gymnasium.Env
+    area_label: str
+    cell_dict: dict
+    cell_graph: object
+    state: Data
+    info: dict
+    episode_cell_stats: dict
+    done: bool = False
+    timeslots_completed: int = 0
+    total_reward_per_timeslot: float = 0.0
+    total_failures_per_timeslot: int = 0
+    last_cumulative_demand: float = 0.0
+    iterations: int = 0
+    last_value: float = 0.0
+    rewards: list = None
+    failures: list = None
+    state_values: list = None
+    system_bikes: list = None
+    truck_load: list = None
+    depot_load: list = None
+    outside_system_bikes: list = None
+    traveling_bikes: list = None
+    demand_per_timeslot: list = None
+    action_per_step: list = None
+    global_critic_scores: list = None
+    reward_tracking_per_action: dict = None
+
+    def __post_init__(self):
+        for name in (
+            "rewards", "failures", "state_values", "system_bikes", "truck_load",
+            "depot_load", "outside_system_bikes", "traveling_bikes",
+            "demand_per_timeslot", "action_per_step", "global_critic_scores",
+        ):
+            if getattr(self, name) is None:
+                setattr(self, name, [])
+        if self.reward_tracking_per_action is None:
+            self.reward_tracking_per_action = {}
+
+
+def _reset_env_context(
+    env: gymnasium.Env,
+    area_label: str,
+    episode_results_path: str | None,
+) -> _EnvContext:
+    """Resets one area's environment and builds its initial per-area context.
+    Mirrors the reset block at the top of train_ppo(), but scoped to one env
+    instead of module-level 'state'/'cell_graph' variables."""
+    reset_options = {
+        'total_timeslots': params["total_timeslots"],
+        'maximum_number_of_bikes': params["maximum_number_of_bikes"],
+        'minimum_number_of_bikes': params["minimum_number_of_bikes"],
+        'enable_repositioning': params["enable_repositioning"],
+        'use_net_flow': params["use_net_flow"],
+        'discount_factor': params["gamma"],
+        'depot_id': params['depot_position_id'],
+        'num_trucks': 1,  # multi-area mode: 1 truck per area; the "multi-agent"
+                           # part is across areas, not within a single map.
+    }
+    # Cell IDs are area-specific (different maps), so we deliberately do NOT
+    # reuse params['initial_cell_id'] here — it would likely be invalid (or
+    # mean a different physical place) in a second area. Each env samples a
+    # random valid starting cell, unless explicitly pinned per area below.
+    per_area_cells = params.get('initial_cell_ids_per_area')
+    if per_area_cells and area_label in per_area_cells:
+        reset_options['initial_cell'] = per_area_cells[area_label]
+    if episode_results_path is not None:
+        reset_options['results_path'] = episode_results_path
+
+    agent_state, info = env.reset(options=reset_options)
+
+    cell_dict = info['cell_dict']
+    nodes_dict = info['nodes_dict']
+    distance_lookup = info['distance_lookup']
+
+    cell_graph = build_cell_graph_from_cells(
+        cells=cell_dict, nodes_dict=nodes_dict, distance_lookup=distance_lookup
+    )
+
+    state = convert_graph_to_data(cell_graph, node_features=gnn_features)
+    state.agent_state = agent_state
+    state.steps = info['steps']
+
+    episode_cell_stats = {
+        cell_id: {
+            'critic_sum': 0.0, 'eligibility_sum': 0.0,
+            'bikes_sum': 0.0, 'bikes_dead_sum': 0.0,
+        }
+        for cell_id in cell_dict.keys()
+    }
+
+    return _EnvContext(
+        env=env, area_label=area_label, cell_dict=cell_dict, cell_graph=cell_graph,
+        state=state, info=info, episode_cell_stats=episode_cell_stats,
+    )
+
+
+def train_ppo_multi_env(
+    envs: list,
+    agent: PPOAgent,
+    buffer: PPOBuffer,
+    episode: int,
+    device: torch.device,
+    run_id: int,
+    logging_enabled: bool,
+    tbar=None,
+    episode_results_paths: list | None = None,
+    seed: int = None,
+) -> dict:
+    """
+    Multi-area counterpart of train_ppo(): runs one episode across several
+    environments (each a different data_path/area, 1 truck each) at once,
+    round-robining which area takes the next step, feeding every transition
+    into the SAME buffer so agent.update() trains one shared policy on
+    experience pooled across all areas (parameter sharing across areas,
+    analogous to parameter sharing across trucks in the single-map case).
+
+    An area that finishes its episode (reaches total_timeslots) earlier than
+    the others simply drops out of the rotation; the loop continues with the
+    remaining areas until all are done.
+
+    Returns a dict with the exact same keys/shapes as train_ppo(), with
+    per-area series concatenated in area order, so callers (main()'s
+    EpisodeResults / ResultsManager / validation logic) don't need to change.
+    A "per_area" key is added on top with each area's own series, for callers
+    that want the breakdown.
+
+    Known limitation: "cell_subgraph" in the returned dict is only the first
+    area's graph (EpisodeResults has a single graph slot) — extending
+    results/plots to show every area's graph is future work.
+    """
+    if episode_results_paths is None:
+        episode_results_paths = [None] * len(envs)
+
+    contexts = [
+        _reset_env_context(env, f"area_{i}", episode_results_paths[i])
+        for i, env in enumerate(envs)
+    ]
+
+    update_freq = params["rollout_steps"]
+    buffer.clear()
+    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
+
+    active = list(range(len(contexts)))
+    rr_pos = 0
+
+    while active:
+        idx = active[rr_pos % len(active)]
+        ctx = contexts[idx]
+
+        # Prepare state for agent (S)
+        single_state = Data(
+            x=ctx.state.x.to(device),
+            edge_index=ctx.state.edge_index.to(device),
+            edge_attr=ctx.state.edge_attr.to(device),
+            batch=torch.zeros(ctx.state.x.size(0), dtype=torch.long).to(device),
+        )
+
+        avoid_actions = ctx.info.get("avoid_action", [])
+        action, logprob, value = agent.select_action(single_state, avoid_action=avoid_actions)
+
+        agent_state, reward, done, timeslot_terminated, info = ctx.env.step(action)
+        reward = float(np.clip(reward, -2.0, 3.0))
+
+        cell_dict = info['cell_dict']
+        update_cell_graph_features(ctx.cell_graph, cell_dict)
+        ctx.cell_dict = cell_dict
+        ctx.info = info
+
+        for cell_id, cell in cell_dict.items():
+            stats = ctx.episode_cell_stats[cell_id]
+            stats['critic_sum'] += cell.get_critic_score()
+            stats['eligibility_sum'] += cell.get_eligibility_score()
+            stats['bikes_sum'] += cell.get_total_bikes()
+            stats['bikes_dead_sum'] += cell.get_dead_bikes()
+
+        next_state = convert_graph_to_data(ctx.cell_graph, node_features=gnn_features)
+        next_state.agent_state = agent_state
+        next_state.steps = info['steps']
+
+        buffer.push(
+            state=single_state.cpu(),
+            action=action,
+            logprob=logprob.item(),
+            reward=reward,
+            value=value.item(),
+            done=done,
+        )
+
+        ctx.action_per_step.append(action)
+        ctx.reward_tracking_per_action.setdefault(action, []).append(reward)
+        ctx.global_critic_scores.append(info['global_critic_score'])
+        ctx.total_reward_per_timeslot += reward
+        ctx.total_failures_per_timeslot += sum(info['failures'])
+        ctx.iterations += 1
+        ctx.last_value = value.item()
+
+        # ------------------------------------------------------------------
+        # PPO update after k steps (k counted across ALL areas combined)
+        # ------------------------------------------------------------------
+        if len(buffer) >= update_freq:
+            if done:
+                last_value = 0.0
+            else:
+                next_state_data = Data(
+                    x=next_state.x.to(device),
+                    edge_index=next_state.edge_index.to(device),
+                    edge_attr=next_state.edge_attr.to(device),
+                    batch=torch.zeros(next_state.x.size(0), dtype=torch.long).to(device),
+                )
+                with torch.no_grad():
+                    _, _, next_value = agent.select_action(next_state_data)
+                    last_value = next_value.item()
+
+            pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
+            buffer.clear()
+
+        # Handle timeslot completion (per area)
+        if timeslot_terminated:
+            ctx.timeslots_completed += 1
+
+            ctx.rewards.append(ctx.total_reward_per_timeslot)
+            ctx.failures.append(ctx.total_failures_per_timeslot)
+            ctx.state_values.append(value.item())
+            ctx.system_bikes.append(info['number_of_system_bikes'])
+            ctx.truck_load.append(info['truck_bikes'])
+            ctx.depot_load.append(info['depot_bikes'])
+            ctx.outside_system_bikes.append(info['number_of_outside_bikes'])
+            ctx.traveling_bikes.append(info['number_of_traveling_bikes'])
+
+            current = sum(cell.get_total_demand() for cell in cell_dict.values())
+            ctx.demand_per_timeslot.append(current - ctx.last_cumulative_demand)
+            ctx.last_cumulative_demand = current
+
+            ctx.total_reward_per_timeslot = 0.0
+            ctx.total_failures_per_timeslot = 0
+
+            if tbar is not None:
+                tbar.set_description(
+                    f"[TRAIN] Run {run_id}. Epis {episode}, {ctx.area_label}, "
+                    f"Week {info['week'] % 52}, {info['day'].capitalize()} "
+                    f"at {convert_seconds_to_hours_minutes(info['time'])}"
+                )
+                tbar.set_postfix({'Val': f"{value.item():.2f}"})
+                tbar.update(1)
+
+        ctx.state = next_state
+        ctx.done = done
+
+        if done:
+            active.remove(idx)
+            if active:
+                rr_pos = rr_pos % len(active)
+        else:
+            rr_pos += 1
+
+    if len(buffer) > 0:
+        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=0.0)
+        buffer.clear()
+
+    torch.cuda.empty_cache()
+
+    # Annotate each area's own cell_graph with per-episode stats (same logic
+    # as the single-env path, just looped per area)
+    for ctx in contexts:
+        steps_in_episode = ctx.iterations
+        for cell_id, stats in ctx.episode_cell_stats.items():
+            center_node = ctx.cell_dict[cell_id].get_center_node()
+            if center_node not in ctx.cell_graph.nodes:
+                continue
+
+            if steps_in_episode > 0:
+                critic_mean = stats['critic_sum'] / steps_in_episode
+                eligibility_mean = stats['eligibility_sum'] / steps_in_episode
+                bikes_mean = stats['bikes_sum'] / steps_in_episode
+                dead_bikes_mean = stats['bikes_dead_sum'] / steps_in_episode
+            else:
+                critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
+
+            nx_attrs = ctx.cell_graph.nodes[center_node]
+            nx_attrs['critic_mean'] = critic_mean
+            nx_attrs['eligibility_mean'] = eligibility_mean
+            nx_attrs['failure_sum'] = ctx.cell_dict[cell_id].get_failures()
+            nx_attrs['failure_rate'] = ctx.cell_dict[cell_id].get_failure_rate()
+            nx_attrs['visits_sum'] = ctx.cell_dict[cell_id].get_visits()
+            nx_attrs['ops_sum'] = ctx.cell_dict[cell_id].get_ops()
+            nx_attrs['bikes_mean'] = bikes_mean
+            nx_attrs['dead_bikes_mean'] = dead_bikes_mean
+
+    # ------------------------------------------------------------------
+    # Merge into the same shape train_ppo() returns
+    # ------------------------------------------------------------------
+    merged_reward_tracking: dict = {}
+    for ctx in contexts:
+        for a, rs in ctx.reward_tracking_per_action.items():
+            merged_reward_tracking.setdefault(a, []).extend(rs)
+
+    def _concat(field_name: str) -> list:
+        out: list = []
+        for ctx in contexts:
+            out.extend(getattr(ctx, field_name))
+        return out
+
+    return {
+        "rewards_per_timeslot": _concat("rewards"),
+        "failures_per_timeslot": _concat("failures"),
+        "total_invalid_actions": sum(ctx.info.get("total_invalid_actions", 0) for ctx in contexts),
+        "state_values_per_timeslot": _concat("state_values"),
+        "action_per_step": _concat("action_per_step"),
+        "global_critic_scores": _concat("global_critic_scores"),
+        "reward_tracking_per_action": merged_reward_tracking,
+        "deployed_bikes": _concat("system_bikes"),
+        "truck_load": _concat("truck_load"),
+        "depot_load": _concat("depot_load"),
+        "outside_system_bikes": _concat("outside_system_bikes"),
+        "traveling_bikes": _concat("traveling_bikes"),
+        "demand_per_timeslot": _concat("demand_per_timeslot"),
+        "cell_subgraph": contexts[0].cell_graph,  # see limitation note in the docstring
+        "policy_loss": pg_loss,
+        "value_loss": v_loss,
+        "entropy": ent_loss,
+        "per_area": {
+            ctx.area_label: {
+                "rewards_per_timeslot": ctx.rewards,
+                "failures_per_timeslot": ctx.failures,
+                "demand_per_timeslot": ctx.demand_per_timeslot,
+                "deployed_bikes": ctx.system_bikes,
+                "truck_load": ctx.truck_load,
+                "depot_load": ctx.depot_load,
+                "outside_system_bikes": ctx.outside_system_bikes,
+                "traveling_bikes": ctx.traveling_bikes,
+                "cell_subgraph": ctx.cell_graph,
+            }
+            for ctx in contexts
+        },
+    }
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 
 def main():
     print("2. Start of the main section")
@@ -682,6 +1063,7 @@ def main():
     validation_process = None
     run_id = args.run_id
     data_path = args.data_path
+    data_paths = [p.strip() for p in args.data_paths.split(",")] if args.data_paths else None
     results_path = args.results_path
     logging_enabled = args.log
 
@@ -696,8 +1078,15 @@ def main():
     print(f"Setting seed: {params['seed']}")
     set_seed(params['seed'])
 
-    # Ensure the data path exists
-    if not os.path.exists(data_path):
+    # Ensure the data path(s) exist
+    if data_paths:
+        for p in data_paths:
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"The specified data path does not exist: {p}")
+        # Validation subprocess (validate.py) supports --data-paths too, and
+        # will be invoked with the same set of areas — see _build_validate_cmd.
+        data_path = data_paths[0]
+    elif not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
 
     # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
@@ -721,22 +1110,42 @@ def main():
     logger.info("Starting training loop")
 
     print("3. Before gym.make")
-    # Create the environment
-    env = gym.make(
-        'gymnasium_env/FullyDynamicEnv-v0',
-        data_path=data_path,
-        results_path=f"{str(results_manager.training_path)}/",
-        seed=params['seed'],
-        logging_enabled=logging_enabled
-    )
-    
-    print("4. Environment created")
+    # Create the environment(s). Multi-area mode (data_paths given): one env
+    # per area, each with 1 truck, all sharing the same policy — see
+    # train_ppo_multi_env(). Single-area mode: unchanged, one env.
+    if data_paths:
+        envs = [
+            gym.make(
+                'gymnasium_env/FullyDynamicEnv-v0',
+                data_path=p,
+                results_path=f"{str(results_manager.training_path)}/area_{i}/",
+                seed=params['seed'],
+                logging_enabled=logging_enabled
+            )
+            for i, p in enumerate(data_paths)
+        ]
+        env = envs[0]  # kept for code below that still refers to a single `env`
+        print(f"4. {len(envs)} environments created (multi-area: {data_paths})")
+    else:
+        env = gym.make(
+            'gymnasium_env/FullyDynamicEnv-v0',
+            data_path=data_path,
+            results_path=f"{str(results_manager.training_path)}/",
+            seed=params['seed'],
+            logging_enabled=logging_enabled
+        )
+        envs = [env]
+        print("4. Environment created")
 
     # Save hyperparameters
     results_manager.save_hyperparameters(
         params={
             **params,
             **{k: v for k, v in vars(EnvDefaults).items() if not k.startswith('_')},
+            # Record the data path(s) so the results webapp can find the right
+            # base map per area (see results_webapp app.py --data-paths).
+            "data_path": data_path,
+            "data_paths": data_paths,
         },
         reward_params={k: v for k, v in vars(RewardComponents).items() if not k.startswith('_')}
     )
@@ -755,8 +1164,8 @@ def main():
 
     # Initialize the PPO agent
     network = PPONetwork(
-        num_actions=env.action_space.n, 
-        node_features=4 
+        num_actions=env.action_space.n,
+        node_features=len(gnn_features),  # was hardcoded 4; now tracks gnn_features above
     ).to(device)
     
     agent = PPOAgent(
@@ -775,7 +1184,10 @@ def main():
 
 
     # Train the agent using the training loop
-    num_days = int(params["total_timeslots"] // 8)
+    # In multi-area mode, per-timeslot series returned by train_ppo_multi_env()
+    # are concatenated across areas, so the denominator for mean_daily_failures
+    # must scale with the number of areas too, or the metric is inflated.
+    num_days = int(params["total_timeslots"] // 8) * max(1, len(envs))
 
     # Best validation score tracker (lower mean_daily_failures = better)
     best_val_score = float("inf")
@@ -786,8 +1198,14 @@ def main():
     pending_val: _PendingVal | None = None
 
     try:
+        # Each area produces its own tbar.update(1) per completed timeslot
+        # (train_ppo_multi_env calls it once per area, not once per
+        # "aggregate" timeslot) — so the total must scale by len(envs), or
+        # tqdm's total is exhausted partway into episode 0 for multi-area
+        # runs, and every episode after that falls back to open-ended
+        # "N it [...]" counting instead of a proper progress bar.
         tbar = tqdm(
-            range(int(params["total_timeslots"] * params["num_episodes"])),
+            range(int(params["total_timeslots"] * params["num_episodes"] * len(envs))),
             desc="Training computation is starting ",
             position=0,
             leave=True,
@@ -801,18 +1219,36 @@ def main():
             current_seed = int(params['seed'] + episode)
             
             # PPO Training
-            training_dict = train_ppo(
-                env=env,
-                agent=agent,
-                buffer=ppo_buffer,
-                episode=episode,
-                device=device,
-                run_id=run_id,
-                logging_enabled=logging_enabled,
-                tbar=tbar,
-                episode_results_path=os.path.join(str(results_manager.training_path), f"episode_{episode:03d}"),
-                seed=current_seed
-            )
+            if data_paths and len(envs) > 1:
+                episode_results_paths = [
+                    os.path.join(str(results_manager.training_path), f"area_{i}", f"episode_{episode:03d}")
+                    for i in range(len(envs))
+                ]
+                training_dict = train_ppo_multi_env(
+                    envs=envs,
+                    agent=agent,
+                    buffer=ppo_buffer,
+                    episode=episode,
+                    device=device,
+                    run_id=run_id,
+                    logging_enabled=logging_enabled,
+                    tbar=tbar,
+                    episode_results_paths=episode_results_paths,
+                    seed=current_seed
+                )
+            else:
+                training_dict = train_ppo(
+                    env=env,
+                    agent=agent,
+                    buffer=ppo_buffer,
+                    episode=episode,
+                    device=device,
+                    run_id=run_id,
+                    logging_enabled=logging_enabled,
+                    tbar=tbar,
+                    episode_results_path=os.path.join(str(results_manager.training_path), f"episode_{episode:03d}"),
+                    seed=current_seed
+                )
 
             # Build EpisodeResults
             training_results = EpisodeResults(
@@ -837,6 +1273,7 @@ def main():
                 reward_tracking_per_action=training_dict['reward_tracking_per_action'],
                 global_critic_scores=training_dict['global_critic_scores'],
                 cell_subgraph=training_dict['cell_subgraph'],
+                per_area=training_dict.get('per_area'),
                 traveling_bikes=training_dict['traveling_bikes'],
                 policy_loss=training_dict['policy_loss'],
                 value_loss=training_dict['value_loss'],
@@ -908,6 +1345,7 @@ def main():
                     total_timeslots=int(params['total_timeslots']),
                     enable_repositioning=bool(params['enable_repositioning']),
                     use_net_flow=bool(params['use_net_flow']),
+                    data_paths=data_paths,
                 )
                 pending_val = _launch_validation_subprocess(val_cmd, episode, logger)
 
@@ -954,7 +1392,8 @@ def main():
         results_manager.save_run_summary()
         logger.info("Training completed successfully")
         tbar.close()
-        env.close()
+        for _e in envs:
+            _e.close()
         
         # Save closure to avoid leaked semaphore
         gc.collect()
@@ -975,13 +1414,15 @@ def main():
         if pending_val is not None and pending_val.proc.poll() is None:
             print(f"[VAL] Terminating background validation for episode {pending_val.episode}...")
             pending_val.proc.terminate()
-        env.close()
+        for _e in envs:
+            _e.close()
         return
     except Exception as e:
         logger.error(f"Training failed: {e}")
         if pending_val is not None and pending_val.proc.poll() is None:
             pending_val.proc.terminate()
-        env.close()
+        for _e in envs:
+            _e.close()
         raise
 
     print(f"\nTraining {run_id} completed.")
