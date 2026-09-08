@@ -63,11 +63,19 @@ params = {
     "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
-    "lr": 2.0e-5,                                   # Learning rate
+    "lr": 5e-4,                                     # Learning rate
     # PPO params
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
-    "ent_coef": 0.02,                               # Entropy coefficient
+    "ent_coef": 0.02,                               # Entropy coefficient (starting value — see ent_coef_final for linear decay)
+    "ent_coef_final": 0.005,                        # ent_coef decays linearly from `ent_coef` to this value over
+                                                     # num_episodes, instead of staying constant. A constant, fairly
+                                                     # high ent_coef keeps the policy exploratory/uncertain for a long
+                                                     # stretch of training; once the advantage signal finally
+                                                     # overcomes it, the policy specializes abruptly (visible as a
+                                                     # sudden entropy collapse + reward/failures "step" in the plots).
+                                                     # Decaying it gradually smooths that transition. Set equal to
+                                                     # `ent_coef` to disable decay and keep the old constant behavior.
     "vf_coef": 0.25,                                # Value coefficient
     "update_epochs": 6,                             # How many times buffer is processed at every update 
 
@@ -105,7 +113,7 @@ gnn_features = [
 # ------------------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------------------
-
+ 
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser for the preprocessing CLI."""
     parser = argparse.ArgumentParser(
@@ -115,30 +123,30 @@ def create_parser() -> argparse.ArgumentParser:
         Examples:
             # Run full preprocessing pipeline
             bss-train --data-path data/
-
+ 
             # Specify run ID and results path
             bss-train --run-id 1 --data-path data/ --results-path results/
-
+ 
             # Use GPU device
             bss-train --data-path data/ --device cuda:0
-
+ 
             # Set random seed and number of episodes
             bss-train --data-path data/ --seed 123 --num-episodes 150
-
+ 
             # Enable logging
             bss-train --data-path data/ --enable-logging 
-
+ 
             # Perform only one validation at the end of training
             bss-train --data-path data/ --one-validation  
-
+ 
             # Perform training with number of bikes and exploration time
             bss-train --data-path data/ --num-bikes 300 --exploration-time 0.8
-
+ 
             # Use a separate GPU for validation subprocesses
             bss-train --data-path data/ --device cuda:0 --val-device cuda:1
         """,
     )
-
+ 
     parser.add_argument(
         '--run-id',
         type=int,
@@ -230,18 +238,68 @@ def create_parser() -> argparse.ArgumentParser:
         action='store_true',
         help='Performs only one validation at the end of the training.'
     )  # TODO: fix this feature
-
+    parser.add_argument(
+        '--optimizer',
+        type=str,
+        default='adam',
+        choices=['adam', 'sgd'],
+        help="Optimizer for the PPO network. 'sgd' uses SGD with momentum (see --momentum)."
+    )
+    parser.add_argument(
+        '--momentum',
+        type=float,
+        default=0.9,
+        help='Momentum for the SGD optimizer (ignored if --optimizer=adam).'
+    )
+    parser.add_argument(
+        '--resume-run-id',
+        type=int,
+        default=None,
+        help=(
+            'Load network weights from this existing run_id before training starts '
+            '(fresh training loop, episode counter starts at 0 — this only warm-starts '
+            'the weights, e.g. to switch optimizer/hyperparameters mid-training). '
+            'The checkpoint is read from --results-path/run_{resume-run-id:03d}/models/. '
+            'Only the network weights are loaded, never the optimizer state — so this '
+            'always starts the new optimizer (Adam or SGD) completely fresh.'
+        )
+    )
+    parser.add_argument(
+        '--resume-model-type',
+        type=str,
+        default='best',
+        choices=['best', 'final', 'episode'],
+        help="Which checkpoint to load from --resume-run-id. Use 'episode' with --resume-episode."
+    )
+    parser.add_argument(
+        '--resume-episode',
+        type=int,
+        default=None,
+        help="Episode number to load when --resume-model-type=episode."
+    )
+    parser.add_argument(
+        '--start-episode',
+        type=int,
+        default=None,
+        help=(
+            'Override the episode number training resumes at (only used with '
+            '--resume-run-id). Defaults to (checkpoint episode + 1), read from '
+            "the checkpoint's own metadata.json, so numbering continues "
+            'naturally instead of restarting at 0.'
+        )
+    )
+ 
     return parser
-
-
+ 
+ 
 # ------------------------------------------------------------------------------
 # Subprocess-based validation helpers
 # ------------------------------------------------------------------------------
-
+ 
 def _get_validate_script_path() -> str:
     """
     Resolve the absolute path to validate.py.
-
+ 
     Strategy (in order):
       1. Same directory as this train.py file  ← works for src-layout packages
       2. `bss-validate` console-script on PATH  ← works if installed via pip/setup.py
@@ -250,18 +308,18 @@ def _get_validate_script_path() -> str:
     candidate = Path(__file__).parent / "validate.py"
     if candidate.exists():
         return str(candidate)
-
+ 
     import shutil
     entry = shutil.which("bss-validate")
     if entry:
         return str(entry)
-
+ 
     raise FileNotFoundError(
         "Cannot locate validate.py. Expected it next to train.py, "
         "or 'bss-validate' on PATH (installed via pip)."
     )
-
-
+ 
+ 
 def _build_validate_cmd(
         run_id: int,
         data_path: str,
@@ -280,7 +338,7 @@ def _build_validate_cmd(
     Build the argv list to invoke validate.py as a completely independent subprocess
     — exactly as if you typed it in your terminal.
     Uses sys.executable so the subprocess runs in the same venv as training.
-
+ 
     If `data_paths` is given (multi-area training), validate.py is invoked with
     --data-paths so it evaluates the shared policy on every area, matching
     validate_ppo_multi_env(). Otherwise falls back to the single --data-path.
@@ -310,15 +368,15 @@ def _build_validate_cmd(
     if use_net_flow:
         cmd.append("--use-net-flow")
     return cmd
-
-
+ 
+ 
 @dataclass
 class _PendingVal:
     """Tracks a validation subprocess running in parallel with training."""
     episode: int
     proc: subprocess.Popen
-
-
+ 
+ 
 def _launch_validation_subprocess(
         cmd: list[str],
         episode: int,
@@ -330,7 +388,7 @@ def _launch_validation_subprocess(
     stdout/stderr are inherited so the validation tqdm bar prints inline.
     """
     logger.info(f"[val] Launching validation subprocess for episode {episode}: {' '.join(cmd)}")
-
+ 
     try:
         proc = subprocess.Popen(
             cmd,
@@ -342,8 +400,8 @@ def _launch_validation_subprocess(
         logger.error(f"[val] Failed to launch validation subprocess for episode {episode}: {e}")
         print(f"[VAL] Could not launch validation for episode {episode}: {e}")
         return None
-
-
+ 
+ 
 def _collect_pending_val(
         pending: '_PendingVal',
         logger: logging.Logger,
@@ -355,7 +413,7 @@ def _collect_pending_val(
     Called at the next validation gate, so training is never stalled mid-episode.
     """
     logger.info(f"[val] Waiting for validation of episode {pending.episode} to finish...")
-
+ 
     try:
         pending.proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -367,7 +425,7 @@ def _collect_pending_val(
         )
         print(f"[VAL] Validation timed out for episode {pending.episode}, skipping.")
         return False
-
+ 
     if pending.proc.returncode != 0:
         logger.warning(
             f"[val] Validation subprocess for episode {pending.episode} "
@@ -375,11 +433,11 @@ def _collect_pending_val(
         )
         print(f"[VAL] Validation exited non-zero ({pending.proc.returncode}) for episode {pending.episode}.")
         return False
-
+ 
     logger.info(f"[val] Validation for episode {pending.episode} completed successfully.")
     return True
-
-
+ 
+ 
 def _read_validation_score(
         results_path: str,
         run_id: int,
@@ -395,7 +453,7 @@ def _read_validation_score(
             Path(results_path) / f"run_{run_id:03d}" / "validation" / val_tag
             / "episode_000" / "scalars.json"
     )
-
+ 
     try:
         with open(scalars_path, "r") as f:
             scalars = json.load(f)
@@ -408,12 +466,12 @@ def _read_validation_score(
     except Exception as e:
         logger.error(f"[val] Failed to read validation score for episode {episode}: {e}")
         return None
-
-
+ 
+ 
 # ========================================
 #     train ppo
 # ========================================
-
+ 
 def train_ppo(
     env: gymnasium.Env,
     agent: PPOAgent,
@@ -439,21 +497,21 @@ def train_ppo(
     outside_system_bikes = []
     traveling_bikes = []
     demand_per_timeslot = []
-
+ 
     # Per-step metrics
     action_per_step = []
     global_critic_scores = []
     # Assumes Actions is accessible in your scope
     # reward_tracking_per_action = {idx: [] for idx in range(len(Actions))}
     reward_tracking_per_action = {} # Initialized dynamically to avoid import issues here
-
+ 
     # Accumulators (reset each timeslot)
     total_reward_per_timeslot = 0.0
     total_failures_per_timeslot = 0
     timeslots_completed = 0
     iterations = 0
     last_cumulative_demand = 0
-
+ 
     # ============================================================================
     # Environment setup and reset
     # ============================================================================
@@ -474,26 +532,26 @@ def train_ppo(
         reset_options['initial_cells'] = params['initial_cell_ids']
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path
-
+ 
     agent_state, info = env.reset(options=reset_options)
-
+ 
     # Extract static environment info
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
     distance_lookup = info['distance_lookup']
-
+ 
     # Build initial graph from cells
     cell_graph = build_cell_graph_from_cells(
         cells=cell_dict,
         nodes_dict=nodes_dict,
         distance_lookup=distance_lookup
     )
-
+ 
     # Initialize state
     state = convert_graph_to_data(cell_graph, node_features=gnn_features)
     state.agent_state = agent_state
     state.steps = info['steps']
-
+ 
     # ============================================================================
     # Main training loop
     # ============================================================================
@@ -506,11 +564,11 @@ def train_ppo(
         }
         for cell_id in cell_dict.keys()
     }
-
+ 
     done = False
     update_freq = params["rollout_steps"]  # Number of steps before update
     step_counter = 0   # Step counter
-    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
+    pg_loss, v_loss, entropy = 0.0, 0.0, 0.0
     buffer.clear()
     
     while not done:
@@ -521,22 +579,22 @@ def train_ppo(
             edge_attr=state.edge_attr.to(device),
             batch=torch.zeros(state.x.size(0), dtype=torch.long).to(device),
         )
-
+ 
         # Retrieve forbidden actions from environment (if provided)
         avoid_actions = info.get("avoid_action", [])
-
+ 
         # Select action using PPO Actor (stochastic, no epsilon)
         # We also get the logprob and the Critic's value estimation
         action, logprob, value = agent.select_action(single_state, avoid_action=avoid_actions)
-
+ 
         # Step into: get reward and observation (R)
         agent_state, reward, done, timeslot_terminated, info = env.step(action)
         reward = float(np.clip(reward, -2.0, 3.0))
-
+ 
         # Update node attributes
         cell_dict = info['cell_dict']
         update_cell_graph_features(cell_graph, cell_dict)
-
+ 
         # Update cumulative cell statistics
         for cell_id, cell in cell_dict.items():
             stats = episode_cell_stats[cell_id]
@@ -544,12 +602,12 @@ def train_ppo(
             stats['eligibility_sum'] += cell.get_eligibility_score()
             stats['bikes_sum'] += cell.get_total_bikes()
             stats['bikes_dead_sum'] += cell.get_dead_bikes()
-
+ 
         # Create next state (S')
         next_state = convert_graph_to_data(cell_graph, node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
-
+ 
         # Store transition in the PPO Rollout Buffer
         # Notice we don't strictly need next_state for standard GAE if we handle dones correctly, 
         # but we save the current interaction data.
@@ -561,7 +619,7 @@ def train_ppo(
             value=value.item(),
             done=done
         )
-
+ 
         # Record step metrics
         step_counter += 1
         action_per_step.append(action)
@@ -596,19 +654,19 @@ def train_ppo(
                     last_value = next_value.item()
             
             # Perform the update 
-            pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
+            pg_loss, v_loss, entropy = agent.update(buffer, last_value=last_value)
             
             # Clear the buffer to collect new data
             buffer.clear()
-
+ 
         # Handle timeslot completion
         if timeslot_terminated:
             timeslots_completed += 1
-
+ 
             # PPO DOES NOT update target networks or epsilons here.
             # We also don't need the expensive get_q_values calculation anymore.
             # We simply record the Critic's value from the last step of the timeslot.
-
+ 
             # Record timeslot metrics
             rewards.append(total_reward_per_timeslot)
             failures.append(total_failures_per_timeslot)
@@ -618,7 +676,7 @@ def train_ppo(
             depot_load.append(info['depot_bikes'])
             outside_system_bikes.append(info['number_of_outside_bikes'])
             traveling_bikes.append(info['number_of_traveling_bikes'])
-
+ 
             current = sum(cell.get_total_demand() for cell in cell_dict.values())
             demand_per_timeslot.append(current - last_cumulative_demand)
             last_cumulative_demand = current
@@ -626,7 +684,7 @@ def train_ppo(
             # Reset accumulators
             total_reward_per_timeslot = 0.0
             total_failures_per_timeslot = 0
-
+ 
             # Update progress bar
             if tbar is not None:
                 tbar.set_description(
@@ -636,24 +694,24 @@ def train_ppo(
                 # Replaced epsilon with the Critic's Value estimation
                 tbar.set_postfix({'Val': f"{value.item():.2f}"})
                 tbar.update(1)
-
+ 
         # Move to next state
         state = next_state
         #del single_state
-
+ 
     if len(buffer) > 0:
-        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=0.0)
+        pg_loss, v_loss, entropy = agent.update(buffer, last_value=0.0)
         buffer.clear()
         
     # Cleanup
     torch.cuda.empty_cache()
-
+ 
     steps_in_episode = iterations
     for cell_id, stats in episode_cell_stats.items():
         center_node = cell_dict[cell_id].get_center_node()
         if center_node not in cell_graph.nodes:
             continue
-
+ 
         if steps_in_episode > 0:
             critic_mean = stats.get('critic_sum', 0.0) / steps_in_episode
             eligibility_mean = stats.get('eligibility_sum', 0.0) / steps_in_episode
@@ -661,7 +719,7 @@ def train_ppo(
             dead_bikes_mean = stats.get('bikes_dead_sum', 0.0) / steps_in_episode
         else:
             critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
-
+ 
         nx_attrs = cell_graph.nodes[center_node]
         nx_attrs['critic_mean'] = critic_mean
         nx_attrs['eligibility_mean'] = eligibility_mean
@@ -671,7 +729,7 @@ def train_ppo(
         nx_attrs['ops_sum'] = cell_dict[cell_id].get_ops()
         nx_attrs['bikes_mean'] = bikes_mean
         nx_attrs['dead_bikes_mean'] = dead_bikes_mean
-
+ 
     # ============================================================================
     # Return results
     # ============================================================================
@@ -693,14 +751,14 @@ def train_ppo(
         # PPO specific metrics to track training health
         "policy_loss": pg_loss,
         "value_loss": v_loss,
-        "entropy": ent_loss,
+        "entropy": entropy,  # raw (unscaled) policy entropy — see ppo_agent.py
     }
     
-
+ 
 # ----------------------------------------------------------------------------------------------------------------------
 # Multi-area training (2+ separate data_paths, 1 truck each, one shared PPO policy)
 # ----------------------------------------------------------------------------------------------------------------------
-
+ 
 @dataclass
 class _EnvContext:
     """Per-environment (per-area) rollout state, kept separate so a single
@@ -733,7 +791,7 @@ class _EnvContext:
     action_per_step: list = None
     global_critic_scores: list = None
     reward_tracking_per_action: dict = None
-
+ 
     def __post_init__(self):
         for name in (
             "rewards", "failures", "state_values", "system_bikes", "truck_load",
@@ -744,8 +802,8 @@ class _EnvContext:
                 setattr(self, name, [])
         if self.reward_tracking_per_action is None:
             self.reward_tracking_per_action = {}
-
-
+ 
+ 
 def _reset_env_context(
     env: gymnasium.Env,
     area_label: str,
@@ -774,21 +832,21 @@ def _reset_env_context(
         reset_options['initial_cell'] = per_area_cells[area_label]
     if episode_results_path is not None:
         reset_options['results_path'] = episode_results_path
-
+ 
     agent_state, info = env.reset(options=reset_options)
-
+ 
     cell_dict = info['cell_dict']
     nodes_dict = info['nodes_dict']
     distance_lookup = info['distance_lookup']
-
+ 
     cell_graph = build_cell_graph_from_cells(
         cells=cell_dict, nodes_dict=nodes_dict, distance_lookup=distance_lookup
     )
-
+ 
     state = convert_graph_to_data(cell_graph, node_features=gnn_features)
     state.agent_state = agent_state
     state.steps = info['steps']
-
+ 
     episode_cell_stats = {
         cell_id: {
             'critic_sum': 0.0, 'eligibility_sum': 0.0,
@@ -796,13 +854,13 @@ def _reset_env_context(
         }
         for cell_id in cell_dict.keys()
     }
-
+ 
     return _EnvContext(
         env=env, area_label=area_label, cell_dict=cell_dict, cell_graph=cell_graph,
         state=state, info=info, episode_cell_stats=episode_cell_stats,
     )
-
-
+ 
+ 
 def train_ppo_multi_env(
     envs: list,
     agent: PPOAgent,
@@ -822,40 +880,40 @@ def train_ppo_multi_env(
     into the SAME buffer so agent.update() trains one shared policy on
     experience pooled across all areas (parameter sharing across areas,
     analogous to parameter sharing across trucks in the single-map case).
-
+ 
     An area that finishes its episode (reaches total_timeslots) earlier than
     the others simply drops out of the rotation; the loop continues with the
     remaining areas until all are done.
-
+ 
     Returns a dict with the exact same keys/shapes as train_ppo(), with
     per-area series concatenated in area order, so callers (main()'s
     EpisodeResults / ResultsManager / validation logic) don't need to change.
     A "per_area" key is added on top with each area's own series, for callers
     that want the breakdown.
-
+ 
     Known limitation: "cell_subgraph" in the returned dict is only the first
     area's graph (EpisodeResults has a single graph slot) — extending
     results/plots to show every area's graph is future work.
     """
     if episode_results_paths is None:
         episode_results_paths = [None] * len(envs)
-
+ 
     contexts = [
         _reset_env_context(env, f"area_{i}", episode_results_paths[i])
         for i, env in enumerate(envs)
     ]
-
+ 
     update_freq = params["rollout_steps"]
     buffer.clear()
-    pg_loss, v_loss, ent_loss = 0.0, 0.0, 0.0
-
+    pg_loss, v_loss, entropy = 0.0, 0.0, 0.0
+ 
     active = list(range(len(contexts)))
     rr_pos = 0
-
+ 
     while active:
         idx = active[rr_pos % len(active)]
         ctx = contexts[idx]
-
+ 
         # Prepare state for agent (S)
         single_state = Data(
             x=ctx.state.x.to(device),
@@ -863,29 +921,29 @@ def train_ppo_multi_env(
             edge_attr=ctx.state.edge_attr.to(device),
             batch=torch.zeros(ctx.state.x.size(0), dtype=torch.long).to(device),
         )
-
+ 
         avoid_actions = ctx.info.get("avoid_action", [])
         action, logprob, value = agent.select_action(single_state, avoid_action=avoid_actions)
-
+ 
         agent_state, reward, done, timeslot_terminated, info = ctx.env.step(action)
         reward = float(np.clip(reward, -2.0, 3.0))
-
+ 
         cell_dict = info['cell_dict']
         update_cell_graph_features(ctx.cell_graph, cell_dict)
         ctx.cell_dict = cell_dict
         ctx.info = info
-
+ 
         for cell_id, cell in cell_dict.items():
             stats = ctx.episode_cell_stats[cell_id]
             stats['critic_sum'] += cell.get_critic_score()
             stats['eligibility_sum'] += cell.get_eligibility_score()
             stats['bikes_sum'] += cell.get_total_bikes()
             stats['bikes_dead_sum'] += cell.get_dead_bikes()
-
+ 
         next_state = convert_graph_to_data(ctx.cell_graph, node_features=gnn_features)
         next_state.agent_state = agent_state
         next_state.steps = info['steps']
-
+ 
         buffer.push(
             state=single_state.cpu(),
             action=action,
@@ -894,7 +952,7 @@ def train_ppo_multi_env(
             value=value.item(),
             done=done,
         )
-
+ 
         ctx.action_per_step.append(action)
         ctx.reward_tracking_per_action.setdefault(action, []).append(reward)
         ctx.global_critic_scores.append(info['global_critic_score'])
@@ -902,7 +960,7 @@ def train_ppo_multi_env(
         ctx.total_failures_per_timeslot += sum(info['failures'])
         ctx.iterations += 1
         ctx.last_value = value.item()
-
+ 
         # ------------------------------------------------------------------
         # PPO update after k steps (k counted across ALL areas combined)
         # ------------------------------------------------------------------
@@ -919,14 +977,14 @@ def train_ppo_multi_env(
                 with torch.no_grad():
                     _, _, next_value = agent.select_action(next_state_data)
                     last_value = next_value.item()
-
-            pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=last_value)
+ 
+            pg_loss, v_loss, entropy = agent.update(buffer, last_value=last_value)
             buffer.clear()
-
+ 
         # Handle timeslot completion (per area)
         if timeslot_terminated:
             ctx.timeslots_completed += 1
-
+ 
             ctx.rewards.append(ctx.total_reward_per_timeslot)
             ctx.failures.append(ctx.total_failures_per_timeslot)
             ctx.state_values.append(value.item())
@@ -935,14 +993,14 @@ def train_ppo_multi_env(
             ctx.depot_load.append(info['depot_bikes'])
             ctx.outside_system_bikes.append(info['number_of_outside_bikes'])
             ctx.traveling_bikes.append(info['number_of_traveling_bikes'])
-
+ 
             current = sum(cell.get_total_demand() for cell in cell_dict.values())
             ctx.demand_per_timeslot.append(current - ctx.last_cumulative_demand)
             ctx.last_cumulative_demand = current
-
+ 
             ctx.total_reward_per_timeslot = 0.0
             ctx.total_failures_per_timeslot = 0
-
+ 
             if tbar is not None:
                 tbar.set_description(
                     f"[TRAIN] Run {run_id}. Epis {episode}, {ctx.area_label}, "
@@ -951,23 +1009,23 @@ def train_ppo_multi_env(
                 )
                 tbar.set_postfix({'Val': f"{value.item():.2f}"})
                 tbar.update(1)
-
+ 
         ctx.state = next_state
         ctx.done = done
-
+ 
         if done:
             active.remove(idx)
             if active:
                 rr_pos = rr_pos % len(active)
         else:
             rr_pos += 1
-
+ 
     if len(buffer) > 0:
-        pg_loss, v_loss, ent_loss = agent.update(buffer, last_value=0.0)
+        pg_loss, v_loss, entropy = agent.update(buffer, last_value=0.0)
         buffer.clear()
-
+ 
     torch.cuda.empty_cache()
-
+ 
     # Annotate each area's own cell_graph with per-episode stats (same logic
     # as the single-env path, just looped per area)
     for ctx in contexts:
@@ -976,7 +1034,7 @@ def train_ppo_multi_env(
             center_node = ctx.cell_dict[cell_id].get_center_node()
             if center_node not in ctx.cell_graph.nodes:
                 continue
-
+ 
             if steps_in_episode > 0:
                 critic_mean = stats['critic_sum'] / steps_in_episode
                 eligibility_mean = stats['eligibility_sum'] / steps_in_episode
@@ -984,7 +1042,7 @@ def train_ppo_multi_env(
                 dead_bikes_mean = stats['bikes_dead_sum'] / steps_in_episode
             else:
                 critic_mean = eligibility_mean = bikes_mean = dead_bikes_mean = 0.0
-
+ 
             nx_attrs = ctx.cell_graph.nodes[center_node]
             nx_attrs['critic_mean'] = critic_mean
             nx_attrs['eligibility_mean'] = eligibility_mean
@@ -994,7 +1052,7 @@ def train_ppo_multi_env(
             nx_attrs['ops_sum'] = ctx.cell_dict[cell_id].get_ops()
             nx_attrs['bikes_mean'] = bikes_mean
             nx_attrs['dead_bikes_mean'] = dead_bikes_mean
-
+ 
     # ------------------------------------------------------------------
     # Merge into the same shape train_ppo() returns
     # ------------------------------------------------------------------
@@ -1002,13 +1060,13 @@ def train_ppo_multi_env(
     for ctx in contexts:
         for a, rs in ctx.reward_tracking_per_action.items():
             merged_reward_tracking.setdefault(a, []).extend(rs)
-
+ 
     def _concat(field_name: str) -> list:
         out: list = []
         for ctx in contexts:
             out.extend(getattr(ctx, field_name))
         return out
-
+ 
     return {
         "rewards_per_timeslot": _concat("rewards"),
         "failures_per_timeslot": _concat("failures"),
@@ -1026,7 +1084,7 @@ def train_ppo_multi_env(
         "cell_subgraph": contexts[0].cell_graph,  # see limitation note in the docstring
         "policy_loss": pg_loss,
         "value_loss": v_loss,
-        "entropy": ent_loss,
+        "entropy": entropy,  # raw (unscaled) policy entropy — see ppo_agent.py
         "per_area": {
             ctx.area_label: {
                 "rewards_per_timeslot": ctx.rewards,
@@ -1042,21 +1100,21 @@ def train_ppo_multi_env(
             for ctx in contexts
         },
     }
-
-
+ 
+ 
 # ----------------------------------------------------------------------------------------------------------------------
-
+ 
 def main():
     print("2. Start of the main section")
     # spawn is required before any CUDA context is created
     mp.set_start_method('spawn', force=True)
     warnings.filterwarnings("ignore")
-
+ 
     args = create_parser().parse_args()
-
+ 
     device = setup_device(args.device.lower(), devices)
     val_device = setup_device(args.val_device.lower(), devices) if args.val_device else device
-
+ 
     # ------------------------------------------------------------------
     # Params
     # ------------------------------------------------------------------
@@ -1066,18 +1124,20 @@ def main():
     data_paths = [p.strip() for p in args.data_paths.split(",")] if args.data_paths else None
     results_path = args.results_path
     logging_enabled = args.log
-
+ 
     params['seed'] = args.seed
     params['num_episodes'] = args.num_episodes
+    params['optimizer'] = args.optimizer
+    params['momentum'] = args.momentum
     params['maximum_number_of_bikes'] = args.max_num_bikes
     params['minimum_number_of_bikes'] = args.min_num_bikes
     params['enable_repositioning'] = args.enable_repositioning
     params['use_net_flow'] = args.use_net_flow
     params['exploration_time'] = args.exploration_time
-
+ 
     print(f"Setting seed: {params['seed']}")
     set_seed(params['seed'])
-
+ 
     # Ensure the data path(s) exist
     if data_paths:
         for p in data_paths:
@@ -1088,16 +1148,16 @@ def main():
         data_path = data_paths[0]
     elif not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
-
+ 
     # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
-
+ 
     results_manager = ResultsManager(
         results_path=results_path,
         run_id=run_id,
         overwrite=False,
         interactive=True
     )
-
+ 
     # Init logging
     init_logging(LoggingConfig(
         level=logging.INFO,
@@ -1108,7 +1168,7 @@ def main():
     ))
     logger = get_logger("train", logger_name="train")
     logger.info("Starting training loop")
-
+ 
     print("3. Before gym.make")
     # Create the environment(s). Multi-area mode (data_paths given): one env
     # per area, each with 1 truck, all sharing the same policy — see
@@ -1136,7 +1196,7 @@ def main():
         )
         envs = [env]
         print("4. Environment created")
-
+ 
     # Save hyperparameters
     results_manager.save_hyperparameters(
         params={
@@ -1149,19 +1209,19 @@ def main():
         },
         reward_params={k: v for k, v in vars(RewardComponents).items() if not k.startswith('_')}
     )
-
+ 
     print("=" * 80)
     print(f"Device: {device}")
     print(f"Validation device: {val_device}")
     print(f"Params: {params}")
     print("=" * 80)
-
+ 
     # ------------------------------------------------------------------
     # Agent with replay buffer
     # ------------------------------------------------------------------
     # Set up replay buffer
     ppo_buffer = PPOBuffer() # PPO
-
+ 
     # Initialize the PPO agent
     network = PPONetwork(
         num_actions=env.action_space.n,
@@ -1178,25 +1238,85 @@ def main():
         ent_coef=params.get("ent_coef"),
         vf_coef=params.get("vf_coef"),
         update_epochs=params.get("update_epochs"),
-        device=device
+        device=device,
+        optimizer=params.get("optimizer", "adam"),
+        momentum=params.get("momentum", 0.9),
     )
-    print("Model initialized successfully.\n")
-
-
+    print(f"Model initialized successfully (optimizer={agent.optimizer_name}).\n")
+ 
+    # ------------------------------------------------------------------
+    # Optional warm start: load network weights from an existing run's
+    # checkpoint before training begins. Episode counter still starts at 0,
+    # and the optimizer (Adam or SGD, per --optimizer) always starts fresh —
+    # only weights are ever saved/loaded, never optimizer state. Typical use:
+    # resuming after an interrupted run, or continuing training with a
+    # different optimizer/learning-rate/reward configuration.
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Optional warm start: load network weights from an existing run's
+    # checkpoint before training begins. The optimizer (Adam or SGD, per
+    # --optimizer) always starts fresh — only weights are ever saved/loaded,
+    # never optimizer state. Typical use: resuming after an interrupted run,
+    # or continuing training with a different optimizer/learning-rate/reward
+    # configuration.
+    #
+    # By default the episode counter CONTINUES from the checkpoint's own
+    # episode number (read from its metadata.json) instead of restarting at
+    # 0, so plots/episode folders read as one continuous arc across the two
+    # run directories. Override with --start-episode if you want something
+    # else (e.g. restart numbering at 0).
+    # ------------------------------------------------------------------
+    start_episode = 0
+    if args.resume_run_id is not None:
+        if args.resume_model_type == 'episode' and args.resume_episode is None:
+            raise ValueError("--resume-episode is required when --resume-model-type=episode")
+ 
+        resume_run_dir = Path(args.results_path) / f"run_{args.resume_run_id:03d}"
+        resume_models_path = resume_run_dir / "models"
+        if args.resume_model_type == 'best':
+            checkpoint_dir = resume_models_path / 'best'
+        elif args.resume_model_type == 'final':
+            checkpoint_dir = resume_models_path / 'final'
+        else:  # 'episode'
+            checkpoint_dir = resume_models_path / 'episodes' / f'episode_{args.resume_episode:03d}'
+        checkpoint_path = checkpoint_dir / 'trained_agent.pt'
+ 
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+ 
+        agent.load_model(str(checkpoint_path))
+        print(f"[RESUME] Loaded weights from {checkpoint_path}")
+ 
+        if args.start_episode is not None:
+            start_episode = args.start_episode
+        else:
+            metadata_path = checkpoint_dir / 'metadata.json'
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    start_episode = json.load(f)['episode'] + 1
+            else:
+                print(
+                    "[RESUME] No metadata.json found next to the checkpoint — "
+                    "episode numbering starts at 0. Pass --start-episode to set "
+                    "it explicitly."
+                )
+        print(f"[RESUME] Episode numbering will start at {start_episode}\n")
+ 
+ 
     # Train the agent using the training loop
     # In multi-area mode, per-timeslot series returned by train_ppo_multi_env()
     # are concatenated across areas, so the denominator for mean_daily_failures
     # must scale with the number of areas too, or the metric is inflated.
     num_days = int(params["total_timeslots"] // 8) * max(1, len(envs))
-
+ 
     # Best validation score tracker (lower mean_daily_failures = better)
     best_val_score = float("inf")
-
+ 
     # Holds the currently running validation subprocess (if any).
     # There is at most one pending validation at a time; we collect it
     # before launching the next one so saving is always serial.
     pending_val: _PendingVal | None = None
-
+ 
     try:
         # Each area produces its own tbar.update(1) per completed timeslot
         # (train_ppo_multi_env calls it once per area, not once per
@@ -1211,13 +1331,24 @@ def main():
             leave=True,
             dynamic_ncols=True
         )
-
+ 
         logger.info(f"Training started with the following parameters: {params}")
-
+ 
         # Train loop
-        for episode in range(int(params["num_episodes"])):
+        for episode in range(start_episode, start_episode + int(params["num_episodes"])):
             current_seed = int(params['seed'] + episode)
-            
+ 
+            # Linear entropy-coefficient decay across episodes (see
+            # ent_coef_final in the params dict above for rationale). With
+            # num_episodes == 1 this just uses the starting ent_coef.
+            num_episodes = int(params["num_episodes"])
+            decay_frac = episode / max(1, num_episodes - 1)
+            current_ent_coef = (
+                params["ent_coef"]
+                + decay_frac * (params["ent_coef_final"] - params["ent_coef"])
+            )
+            agent.set_ent_coef(current_ent_coef)
+ 
             # PPO Training
             if data_paths and len(envs) > 1:
                 episode_results_paths = [
@@ -1249,7 +1380,7 @@ def main():
                     episode_results_path=os.path.join(str(results_manager.training_path), f"episode_{episode:03d}"),
                     seed=current_seed
                 )
-
+ 
             # Build EpisodeResults
             training_results = EpisodeResults(
                 episode=episode,
@@ -1279,10 +1410,10 @@ def main():
                 value_loss=training_dict['value_loss'],
                 entropy=training_dict['entropy']
             )
-
+ 
             # Save training episode results
             results_manager.save_episode(training_results)
-
+ 
             current_epsilon = getattr(agent, 'epsilon', 0.0)
             if current_epsilon < params['validation_epsilon_threshold']:
             #if False: # to not have validation for now
@@ -1317,7 +1448,7 @@ def main():
                                 f"val_score={val_score:.4f} did not beat best={best_val_score:.4f}"
                             )
                     pending_val = None
-
+ 
                 # ── Step B: save this episode's model snapshot ────────────────
                 # Uses this episode's own training score as metadata.
                 # The snapshot is what the validator will load.
@@ -1331,7 +1462,7 @@ def main():
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-
+ 
                 # ── Step C: launch the new val subprocess (non-blocking) ──────
                 val_cmd = _build_validate_cmd(
                     run_id=run_id,
@@ -1348,7 +1479,7 @@ def main():
                     data_paths=data_paths,
                 )
                 pending_val = _launch_validation_subprocess(val_cmd, episode, logger)
-
+ 
             logger.info(
                 f"Episode {episode}: Seed = {current_seed}, "
                 f"Mean Failures = {training_results.mean_daily_failures:.2f}, "
@@ -1356,9 +1487,9 @@ def main():
                 f"Invalid Actions = {training_results.total_invalid_actions}, "
                 f"Epsilon = {current_epsilon:.4f}"
             )
-
+ 
             gc.collect()
-
+ 
         # ------------------------------------------------------------------
         # End of training — collect any still-running validation
         # ------------------------------------------------------------------
@@ -1387,7 +1518,7 @@ def main():
                         f"\n[VAL] ✓ Final best model: episode {pending_val.episode} "
                         f"— mean_daily_failures={val_score:.4f}"
                     )
-
+ 
         # Save aggregated summaries
         results_manager.save_run_summary()
         logger.info("Training completed successfully")
@@ -1424,13 +1555,13 @@ def main():
         for _e in envs:
             _e.close()
         raise
-
+ 
     print(f"\nTraining {run_id} completed.")
     if best_val_score != float("inf"):
         print(f"Best validation score (mean_daily_failures): {best_val_score:.4f}")
     else:
         print("Best validation score: N/A (Disabled validation in this run)")
-
+ 
 if __name__ == "__main__":
     print("1. Entered in the main section")
     main()

@@ -11,12 +11,32 @@ from torch_geometric.data import Batch as PyGBatch
 
 class PPOAgent:
     def __init__(self, network, lr=3e-4, gamma=0.99, gae_lambda=0.95, 
-                 clip_coef=0.2, ent_coef=0.01, vf_coef=0.5, update_epochs=10, device='cpu'):
+                 clip_coef=0.2, ent_coef=0.01, vf_coef=0.5, update_epochs=10, device='cpu',
+                 optimizer: str = 'adam', momentum: float = 0.9):
         """
         Initializes the PPOAgent.
+
+        optimizer: 'adam' (default) or 'sgd'. SGD is used with Nesterov
+            momentum (see `momentum`). Note: Adam is the near-universal
+            default for policy-gradient methods like PPO because its
+            per-parameter adaptive step size handles the very different
+            gradient scales between the actor and critic heads (which share
+            the GNN backbone here) and copes better with non-stationary
+            objectives. SGD+momentum is not a standard PPO choice and will
+            likely need its own learning-rate retuning (typically higher
+            than an Adam-tuned lr) rather than reusing the same value.
+        momentum: momentum coefficient for SGD (ignored if optimizer='adam').
         """
         self.network = network.to(device)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr, eps=1e-5)
+        self.optimizer_name = optimizer.lower()
+        if self.optimizer_name == 'sgd':
+            self.optimizer = torch.optim.SGD(
+                self.network.parameters(), lr=lr, momentum=momentum, nesterov=True
+            )
+        elif self.optimizer_name == 'adam':
+            self.optimizer = torch.optim.Adam(self.network.parameters(), lr=lr, eps=1e-5)
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer!r} (expected 'adam' or 'sgd')")
         
         # Hyperparameters
         self.gamma = gamma
@@ -26,6 +46,11 @@ class PPOAgent:
         self.vf_coef = vf_coef
         self.update_epochs = update_epochs
         self.device = device
+
+    def set_ent_coef(self, ent_coef: float) -> None:
+        """Update the entropy bonus coefficient (e.g. for linear decay across
+        episodes — see train.py's ent_coef schedule)."""
+        self.ent_coef = ent_coef
 
     def select_action(self, state_graph, avoid_action: list = None):
         """
@@ -89,7 +114,7 @@ class PPOAgent:
                 advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             
             returns = advantages + values
-            #returns = torch.clamp(returns, -150, 150)
+            returns = torch.clamp(returns, -150, 150)
             
             if torch.isnan(advantages).any() or torch.isnan(returns).any():
                 print("[WARN] NaN in GAE, skipping update")
@@ -99,6 +124,7 @@ class PPOAgent:
         minibatch_size = 512                # Mini-batch size
         raw_data_list = buffer.buffer       # Extract the original list of Data objects from the buffer so we can shuffle them
         pg_losses, v_losses, ent_losses = [], [], []
+        raw_entropies = []
         
         # OPTIMIZATION LOOP (Multiple epochs)
         # Standard PPO reuses the rollout data for N epochs
@@ -160,8 +186,17 @@ class PPOAgent:
                 pg_losses.append(pg_loss.item())
                 v_losses.append(v_loss.item())
                 ent_losses.append(ent_loss.item())
+                raw_entropies.append(entropy.mean().item())
 
-        return np.mean(pg_losses), np.mean(v_losses), np.mean(ent_losses)
+        # NOTE: the 3rd value returned here is the RAW (unscaled) policy
+        # entropy, not `ent_coef * entropy` (that internal loss term is only
+        # used above to build total_loss). Reporting raw entropy keeps this
+        # diagnostic comparable across episodes even when ent_coef itself
+        # changes (see the ent_coef linear-decay schedule in train.py) —
+        # otherwise a declining ent_coef alone would make this metric look
+        # like the policy is becoming more deterministic, when it isn't
+        # necessarily.
+        return np.mean(pg_losses), np.mean(v_losses), np.mean(raw_entropies)
 
     def save_model(self, file_path):
         """Save network weights."""
