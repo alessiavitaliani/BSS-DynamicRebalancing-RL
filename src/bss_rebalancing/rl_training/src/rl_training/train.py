@@ -63,12 +63,12 @@ params = {
     "minibatch_size": 512,                          # Dimension of each minibatch
     "gamma": 0.99,                                  # Discount factor
     "exploration_time": 0.7,                        # Fraction of total training time for exploration
-    "lr": 5e-4,                                     # Learning rate
+    "lr": 5e-5,                                     # Learning rate
     # PPO params
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
     "ent_coef": 0.02,                               # Entropy coefficient (starting value — see ent_coef_final for linear decay)
-    "ent_coef_final": 0.005,                        # ent_coef decays linearly from `ent_coef` to this value over
+    "ent_coef_final": 0.02,                        # ent_coef decays linearly from `ent_coef` to this value over
                                                      # num_episodes, instead of staying constant. A constant, fairly
                                                      # high ent_coef keeps the policy exploratory/uncertain for a long
                                                      # stretch of training; once the advantage signal finally
@@ -77,7 +77,7 @@ params = {
                                                      # Decaying it gradually smooths that transition. Set equal to
                                                      # `ent_coef` to disable decay and keep the old constant behavior.
     "vf_coef": 0.25,                                # Value coefficient
-    "update_epochs": 6,                             # How many times buffer is processed at every update 
+    "update_epochs": 8,                             # How many times buffer is processed at every update 
 
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
