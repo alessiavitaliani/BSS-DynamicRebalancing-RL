@@ -201,10 +201,7 @@ class ResultsManager:
                     "outside_system_bikes": area_data.get("outside_system_bikes", []),
                     "traveling_bikes": area_data.get("traveling_bikes", []),
                     # Per-timeslot aligned, same convention as the combined
-                    # timeslot_df above — NOT the same as a raw variable-length
-                    # event list (previously this was written separately as
-                    # rebalance_times.json, which the webapp's per-timeslot
-                    # plot never reads — it looks for a DataFrame column).
+                    # timeslot_df above
                     "rebalance_times": area_data.get("rebalance_times", []),
                     "demand": area_data.get("demand_per_timeslot", []),
                     "global_critic_score": area_data.get("global_critic_scores", []),

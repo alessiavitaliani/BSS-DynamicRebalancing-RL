@@ -1,6 +1,6 @@
 """
-Standalone validation script for trained DQN agents.
-Mirrors the validate_dqn() / _validation_worker() logic from train.py exactly.
+Standalone validation script for trained PPO agents.
+Mirrors the validate_ppo() / _validation_worker() logic from train.py exactly.
 """
 
 import os
@@ -233,7 +233,7 @@ Examples:
     return parser
 
 # ------------------------------------------------------------------------------
-# validate_dqn
+# validate_ppo
 # ------------------------------------------------------------------------------
 
 def validate_ppo(

@@ -1039,8 +1039,26 @@ class StaticEnv(gym.Env):
         if use_net_flow:
             net_flow_per_cell = {cell_id: 0 for cell_id in self._cells.keys()}
 
+            # BUGFIX: the lookahead horizon must be measured from the current
+            # simulation time (self._env_time), not from the start of the day.
+            # `event.time` is absolute-within-day (set once in _initialize_day
+            # and only shifted at day rollovers), while this function is
+            # called at every rebalancing event, which can happen at any hour
+            # (e.g. 1PM, i.e. self._env_time ~= 43200s). The old check
+            # `event.time > TIMESLOT_DURATION_SECONDS` compared against a
+            # FIXED threshold of 10800s regardless of when in the day we are.
+            # By the time self._env_time is already past that threshold
+            # (i.e. for every rebalancing event except one that happens to
+            # fall in the first 3 hours of the day), every remaining event in
+            # the buffer already has event.time > env_time > 10800, so the
+            # loop broke on the very first event and net_flow_per_cell stayed
+            # all-zero — silently disabling the net-flow bias and falling
+            # through to pure random placement (Step 3) for every rebalancing
+            # event after the first few hours of the day.
+            lookahead_horizon = self._env_time + EnvDefaults.TIMESLOT_DURATION_SECONDS
+
             for event in self._event_buffer:
-                if event.time > EnvDefaults.TIMESLOT_DURATION_SECONDS:
+                if event.time > lookahead_horizon:
                     break  # buffer is sorted — stop at next-timeslot events
                 if event.is_departure():
                     station_id = event.trip.get_start_location().get_station_id()

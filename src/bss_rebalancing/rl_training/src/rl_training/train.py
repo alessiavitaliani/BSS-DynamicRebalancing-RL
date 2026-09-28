@@ -68,7 +68,7 @@ params = {
     "clip_coef": 0.2,                               # Clipping coefficient 
     "gae_lambda": 0.95,                             # Generalized Advantage Estimation (GAE) factor 
     "ent_coef": 0.02,                               # Entropy coefficient (starting value — see ent_coef_final for linear decay)
-    "ent_coef_final": 0.02,                        # ent_coef decays linearly from `ent_coef` to this value over
+    "ent_coef_final": 0.02,                         # ent_coef decays linearly from `ent_coef` to this value over
                                                      # num_episodes, instead of staying constant. A constant, fairly
                                                      # high ent_coef keeps the policy exploratory/uncertain for a long
                                                      # stretch of training; once the advantage signal finally
@@ -82,18 +82,18 @@ params = {
     "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
-    "enable_repositioning": False,           # Use base repositioning strategy at the start of each episode
-    "use_net_flow": False,                   # Use net flow repositioning strategy at the start of each episode
+    "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
+    "use_net_flow": False,                  # Use net flow repositioning strategy at the start of each episode
     "depot_position_id": 12,                # ID (cell) of the (shared) central bike depot
     "initial_cell_id": 12,                  # Initial cell for truck #1 (truck #2's cell is
-                                             # sampled at random among the remaining cells —
-                                             # set "initial_cell_ids" below to pin both explicitly)
+                                            # sampled at random among the remaining cells —
+                                            # set "initial_cell_ids" below to pin both explicitly)
     "num_trucks": 1,                        # Number of trucks per env (multi-truck-in-one-map
-                                             # support still exists in the env for later — see
-                                             # fully_dynamic_env.py — but the current setup uses
-                                             # multi-area training instead: see --data-paths)
-    "initial_cell_ids": [12, 17],               # Optional: e.g. [12, 40] to fix each truck's
-                                             # starting cell explicitly when num_trucks > 1
+                                            # support still exists in the env for later — see
+                                            # fully_dynamic_env.py — but the current setup uses
+                                            # multi-area training instead: see --data-paths)
+    "initial_cell_ids": [12, 17],           # Optional: e.g. [12, 40] to fix each truck's
+                                            # starting cell explicitly when num_trucks > 1
 
     "validation_epsilon_threshold": 0.1,
     "validation_timeout": 600,

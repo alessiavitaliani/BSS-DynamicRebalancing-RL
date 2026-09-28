@@ -114,7 +114,7 @@ class PPOAgent:
                 advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             
             returns = advantages + values
-            returns = torch.clamp(returns, -150, 150)
+            #returns = torch.clamp(returns, -150, 150)
             
             if torch.isnan(advantages).any() or torch.isnan(returns).any():
                 print("[WARN] NaN in GAE, skipping update")

@@ -289,7 +289,7 @@ def run_benchmark(config: dict):
     logger.info("Starting benchmark")
 
     # Create environment(s). Multi-area mode (data_paths given): one env per
-    # area, each simulated independently with the SAME static heuristic
+    # area, each simulated independently with the same static heuristic
     # (there's no learned/shared policy here, so — unlike train_ppo_multi_env —
     # areas don't need to be interleaved step-by-step; each just runs to
     # completion and the results are combined afterwards).
@@ -385,7 +385,7 @@ def run_benchmark(config: dict):
                 }
                 # num_days must scale with the number of areas: the
                 # denominator is per-area days, but the numerator above sums
-                # failures across all areas (same fix as in train.py/validate.py).
+                # failures across all areas.
                 effective_num_days = num_days * len(envs)
             else:
                 episode_results = run_simulation(
