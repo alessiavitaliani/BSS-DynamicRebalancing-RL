@@ -2,7 +2,7 @@
 
 ### Last-mile mobility. Real-time simulation. Adaptive rebalancing.
 
-This repository accompanies the thesis project *Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning*. It presents a novel framework for dynamically rebalancing bikes in a dockless **Bike Sharing System (BSS)** using a **Double Deep Q-Network (DDQN)** trained in a realistic, event-driven simulation environment.
+This repository accompanies the thesis project *Fully Dynamic Rebalancing of Dockless Bike Sharing Systems using Deep Reinforcement Learning*. It presents a novel framework for dynamically rebalancing bikes in a dockless **Bike Sharing System (BSS)** using **Proximal Policy Optimization (PPO)** trained in a realistic, event-driven simulation environment.
 
 ---
 
@@ -13,7 +13,7 @@ Cities are increasingly adopting sustainable transport solutions to address cong
 This thesis tackles the challenge with a **fully dynamic rebalancing framework** driven by **Reinforcement Learning**, where decisions are made in real time based on real-world demand patterns and traffic conditions.
 
 ### 🎯 Highlights
-- 🧠 A **DDQN agent** learns to make rebalancing decisions under uncertainty
+- 🧠 A **PPO agent** (GAT-based actor-critic) learns to make rebalancing decisions under uncertainty, sharing one policy across multiple trucks/areas
 - 🧪 **Event-driven simulation** using real **Cambridge, MA** demand data and **TomTom traffic profiles**
 - 🛠️ Modular architecture with separate packages for preprocessing, training, validation, and benchmarking
 - 📊 Real-time visualization dashboard for monitoring training progress
@@ -56,9 +56,9 @@ bss-rebalancing/
         │   ├── README.md
         │   ├── pyproject.toml
         │   └── src/rl_training/
-        │       ├── agents/            # DQN agent implementation
+        │       ├── agents/            # PPO agent implementation
         │       ├── networks/          # Neural Network architectures
-        │       ├── memory/            # Replay buffer
+        │       ├── memory/            # On-policy rollout buffer
         │       ├── train.py           # Training script (bss-train)
         │       └── validate.py        # Validation script (bss-validate)
         │
@@ -161,7 +161,7 @@ See `bss-preprocess --help` for all options.
 
 ### 2. Train the RL Agent
 
-Train a DDQN agent with the fully dynamic environment:
+Train a PPO agent with the fully dynamic environment:
 
 ```bash
 # Basic training
@@ -196,15 +196,15 @@ Test a trained model on validation data:
 bss-validate \
     --model-path results/run_000/models/best_model.pt \
     --data-path data/ \
-    --epsilon 0.05 \
     --total-timeslots 56
 ```
 
 **Key arguments**:
 - `--model-path`: Path to trained model (required)
-- `--epsilon`: Exploration rate for validation (default: 0.05)
 - `--total-timeslots`: Episode length (default: 56 = 1 week)
 - `--run-id`: Validation run identifier (default: 999)
+
+(PPO has no exploration-rate flag: unlike the old DQN agent, there is no `--epsilon`, since PPO's stochastic policy is used directly for validation.)
 
 ### 4. Run Benchmarks
 
@@ -239,7 +239,7 @@ bss-results-webapp --results-path results/ --port 8050
 Then open http://localhost:8050 in your browser.
 
 **Features**:
-- 📊 Real-time metrics (failures, rewards, epsilon decay)
+- 📊 Real-time metrics (failures, rewards, policy entropy)
 - 📈 Episode-level detailed analysis
 - 🔍 Training dynamics (loss, Q-values, critic scores)
 - 🗺️ Spatial failure patterns
@@ -260,9 +260,9 @@ Custom Gymnasium environment implementing the fully dynamic BSS rebalancing prob
 - **Simulator**: Event-driven bike and truck simulators
 
 ### `rl_training`
-DDQN agent implementation with training and validation pipelines.
+PPO agent implementation (GAT-based actor-critic) with training and validation pipelines.
 - **CLI**: `bss-train`, `bss-validate`
-- **Key modules**: `DQNAgent`, `ReplayBuffer`, `DuelingDQN`
+- **Key modules**: `PPOAgent`, `PPOBuffer`, `PPO`
 
 ### `benchmark`
 Baseline comparison tools for evaluating RL performance.
@@ -278,7 +278,7 @@ Interactive Dash web application for training visualization.
 
 ## 📈 Results Summary
 
-The DDQN agent demonstrated:
+The PPO agent demonstrated:
 - ✅ Adaptation to real-time, location-specific demand fluctuations
 - ✅ Reduction in service failures compared to static strategies
 - ✅ Feasibility of deep RL for real-time bike rebalancing at scale

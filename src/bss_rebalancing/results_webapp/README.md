@@ -98,14 +98,14 @@ results_webapp/
 
 1. **Failures per Timeslot**: Total system failures with cumulative mean
 2. **Rewards per Timeslot**: Agent rewards with cumulative trend
-3. **Epsilon Decay**: Exploration rate evolution over episodes
+3. **Policy Entropy**: Exploration signal (policy entropy) evolution over episodes
 4. **Deployed Bikes**: Number of bikes in the system per timeslot
 
 **Training-Only Metrics**:
 
-5. **Q-Values**: Mean Q-values across all actions per timeslot
+5. **State Values**: Mean critic value estimates per timeslot
 6. **Global Critic Score**: System-level health metric over steps
-7. **Training Loss**: TD error loss with moving average
+7. **Training Loss**: PPO policy loss / value loss with moving average
 
 ### Episode Details Tab (🔍)
 
@@ -113,7 +113,7 @@ results_webapp/
 - Total Failures
 - Total Reward
 - Mean Failures
-- Epsilon Value
+- Entropy Value
 
 **Detailed Episode Plots**:
 
@@ -349,8 +349,8 @@ def update_custom_plot(run_path):
 
 3. **Monitor Training**:
    - Watch failures decrease
-   - Track epsilon decay
-   - Observe Q-value stabilization
+   - Track policy entropy
+   - Observe critic value stabilization
    - Check loss convergence
 
 4. **Analyze Results**:

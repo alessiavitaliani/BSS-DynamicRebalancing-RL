@@ -79,7 +79,7 @@ params = {
     "vf_coef": 0.25,                                # Value coefficient
     "update_epochs": 8,                             # How many times buffer is processed at every update 
 
-    "total_timeslots": 56,                  # Total number of time slots in one episode (1 month)
+    "total_timeslots": 56,                  # Total number of time slots in one episode (1 week)
     "maximum_number_of_bikes": 1000,        # Maximum number of bikes in the system
     "minimum_number_of_bikes": 5,           # Minimum number of bikes per cell
     "enable_repositioning": False,          # Use base repositioning strategy at the start of each episode
@@ -1149,7 +1149,6 @@ def main():
     elif not os.path.exists(data_path):
         raise FileNotFoundError(f"The specified data path does not exist: {data_path}")
  
-    # At 60% of the total timeslots (60% of the training) the epsilon should be 0.1
  
     results_manager = ResultsManager(
         results_path=results_path,
@@ -1217,9 +1216,9 @@ def main():
     print("=" * 80)
  
     # ------------------------------------------------------------------
-    # Agent with replay buffer
+    # Agent with rollout buffer
     # ------------------------------------------------------------------
-    # Set up replay buffer
+    # Set up rollout buffer
     ppo_buffer = PPOBuffer() # PPO
  
     # Initialize the PPO agent
@@ -1415,7 +1414,7 @@ def main():
             results_manager.save_episode(training_results)
  
             current_epsilon = getattr(agent, 'epsilon', 0.0)
-            if current_epsilon < params['validation_epsilon_threshold']:
+            if current_epsilon < params['validation_epsilon_threshold']:  # Valid for each episode
             #if False: # to not have validation for now
                 # ── Step A: collect the previous val subprocess (if any) ──────
                 # This is the only point where training may briefly wait, and

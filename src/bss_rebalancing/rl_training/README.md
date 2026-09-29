@@ -1,12 +1,12 @@
 # RL Training
 
-Deep Reinforcement Learning training framework for bike-sharing system dynamic rebalancing using Graph Attention Networks (GAT) and Deep Q-Networks (DQN).
+Deep Reinforcement Learning training framework for bike-sharing system dynamic rebalancing using Graph Attention Networks (GAT) and Proximal Policy Optimization (PPO).
 
 This package provides a complete RL training pipeline for learning optimal bike rebalancing policies. It includes:
-- **DQN Agent** with Graph Attention Networks for spatial reasoning
-- **Experience Replay Buffer** optimized for graph-structured transitions
+- **PPO Agent** (GAT-based actor-critic) with Graph Attention Networks for spatial reasoning
+- **On-policy rollout buffer** (`PPOBuffer`), cleared after every update
 - **Results Management** with structured logging and model checkpointing
-- **CLI Tools** for training and validation
+- **CLI Tools** for training and validation, including multi-area training with a single shared policy
 
 The framework trains agents to control a rebalancing truck navigating a spatial grid, making decisions about bike pickup, drop-off, and charging to minimize system failures.
 
@@ -63,8 +63,7 @@ bss-validate \
     --model-path results/run_001/models/best/episode_139/trained_agent.pt \
     --data-path data/ \
     --results-path results/validation/ \
-    --min-epsilon 0.05 \
-    --num-bikes 300
+    --max-num-bikes 300
 ```
 
 ---
@@ -83,13 +82,13 @@ rl_training/
         ├── utils.py                # Helper functions
         ├── agents/
         │   ├── __init__.py
-        │   └── dqn_agent.py        # DQN agent implementation
+        │   └── ppo_agent.py        # PPO agent implementation
         ├── memory/
         │   ├── __init__.py
-        │   └── replay_buffer.py    # Experience replay buffer
+        │   └── ppo_buffer.py       # On-policy rollout buffer
         ├── networks/
         │   ├── __init__.py
-        │   └── dqn.py              # GAT-based DQN architecture
+        │   └── ppo.py              # GAT-based actor-critic (PPO)
         └── results/
             ├── __init__.py
             └── results_manager.py  # Results logging and management
@@ -118,21 +117,26 @@ rl_training/
 
 ```python
 params = {
-    "num_episodes": 140,                 # Training episodes
-    "batch_size": 64,                    # Replay buffer batch size
-    "replay_buffer_capacity": 100000,    # Buffer capacity
-    "gamma": 0.95,                       # Discount factor
-    "epsilon_start": 1.0,                # Initial exploration rate
-    "epsilon_end": 0.01,                 # Final exploration rate
-    "epsilon_decay": 1e-5,               # Epsilon decay constant
-    "lr": 1e-4,                          # Learning rate (SGD)
+    "num_episodes": 250,                 # Training episodes
+    "rollout_steps": 4096,               # On-policy rollout buffer capacity
+    "minibatch_size": 512,               # Minibatch size per PPO update epoch
+    "gamma": 0.99,                       # Discount factor
+    "gae_lambda": 0.95,                  # GAE factor
+    "clip_coef": 0.2,                    # PPO clipping coefficient
+    "ent_coef": 0.02,                    # Entropy coefficient (can decay to ent_coef_final)
+    "vf_coef": 0.25,                     # Value loss coefficient
+    "update_epochs": 8,                  # Epochs per buffer at every PPO update
+    "lr": 5e-5,                          # Learning rate (Adam by default)
     "total_timeslots": 56,               # Timeslots per episode (1 week)
-    "maximum_number_of_bikes": 500,      # Fleet size
-    "tau": 0.005,                        # Soft target update rate
-    "depot_position_id": 103,            # Depot cell ID
-    "initial_cell_id": 103               # Starting cell ID
+    "maximum_number_of_bikes": 1000,     # Fleet size
+    "num_trucks": 1,                     # Trucks per env (multi-area training is the
+                                          # preferred way to scale up — see --data-paths)
+    "depot_position_id": 12,             # Depot cell ID
+    "initial_cell_id": 12                # Starting cell ID
 }
 ```
+
+(Values above mirror the defaults in `train.py`; see that file for the full parameter set, including `initial_cell_ids`, `enable_repositioning` and `use_net_flow`.)
 
 ### Reward Parameters
 
@@ -153,40 +157,33 @@ reward_params = {
 
 ## Architecture
 
-### DQN Network
+### PPO Network
 
-Graph Attention Network (GAT) based Q-network with:
+Graph Attention Network (GAT) based actor-critic with a shared encoder:
 
-#### Graph Encoder
-- **Layer 1**: 4 input features → 64 features (4 heads, concat) → 256
-- **Layer 2**: 256 → 64 features (4 heads, concat) → 256
-- **Layer 3**: 256 → 128 features (2 heads, concat) → 256
+#### Graph Encoder (shared by actor and critic)
+- **Layer 1** (`GATv2Conv`): `node_features` (5 by default — see `gnn_features` in `train.py`) → 64 features × 4 heads (concat) → 256
+- **Layer 2** (`GATv2Conv`): 256 → 64 features × 4 heads (concat) → 256
+- **Global mean pooling** → 256-d graph embedding
 
-#### Global Pooling
-- **GlobalAttention**: Attention-based graph-level aggregation → 256
+#### Critic Head
+- FC layers: 256 → 128 → 64 → 1 (state value V(s))
 
-#### Graph Embedding
-- FC layers: 256 → 256 → 128 → 64
+#### Actor Head
+- FC layers: 256 → 128 → 64 → `num_actions` (action logits, masked for invalid moves before sampling)
 
-#### Agent State Encoder
-- Input: 162-dimensional agent state (truck load, position, action history)
-- FC layers: 162 → 256 → 256 → 128 → 64
-
-#### Fusion and Q-Values
-- Concatenate: graph embedding (64) + agent embedding (64) → 128
-- FC layers: 128 → 256 → 128 → 8 (Q-values for 8 actions)
-
-### DQN Agent
+### PPO Agent
 
 Features:
-- **Epsilon-greedy exploration** with exponential decay
-- **Experience replay** with graph-structured transitions
-- **Target network** with soft updates (τ=0.005)
+- **Stochastic policy exploration** via the Actor's categorical distribution entropy (no epsilon-greedy)
+- **GAE** (Generalized Advantage Estimation) for advantage/return computation
+- **Clipped surrogate objective** (`clip_coef`, default 0.2) instead of a target network
 - **Action masking** to prevent invalid moves
-- **Gradient clipping** (max_norm=10.0)
-- **Smooth L1 loss** (Huber loss)
+- **Gradient clipping** (max_norm=0.5)
+- **Combined loss**: clipped policy loss + value loss (MSE) − entropy bonus
+- **Optimizer**: Adam (default) or SGD with Nesterov momentum
 
-### Replay Buffer
+### PPO Buffer
 
 Custom `PairData` structure for storing graph transitions:
 - **Source state** (S): graph with node features, edges, agent state
@@ -231,7 +228,7 @@ results/
 ### Tracked Metrics
 
 **Episode-level**:
-- Total reward, mean failures, total trips, invalid actions, epsilon
+- Total reward, mean failures, total trips, invalid actions, mean state value
 
 **Timeslot-level**:
 - Reward per timeslot, failures per timeslot, deployed bikes
@@ -250,7 +247,7 @@ results/
 
 ```python
 import gymnasium as gym
-from rl_training import DQNAgent, ReplayBuffer, ResultsManager, set_seed
+from rl_training import PPOAgent, PPOBuffer, PPO, ResultsManager, set_seed
 
 # Set seed for reproducibility
 set_seed(42)
@@ -258,15 +255,12 @@ set_seed(42)
 # Create environment
 env = gym.make("gymnasium_env/FullyDynamicEnv-v0", data_path="data/")
 
-# Initialize agent
-replay_buffer = ReplayBuffer(max_size=100000)
-agent = DQNAgent(
-    num_actions=8,
-    replay_buffer=replay_buffer,
-    gamma=0.95,
-    lr=1e-4,
-    device='cuda:0'
-)
+# Initialize network + PPO agent (on-policy: buffer is per-rollout)
+network = PPO(num_actions=env.action_space.n, node_features=5)
+agent = PPOAgent(network, lr=3e-4, gamma=0.99, gae_lambda=0.95,
+                  clip_coef=0.2, ent_coef=0.01, vf_coef=0.5,
+                  device='cuda:0')
+buffer = PPOBuffer()
 
 # Initialize results manager
 results_mgr = ResultsManager.create_with_auto_increment("results/")
@@ -278,36 +272,38 @@ for episode in range(140):
     total_reward = 0
 
     while not done:
-        action = agent.select_action(state, epsilon_greedy=True)
+        action, logprob, value = agent.select_action(state)
         next_state, reward, done, _, info = env.step(action)
 
-        replay_buffer.push(state, action, reward, next_state, done)
-        loss = agent.train_step(batch_size=64)
-
+        buffer.push(state, action, logprob, reward, value, done)
         state = next_state
         total_reward += reward
 
-    agent.update_target_network()
+    # PPO updates on the full rollout (multiple epochs), then clears it
+    policy_loss, value_loss, entropy = agent.update(buffer)
+    buffer.clear()
     print(f"Episode {episode}: Reward = {total_reward:.2f}")
 ```
 
 ### Load and Validate Model
 
 ```python
-from rl_training import DQNAgent
+from rl_training import PPOAgent, PPO
 
 # Load trained model
-agent = DQNAgent(num_actions=8, device='cuda:0')
+network = PPO(num_actions=8, node_features=5)
+agent = PPOAgent(network, device='cuda:0')
 agent.load_model("results/run_001/models/best/episode_095/trained_agent.pt")
 
 # Validate
 env = gym.make("gymnasium_env/FullyDynamicEnv-v0", data_path="data/")
 state, _ = env.reset()
 
-# Greedy evaluation
+# Evaluation (PPO samples from the policy distribution; there is no
+# separate greedy mode — pass avoid_action=[...] to mask invalid moves)
 done = False
 while not done:
-    action = agent.select_action(state, greedy=True)
+    action, _, _ = agent.select_action(state)
     state, reward, done, _, _ = env.step(action)
 ```
 

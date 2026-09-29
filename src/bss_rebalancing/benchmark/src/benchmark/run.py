@@ -468,17 +468,23 @@ def parse_arguments() -> dict:
                 # Specify custom data and results paths
                 python -m benchmark.run --data-path data/ --results-path results/
                 
-                # Customize simulation parameters
-                python -m benchmark.run --num-episodes 5
+                # Multi-area benchmark (same heuristic run independently per area, combined results)
+                python -m benchmark.run --data-paths "data/area1,data/area2"
                 
-                # Adjust fleet parameters
-                python -m benchmark.run --maximum-number-of-bikes 400 --fixed-rebal-bikes-per-cell 10
+                # Static rebalancing (SR): TSP-routed redistribution twice a day (1 AM / 1 PM)
+                python -m benchmark.run --data-path data/ --enable-repositioning --use-net-flow --num-rebal-events 2
+                
+                # Free baseline: no rebalancing at all
+                python -m benchmark.run --data-path data/ --num-rebal-events 0
+                
+                # Adjust fleet size, and average over several seeded runs
+                python -m benchmark.run --max-num-bikes 400 --num-seed-runs 5
                 
                 # Set a unique run identifier
                 python -m benchmark.run --run-id 42
                 
                 # Combine multiple options
-                python -m benchmark.run --data-path data/ --results-path results/ --num-episodes 3 --maximum-number-of-bikes 350 --run-id 7     
+                python -m benchmark.run --data-path data/ --results-path results/ --max-num-bikes 350 --run-id 7     
             """,
     )
 
