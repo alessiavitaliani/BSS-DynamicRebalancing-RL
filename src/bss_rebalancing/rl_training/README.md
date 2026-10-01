@@ -47,11 +47,19 @@ bss-train \
     --results-path results/ \
     --run-id 1 \
     --num-episodes 150 \
-    --num-bikes 300 \
+    --max-num-bikes 300 \
     --device cuda:0 \
     --seed 42 \
     --exploration-time 0.6 \
-    --enable-logging
+    --log
+```
+
+Or train on several areas at once with one shared policy (see [Multi-Area / Multi-Truck Training](#multi-area--multi-truck-training)):
+
+```bash
+bss-train \
+    --data-paths "data/manhattan_north,data/manhattan_south" \
+    --results-path results/
 ```
 
 ### Validation
@@ -103,15 +111,26 @@ rl_training/
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--run-id` | int | `0` | Experiment run identifier |
-| `--data-path` | str | `"data/"` | Path to preprocessed data directory |
+| `--data-path` | str | `"data/"` | Path to preprocessed data directory (ignored if `--data-paths` is given) |
+| `--data-paths` | str | — | Comma-separated list of data folders for **multi-area training**, e.g. `"data/manhattan_north,data/manhattan_south"`. One truck per area, all areas share one PPO policy. Overrides `--data-path`. See [Multi-Area / Multi-Truck Training](#multi-area--multi-truck-training) |
 | `--results-path` | str | `"results/"` | Path to save results and models |
 | `--device` | str | `"cpu"` | Hardware device (`cpu`, `cuda:0`, `mps`) |
+| `--val-device` | str | falls back to `--device` | Device for validation subprocesses |
 | `--seed` | int | `42` | Random seed for reproducibility |
-| `--num-episodes` | int | `140` | Total training episodes (weeks) |
-| `--num-bikes` | int | `500` | System bike fleet size |
-| `--exploration-time` | float | `0.6` | Fraction of training for exploration |
-| `--enable-logging` | flag | — | Enable detailed environment logging |
+| `--num-episodes` | int | `250` | Total training episodes |
+| `--max-num-bikes` | int | `1000` | System bike fleet size |
+| `--min-num-bikes` | int | `5` | Minimum bikes per cell |
+| `--enable-repositioning` | flag | — | Base repositioning at the start of each episode |
+| `--use-net-flow` | flag | — | Net-flow-based repositioning instead of random, at episode start |
+| `--exploration-time` | float | `0.7` | Fraction of training spent exploring |
+| `--log` | flag | — | Enable detailed environment logging |
 | `--one-validation` | flag | — | Validate only at training end |
+| `--optimizer` | str | `adam` | `adam` or `sgd` (SGD uses Nesterov momentum, see `--momentum`) |
+| `--momentum` | float | `0.9` | Momentum for `--optimizer sgd` |
+| `--resume-run-id` | int | — | Warm-start network weights from an existing run before training |
+| `--resume-model-type` | str | `best` | `best`, `final`, or `episode` checkpoint to resume from |
+| `--resume-episode` | int | — | Episode number to load when `--resume-model-type=episode` |
+| `--start-episode` | int | checkpoint episode + 1 | Override the episode number training resumes at |
 
 ### Default Hyperparameters
 
@@ -192,6 +211,60 @@ Custom `PairData` structure for storing graph transitions:
 - **Batch sampling**: Efficient batching with PyTorch Geometric
 
 ---
+
+## Multi-Area / Multi-Truck Training
+
+The agent supports two complementary forms of **parameter sharing** (one shared PPO policy controlling more than one truck), rather than training fully independent agents:
+
+### Multiple trucks on one map
+Set `num_trucks` > 1 (see `params['num_trucks']` / `initial_cell_ids` in `train.py`). The environment lets the trucks take turns — the one that becomes free soonest acts next — and flags which truck is currently deciding via the `active_truck_cell` graph feature, so a single set of weights can act for any of them. This logic lives in `gymnasium_env`'s `FullyDynamicEnv` (`_active_truck_idx`, `_mark_active_truck_cell`).
+
+### Multiple areas at once (`--data-paths`)
+Pass two or more comma-separated data folders to `--data-paths` (overrides `--data-path`) to train on several independent maps in parallel, one truck per area:
+
+```bash
+bss-train \
+    --data-paths "data/manhattan_north,data/manhattan_south" \
+    --results-path results/
+```
+
+Internally, `train_ppo_multi_env()` round-robins which area takes the next environment step and feeds every transition — regardless of which area it came from — into the **same** `PPOBuffer`, so `agent.update()` trains one shared policy on experience pooled across all areas. The GNN policy doesn't require the areas' cell graphs to be the same size, since it operates per-node/edge. An area that finishes its episode early simply drops out of the rotation until the others catch up. `validate.py` is invoked with the same `--data-paths` set, so the shared policy is evaluated on every area.
+
+## Multi-Area / Multi-Truck Training
+
+The agent supports two complementary forms of **parameter sharing** (one shared PPO policy controlling more than one truck), rather than training fully independent agents:
+
+### Multiple trucks on one map
+Set `num_trucks` > 1 (see `params['num_trucks']` / `initial_cell_ids` in `train.py`). The environment lets the trucks take turns — the one that becomes free soonest acts next — and flags which truck is currently deciding via the `active_truck_cell` graph feature, so a single set of weights can act for any of them. This logic lives in `gymnasium_env`'s `FullyDynamicEnv` (`_active_truck_idx`, `_mark_active_truck_cell`).
+
+### Multiple areas at once (`--data-paths`)
+Pass two or more comma-separated data folders to `--data-paths` (overrides `--data-path`) to train on several independent maps in parallel, one truck per area:
+
+```bash
+bss-train \
+    --data-paths "data/manhattan_north,data/manhattan_south" \
+    --results-path results/
+```
+
+Internally, `train_ppo_multi_env()` round-robins which area takes the next environment step and feeds every transition — regardless of which area it came from — into the **same** `PPOBuffer`, so `agent.update()` trains one shared policy on experience pooled across all areas. The GNN policy doesn't require the areas' cell graphs to be the same size, since it operates per-node/edge. An area that finishes its episode early simply drops out of the rotation until the others catch up. `validate.py` is invoked with the same `--data-paths` set, so the shared policy is evaluated on every area.
+
+## Multi-Area / Multi-Truck Training
+
+The agent supports two complementary forms of **parameter sharing** (one shared PPO policy controlling more than one truck), rather than training fully independent agents:
+
+### Multiple trucks on one map
+Set `num_trucks` > 1 (see `params['num_trucks']` / `initial_cell_ids` in `train.py`). The environment lets the trucks take turns — the one that becomes free soonest acts next — and flags which truck is currently deciding via the `active_truck_cell` graph feature, so a single set of weights can act for any of them. This logic lives in `gymnasium_env`'s `FullyDynamicEnv` (`_active_truck_idx`, `_mark_active_truck_cell`).
+
+### Multiple areas at once (`--data-paths`)
+Pass two or more comma-separated data folders to `--data-paths` (overrides `--data-path`) to train on several independent maps in parallel, one truck per area:
+
+```bash
+bss-train \
+    --data-paths "data/manhattan_north,data/manhattan_south" \
+    --results-path results/
+```
+
+Internally, `train_ppo_multi_env()` round-robins which area takes the next environment step and feeds every transition — regardless of which area it came from — into the **same** `PPOBuffer`, so `agent.update()` trains one shared policy on experience pooled across all areas. The GNN policy doesn't require the areas' cell graphs to be the same size, since it operates per-node/edge. An area that finishes its episode early simply drops out of the rotation until the others catch up. `validate.py` is invoked with the same `--data-paths` set, so the shared policy is evaluated on every area.
 
 ## Results Management
 
@@ -330,7 +403,7 @@ while not done:
 - CPU-only training
 
 **Solutions**:
-- Disable logging: remove `--enable-logging`
+- Disable logging: remove `--log`
 - Use GPU: `--device cuda:0`
 - Increase cell size during preprocessing
 

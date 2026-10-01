@@ -151,11 +151,12 @@ bss-preprocess --data-path data/ --plot grid-numbered
 
 **Key arguments**:
 - `--data-path`: Data directory (default: `data/`)
-- `--year`: Year to process (default: 2022)
-- `--months`: Comma-separated months (default: `9,10`)
+- `--source`: Data source id from `sources.json` — **required**, e.g. `bluebikes` (Cambridge, MA) or `citibike` (Manhattan, NY)
 - `--cell-size`: Grid cell size in meters (default: 300)
 - `--steps`: Run specific steps only
 - `--plot`: Visualization mode (`graph`, `grid`, `grid-numbered`)
+
+(Year/month range and bounding box are no longer CLI flags — they're set per source in `sources.json`; see `src/bss_rebalancing/preprocessing/README.md`.)
 
 See `bss-preprocess --help` for all options.
 
@@ -173,17 +174,23 @@ bss-train \
     --results-path results/ \
     --run-id 1 \
     --num-episodes 150 \
-    --num-bikes 400 \
+    --max-num-bikes 400 \
     --exploration-time 0.7 \
     --device cuda:0 \
     --seed 42
+
+# Multi-area training: several maps, one shared policy (one truck per area)
+bss-train \
+    --data-paths "data/manhattan_north,data/manhattan_south" \
+    --results-path results/
 ```
 
 **Key arguments**:
 - `--run-id`: Experiment identifier (default: 0)
-- `--num-episodes`: Training episodes (default: 140)
-- `--num-bikes`: Fleet size (default: 500)
-- `--exploration-time`: Fraction of episodes for exploration (default: 0.6)
+- `--num-episodes`: Training episodes (default: 250)
+- `--max-num-bikes` / `--min-num-bikes`: Fleet size / min bikes per cell (defaults: 1000 / 5)
+- `--data-paths`: Comma-separated data folders for multi-area training with a single shared policy (overrides `--data-path`) — see `src/bss_rebalancing/rl_training/README.md`
+- `--exploration-time`: Fraction of episodes for exploration (default: 0.7)
 - `--device`: Hardware device (`cpu`, `cuda:0`, `mps`)
 - `--seed`: Random seed for reproducibility (default: 42)
 - `--one-validation`: Validate only at the end
@@ -292,7 +299,7 @@ While not always outperforming all baselines, the agent proved the viability of 
 
 ```bash
 # 1. Preprocess data
-bss-preprocess --data-path data/ --year 2022 --months 9,10
+bss-preprocess --data-path data/ --source bluebikes
 
 # 2. Train agent
 bss-train \
